@@ -809,7 +809,11 @@ async function main() {
           fineGrainSettlementValue?.terrainGain > 0.035 &&
           fineGrainSettlementValue?.fineObjectImpulse > 0.002 &&
           fineGrainSettlementValue?.fineObjectTravel > 0.0001 &&
-          fineGrainSettlementValue?.fineObjectPenetrationBefore > fineGrainSettlementValue?.fineObjectPenetrationAfter,
+          fineGrainSettlementValue?.fineObjectPenetrationBefore > fineGrainSettlementValue?.fineObjectPenetrationAfter &&
+          fineGrainSettlementValue?.excavatorFinePenetrationBefore > fineGrainSettlementValue?.excavatorFinePenetrationAfter &&
+          fineGrainSettlementValue?.excavatorFinePenetrationAfter < 0.015 &&
+          fineGrainSettlementValue?.excavatorFineTravel > 0.006 &&
+          fineGrainSettlementValue?.excavatorFineVelocity > 0.002,
       ],
       [
         "full bucket pushes soil into berms",
@@ -824,6 +828,10 @@ async function main() {
           cuttingFlowPhysicsValue?.capturedVolume > 0.12 &&
           Math.abs(cuttingFlowPhysicsValue?.transitRemaining ?? 1) < 0.003 &&
           cuttingFlowPhysicsValue?.gravityDelta > 0.08 &&
+          cuttingFlowPhysicsValue?.excavatorSoilPenetrationBefore > cuttingFlowPhysicsValue?.excavatorSoilPenetrationAfter &&
+          cuttingFlowPhysicsValue?.excavatorSoilPenetrationAfter < 0.025 &&
+          cuttingFlowPhysicsValue?.excavatorSoilTravel > 0.015 &&
+          cuttingFlowPhysicsValue?.excavatorSoilVelocity > 0.006 &&
           cuttingFlowPhysicsValue?.collisionReleasedVolume > 0.08 &&
           cuttingFlowPhysicsValue?.obstacleImpulse > 0.015 &&
           cuttingFlowPhysicsValue?.obstacleTravel > 0.002 &&

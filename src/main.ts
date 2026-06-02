@@ -243,6 +243,10 @@ interface ExcavatorDebugApi {
     capturedVolume: number;
     transitRemaining: number;
     gravityDelta: number;
+    excavatorSoilPenetrationBefore: number;
+    excavatorSoilPenetrationAfter: number;
+    excavatorSoilTravel: number;
+    excavatorSoilVelocity: number;
     collisionReleasedVolume: number;
     obstacleImpulse: number;
     obstacleTravel: number;
@@ -508,6 +512,10 @@ interface ExcavatorDebugApi {
     fineObjectTravel: number;
     fineObjectPenetrationBefore: number;
     fineObjectPenetrationAfter: number;
+    excavatorFinePenetrationBefore: number;
+    excavatorFinePenetrationAfter: number;
+    excavatorFineTravel: number;
+    excavatorFineVelocity: number;
     truckLoad: number;
   };
   forceExcavatorPitSink: () => {
@@ -4329,6 +4337,10 @@ class Simulator {
         for (let step = 0; step < 150; step += 1) {
           this.updateSoilParticles(1 / 60);
         }
+        let excavatorSoilPenetrationBefore = 0;
+        let excavatorSoilPenetrationAfter = 0;
+        let excavatorSoilTravel = 0;
+        let excavatorSoilVelocity = 0;
         let collisionReleasedVolume = 0;
         let obstacleImpulse = 0;
         let obstacleTravel = 0;
@@ -4390,6 +4402,40 @@ class Simulator {
           obstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         }
+
+        const savedAngles = { ...this.angles };
+        const savedMachinePosition = this.excavator.group.position.clone();
+        const savedMachineRotation = this.excavator.group.rotation.clone();
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.group.rotation.set(0, 0, 0);
+        Object.assign(this.angles, { swing: 0, boom: 0.46, stick: -1.16, bucket: -1.9 });
+        this.excavator.applyAngles(this.angles);
+        const soilRadius = 0.075;
+        const soilMesh = this.acquireSoilParticleMesh(soilRadius, this.looseSoilMats[0], 2402);
+        const trackNormal = new THREE.Vector3(0, 0, 1);
+        const trackPoint = this.excavator.group.position.clone().add(new THREE.Vector3(0, 0, TRACK_GAUGE * 0.5));
+        trackPoint.y = this.excavator.group.position.y + 0.34;
+        soilMesh.position.copy(trackPoint).addScaledVector(trackNormal, TRACK_WIDTH * 0.72 + soilRadius - 0.09);
+        const excavatorSoilParticle: SoilParticle = {
+          mesh: soilMesh,
+          velocity: trackNormal.clone().multiplyScalar(-0.68),
+          volume: 0.04,
+          radius: soilRadius,
+          life: 0,
+          settles: true,
+        };
+        excavatorSoilPenetrationBefore = this.resolveExcavatorSolidHit(soilMesh.position, soilRadius)?.penetration ?? 0;
+        const excavatorSoilBefore = soilMesh.position.clone();
+        this.resolveSoilParticleCollisions(excavatorSoilParticle);
+        excavatorSoilPenetrationAfter = this.resolveExcavatorSolidHit(soilMesh.position, soilRadius)?.penetration ?? 0;
+        excavatorSoilTravel = soilMesh.position.distanceTo(excavatorSoilBefore);
+        excavatorSoilVelocity = excavatorSoilParticle.velocity.length();
+        this.recycleSoilParticle(excavatorSoilParticle);
+        Object.assign(this.angles, savedAngles);
+        this.excavator.group.position.copy(savedMachinePosition);
+        this.excavator.group.rotation.copy(savedMachineRotation);
+        this.excavator.applyAngles(this.angles);
+
         this.excavator.setBucketLoad(this.bucketLoad);
         this.updateUi(0);
         return {
@@ -4397,6 +4443,10 @@ class Simulator {
           capturedVolume: this.bucketLoad - beforeBucket,
           transitRemaining: this.bucketTransitLoad - beforeTransit,
           gravityDelta,
+          excavatorSoilPenetrationBefore,
+          excavatorSoilPenetrationAfter,
+          excavatorSoilTravel,
+          excavatorSoilVelocity,
           collisionReleasedVolume,
           obstacleImpulse,
           obstacleTravel,
@@ -5871,6 +5921,10 @@ class Simulator {
         let fineObjectTravel = 0;
         let fineObjectPenetrationBefore = 0;
         let fineObjectPenetrationAfter = 0;
+        let excavatorFinePenetrationBefore = 0;
+        let excavatorFinePenetrationAfter = 0;
+        let excavatorFineTravel = 0;
+        let excavatorFineVelocity = 0;
         const fineTarget =
           this.worldColliders.find((collider) => collider.kind === "cone") ??
           this.worldColliders.find((collider) => collider.kind === "rock") ??
@@ -5919,6 +5973,51 @@ class Simulator {
           this.worldColliderGridDirty = true;
         }
 
+        const savedAngles = { ...this.angles };
+        const savedMachinePosition = this.excavator.group.position.clone();
+        const savedMachineRotation = this.excavator.group.rotation.clone();
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.group.rotation.set(0, 0, 0);
+        Object.assign(this.angles, { swing: 0, boom: 0.46, stick: -1.16, bucket: -1.9 });
+        this.excavator.applyAngles(this.angles);
+        const excavatorFineRadius = 0.026;
+        const excavatorFineIndex = this.fineGrainCursor;
+        const fp = excavatorFineIndex * 3;
+        const trackNormal = new THREE.Vector3(0, 0, 1);
+        const trackPoint = this.excavator.group.position.clone().add(new THREE.Vector3(0, 0, TRACK_GAUGE * 0.5));
+        trackPoint.y = this.excavator.group.position.y + 0.34;
+        this.deactivateFineGrain(excavatorFineIndex);
+        this.fineGrainPositions[fp] = trackPoint.x + trackNormal.x * (TRACK_WIDTH * 0.72 + excavatorFineRadius - 0.052);
+        this.fineGrainPositions[fp + 1] = trackPoint.y + trackNormal.y * (TRACK_WIDTH * 0.72 + excavatorFineRadius - 0.052);
+        this.fineGrainPositions[fp + 2] = trackPoint.z + trackNormal.z * (TRACK_WIDTH * 0.72 + excavatorFineRadius - 0.052);
+        this.fineGrainVelocities[fp] = -trackNormal.x * 0.64;
+        this.fineGrainVelocities[fp + 1] = -0.02;
+        this.fineGrainVelocities[fp + 2] = -trackNormal.z * 0.64;
+        this.fineGrainVolumes[excavatorFineIndex] = 0.018;
+        this.fineGrainLife[excavatorFineIndex] = 0;
+        this.fineGrainMaxLife[excavatorFineIndex] = 1;
+        this.fineGrainSettles[excavatorFineIndex] = 1;
+        const excavatorFineBeforePosition = new THREE.Vector3(
+          this.fineGrainPositions[fp],
+          this.fineGrainPositions[fp + 1],
+          this.fineGrainPositions[fp + 2],
+        );
+        excavatorFinePenetrationBefore = this.resolveExcavatorSolidHit(excavatorFineBeforePosition, excavatorFineRadius)?.penetration ?? 0;
+        this.resolveFineGrainCollisions(excavatorFineIndex, excavatorFineRadius);
+        const excavatorFineAfterPosition = new THREE.Vector3(
+          this.fineGrainPositions[fp],
+          this.fineGrainPositions[fp + 1],
+          this.fineGrainPositions[fp + 2],
+        );
+        excavatorFinePenetrationAfter = this.resolveExcavatorSolidHit(excavatorFineAfterPosition, excavatorFineRadius)?.penetration ?? 0;
+        excavatorFineTravel = excavatorFineAfterPosition.distanceTo(excavatorFineBeforePosition);
+        excavatorFineVelocity = Math.hypot(this.fineGrainVelocities[fp], this.fineGrainVelocities[fp + 1], this.fineGrainVelocities[fp + 2]);
+        this.deactivateFineGrain(excavatorFineIndex);
+        Object.assign(this.angles, savedAngles);
+        this.excavator.group.position.copy(savedMachinePosition);
+        this.excavator.group.rotation.copy(savedMachineRotation);
+        this.excavator.applyAngles(this.angles);
+
         this.updateUi(0);
         return {
           spawnedVolume,
@@ -5929,6 +6028,10 @@ class Simulator {
           fineObjectTravel,
           fineObjectPenetrationBefore,
           fineObjectPenetrationAfter,
+          excavatorFinePenetrationBefore,
+          excavatorFinePenetrationAfter,
+          excavatorFineTravel,
+          excavatorFineVelocity,
           truckLoad: this.truckLoad,
         };
       },
@@ -6881,20 +6984,30 @@ class Simulator {
   }
 
   private resolveLooseObjectExcavatorHit(collider: WorldCollider): { normal: THREE.Vector3; penetration: number } | null {
-    const pos = collider.mesh.position;
+    return this.resolveExcavatorSolidHit(collider.mesh.position, collider.radius);
+  }
+
+  private resolveExcavatorSolidHit(pos: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
     const base = this.excavator.group.position;
+    const broadphaseRadius = 8.8 + radius;
+    const broadphaseDx = pos.x - base.x;
+    const broadphaseDz = pos.z - base.z;
+    if (broadphaseDx * broadphaseDx + broadphaseDz * broadphaseDz > broadphaseRadius * broadphaseRadius) {
+      return null;
+    }
+
     const yaw = this.excavator.group.rotation.y;
     const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw).normalize();
     const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
     let best: { normal: THREE.Vector3; penetration: number } | null = null;
 
-    const considerHorizontal = (point: THREE.Vector3, radius: number): void => {
-      if (Math.abs(pos.y - point.y) > collider.radius + 0.72) {
+    const considerHorizontal = (point: THREE.Vector3, sampleRadius: number): void => {
+      if (Math.abs(pos.y - point.y) > radius + 0.72) {
         return;
       }
       const dx = pos.x - point.x;
       const dz = pos.z - point.z;
-      const combined = radius + collider.radius;
+      const combined = sampleRadius + radius;
       const distanceSq = dx * dx + dz * dz;
       if (distanceSq >= combined * combined) {
         return;
@@ -6907,9 +7020,9 @@ class Simulator {
       }
     };
 
-    const considerSphere = (point: THREE.Vector3, radius: number): void => {
+    const considerSphere = (point: THREE.Vector3, sampleRadius: number): void => {
       const delta = pos.clone().sub(point);
-      const combined = radius + collider.radius;
+      const combined = sampleRadius + radius;
       const distanceSq = delta.lengthSq();
       if (distanceSq >= combined * combined) {
         return;
@@ -6973,6 +7086,35 @@ class Simulator {
       this.collisionCount += 1;
       this.collisionCooldown = 0.34;
     }
+    return true;
+  }
+
+  private resolveSoilExcavatorCollision(pos: THREE.Vector3, velocity: THREE.Vector3, radius: number, mass: number, fineGrain = false): boolean {
+    let hit = this.resolveExcavatorSolidHit(pos, radius);
+    if (!hit) {
+      return false;
+    }
+
+    const responseNormal = hit.normal.clone().normalize();
+    let maxPenetration = hit.penetration;
+    const maxCorrection = fineGrain ? 0.09 : 0.18;
+    const skin = fineGrain ? 0.0015 : 0.003;
+    for (let i = 0; i < 2 && hit; i += 1) {
+      const normal = hit.normal.clone().normalize();
+      maxPenetration = Math.max(maxPenetration, hit.penetration);
+      pos.addScaledVector(normal, Math.min(hit.penetration + skin, maxCorrection));
+      hit = this.resolveExcavatorSolidHit(pos, radius);
+      if (!hit || hit.penetration < (fineGrain ? 0.004 : 0.01)) {
+        break;
+      }
+    }
+
+    const normalSpeed = velocity.dot(responseNormal);
+    const tangent = velocity.clone().addScaledVector(responseNormal, -normalSpeed);
+    const tangentDamping = fineGrain ? 0.56 : 0.66;
+    const bounceSpeed = normalSpeed < 0 ? -normalSpeed * (fineGrain ? 0.08 : 0.12) : Math.max(normalSpeed, 0);
+    velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(responseNormal, bounceSpeed);
+    this.pressure = Math.max(this.pressure, clamp(0.05 + maxPenetration * (fineGrain ? 0.42 : 0.78) + mass * 0.04, 0, fineGrain ? 0.22 : 0.36));
     return true;
   }
 
@@ -8279,6 +8421,17 @@ class Simulator {
       return true;
     }
 
+    if (this.resolveSoilExcavatorCollision(pos, velocity, radius, fineMass, true)) {
+      collided = true;
+      this.fineGrainPositions[p] = pos.x;
+      this.fineGrainPositions[p + 1] = pos.y;
+      this.fineGrainPositions[p + 2] = pos.z;
+      this.fineGrainVelocities[p] = velocity.x;
+      this.fineGrainVelocities[p + 1] = velocity.y;
+      this.fineGrainVelocities[p + 2] = velocity.z;
+      return true;
+    }
+
     for (const collider of this.nearbyWorldColliders(pos, radius + FINE_GRAIN_COLLISION_QUERY_PADDING)) {
       if (this.carriedWorldColliders.has(collider)) {
         continue;
@@ -8379,6 +8532,10 @@ class Simulator {
         this.pressure = Math.max(this.pressure, clamp(0.12 + bucketLoadHit.penetration * 0.55, 0, 0.38));
         return true;
       }
+    }
+
+    if (!particle.toBucket && this.resolveSoilExcavatorCollision(pos, particle.velocity, radius, soilMass, false)) {
+      return true;
     }
 
     for (const collider of this.nearbyWorldColliders(pos, radius + SOIL_PARTICLE_COLLISION_QUERY_PADDING)) {
