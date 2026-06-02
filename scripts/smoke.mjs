@@ -420,6 +420,9 @@ async function main() {
         const left = document.getElementById("mobile-left-joystick");
         const right = document.getElementById("mobile-right-joystick");
         const drive = document.querySelector(".mobile-drive-pad");
+        const camera = document.querySelector(".mobile-camera-pad");
+        const reset = document.querySelector("[data-mobile-reset]");
+        const panel = document.getElementById("mobile-menu-panel");
         const driveMenu = document.querySelector('[data-mobile-menu="drive"]');
         const topbar = document.querySelector(".topbar");
         const fwd = document.querySelector('[data-drive="forward"]');
@@ -427,11 +430,16 @@ async function main() {
         const topbarStyles = topbar ? getComputedStyle(topbar) : null;
         const rect = controls?.getBoundingClientRect();
         const driveRect = drive?.getBoundingClientRect();
+        const cameraRect = camera?.getBoundingClientRect();
+        const resetRect = reset?.getBoundingClientRect();
         return {
           visible: Boolean(controls && styles?.display !== "none" && rect && rect.width > 0 && rect.height > 0),
           leftReady: Boolean(left?.getBoundingClientRect().width),
           rightReady: Boolean(right?.getBoundingClientRect().width),
+          panelHiddenInitially: Boolean(panel?.classList.contains("hidden")),
           driveHiddenInitially: Boolean(drive && driveRect && driveRect.width === 0 && driveRect.height === 0),
+          cameraHiddenInitially: Boolean(camera && cameraRect && cameraRect.width === 0 && cameraRect.height === 0),
+          resetHiddenInitially: Boolean(reset && resetRect && resetRect.width === 0 && resetRect.height === 0),
           menuReady: Boolean(driveMenu?.getBoundingClientRect().width),
           topbarHidden: Boolean(topbar && topbarStyles?.display === "none"),
           driveReady: Boolean(fwd?.getBoundingClientRect().width),
@@ -458,11 +466,14 @@ async function main() {
       expression: `(() => {
         const panel = document.getElementById("mobile-menu-panel");
         const drive = document.querySelector(".mobile-drive-pad");
+        const camera = document.querySelector(".mobile-camera-pad");
         const fwd = document.querySelector('[data-drive="forward"]');
         const driveRect = drive?.getBoundingClientRect();
+        const cameraRect = camera?.getBoundingClientRect();
         return {
           panelOpen: Boolean(panel && !panel.classList.contains("hidden")),
           driveReady: Boolean(fwd?.getBoundingClientRect().width),
+          cameraHidden: Boolean(cameraRect && cameraRect.width === 0 && cameraRect.height === 0),
           driveLeft: driveRect?.left ?? 999,
           driveTop: driveRect?.top ?? 999,
           driveWidth: driveRect?.width ?? 0,
@@ -471,10 +482,98 @@ async function main() {
       })()`,
       returnByValue: true,
     });
+    await resetSim();
+    const mobileAfterMenuReset = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const panel = document.getElementById("mobile-menu-panel");
+        const drive = document.querySelector(".mobile-drive-pad");
+        const driveRect = drive?.getBoundingClientRect();
+        return {
+          panelHidden: Boolean(panel?.classList.contains("hidden")),
+          driveHidden: Boolean(driveRect && driveRect.width === 0 && driveRect.height === 0)
+        };
+      })()`,
+      returnByValue: true,
+    });
     const mobileBeforeForward = await resetSim();
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-mobile-menu="drive"]')?.click()`,
+      returnByValue: true,
+    });
+    await delay(120);
     const mobileForward = await pointerPress('[data-drive="forward"]', 760);
     const mobileBeforeReverse = await resetSim();
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-mobile-menu="drive"]')?.click()`,
+      returnByValue: true,
+    });
+    await delay(120);
     const mobileReverse = await pointerPress('[data-drive="reverse"]', 760);
+    await resetSim();
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-mobile-menu="camera"]')?.click()`,
+      returnByValue: true,
+    });
+    await delay(180);
+    const mobileViewUi = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const panel = document.getElementById("mobile-menu-panel");
+        const drive = document.querySelector(".mobile-drive-pad");
+        const camera = document.querySelector(".mobile-camera-pad");
+        const bucket = document.querySelector('.mobile-camera-pad [data-camera="bucket"]');
+        const driveRect = drive?.getBoundingClientRect();
+        const cameraRect = camera?.getBoundingClientRect();
+        bucket?.click();
+        return {
+          panelOpen: Boolean(panel && !panel.classList.contains("hidden")),
+          cameraReady: Boolean(cameraRect && cameraRect.width > 0 && cameraRect.height > 0),
+          driveHidden: Boolean(driveRect && driveRect.width === 0 && driveRect.height === 0),
+          bucketActive: Boolean(bucket?.classList.contains("active")),
+          cameraLeft: cameraRect?.left ?? 999,
+          cameraTop: cameraRect?.top ?? 999,
+          cameraWidth: cameraRect?.width ?? 0,
+          cameraHeight: cameraRect?.height ?? 0
+        };
+      })()`,
+      returnByValue: true,
+    });
+    await resetSim();
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-mobile-menu="settings"]')?.click()`,
+      returnByValue: true,
+    });
+    await delay(180);
+    const mobileSettingsUi = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const panel = document.getElementById("mobile-menu-panel");
+        const reset = document.querySelector("[data-mobile-reset]");
+        const resetRect = reset?.getBoundingClientRect();
+        return {
+          panelOpen: Boolean(panel && !panel.classList.contains("hidden")),
+          resetReady: Boolean(resetRect && resetRect.width > 0 && resetRect.height > 0),
+          resetLeft: resetRect?.left ?? 999,
+          resetTop: resetRect?.top ?? 999
+        };
+      })()`,
+      returnByValue: true,
+    });
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector("[data-mobile-reset]")?.click()`,
+      returnByValue: true,
+    });
+    await delay(500);
+    const mobileSettingsAfterReset = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const panel = document.getElementById("mobile-menu-panel");
+        const reset = document.querySelector("[data-mobile-reset]");
+        const resetRect = reset?.getBoundingClientRect();
+        return {
+          panelHidden: Boolean(panel?.classList.contains("hidden")),
+          resetHidden: Boolean(resetRect && resetRect.width === 0 && resetRect.height === 0)
+        };
+      })()`,
+      returnByValue: true,
+    });
     await resetSim();
     const orbitBefore = await readDebug();
     await pointerDrag("#sim-canvas", 92, -28, 220, "element");
@@ -541,6 +640,10 @@ async function main() {
     const mapDiversityValue = mapDiversity.result.value;
     const mobileUiValue = mobileUi.result.value;
     const mobileMenuUiValue = mobileMenuUi.result.value;
+    const mobileAfterMenuResetValue = mobileAfterMenuReset.result.value;
+    const mobileViewUiValue = mobileViewUi.result.value;
+    const mobileSettingsUiValue = mobileSettingsUi.result.value;
+    const mobileSettingsAfterResetValue = mobileSettingsAfterReset.result.value;
     const mobileBeforeLeftStick = Number.parseInt(mobileBeforeLeft.stick, 10);
     const mobileLeftStick = Number.parseInt(mobileLeft.state.stick, 10);
     const mobileBeforeRightBucket = Number.parseInt(mobileBeforeRight.bucket, 10);
@@ -861,7 +964,10 @@ async function main() {
         mobileUiValue?.visible &&
           mobileUiValue?.leftReady &&
           mobileUiValue?.rightReady &&
+          mobileUiValue?.panelHiddenInitially &&
           mobileUiValue?.driveHiddenInitially &&
+          mobileUiValue?.cameraHiddenInitially &&
+          mobileUiValue?.resetHiddenInitially &&
           mobileUiValue?.menuReady &&
           mobileUiValue?.topbarHidden,
       ],
@@ -869,10 +975,35 @@ async function main() {
         "mobile drive controls open from menu",
         mobileMenuUiValue?.panelOpen &&
           mobileMenuUiValue?.driveReady &&
+          mobileMenuUiValue?.cameraHidden &&
           mobileMenuUiValue?.driveLeft <= 18 &&
           mobileMenuUiValue?.driveTop <= 92 &&
           mobileMenuUiValue?.driveWidth <= 112 &&
           mobileMenuUiValue?.driveHeight <= 80,
+      ],
+      [
+        "mobile auxiliary menus close on reset",
+        mobileAfterMenuResetValue?.panelHidden && mobileAfterMenuResetValue?.driveHidden,
+      ],
+      [
+        "mobile view controls open from menu",
+        mobileViewUiValue?.panelOpen &&
+          mobileViewUiValue?.cameraReady &&
+          mobileViewUiValue?.driveHidden &&
+          mobileViewUiValue?.bucketActive &&
+          mobileViewUiValue?.cameraLeft <= 18 &&
+          mobileViewUiValue?.cameraTop <= 92 &&
+          mobileViewUiValue?.cameraWidth <= 144 &&
+          mobileViewUiValue?.cameraHeight <= 80,
+      ],
+      [
+        "mobile settings open from menu and reset closes them",
+        mobileSettingsUiValue?.panelOpen &&
+          mobileSettingsUiValue?.resetReady &&
+          mobileSettingsUiValue?.resetLeft <= 18 &&
+          mobileSettingsUiValue?.resetTop <= 92 &&
+          mobileSettingsAfterResetValue?.panelHidden &&
+          mobileSettingsAfterResetValue?.resetHidden,
       ],
       [
         "mobile left joystick drives WASD axes",
@@ -957,6 +1088,10 @@ async function main() {
           mapDiversity: mapDiversityValue,
           mobileUi: mobileUiValue,
           mobileMenuUi: mobileMenuUiValue,
+          mobileAfterMenuReset: mobileAfterMenuResetValue,
+          mobileViewUi: mobileViewUiValue,
+          mobileSettingsUi: mobileSettingsUiValue,
+          mobileSettingsAfterReset: mobileSettingsAfterResetValue,
           mobileBeforeLeft,
           mobileLeft,
           mobileBeforeRight,
