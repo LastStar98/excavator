@@ -356,6 +356,16 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const liftableObjectAudit = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceLiftableObjectAudit()`,
+      returnByValue: true,
+    });
+    await resetSim();
+    const lagFreeSoilCycle = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceLagFreeSoilCycle()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const truckLoadPhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceTruckLoadPhysics()`,
       returnByValue: true,
@@ -509,6 +519,8 @@ async function main() {
     const armTruckCollisionValue = armTruckCollision.result.value;
     const armSubsoilResistanceValue = armSubsoilResistance.result.value;
     const armWorldObjectPhysicsValue = armWorldObjectPhysics.result.value;
+    const liftableObjectAuditValue = liftableObjectAudit.result.value;
+    const lagFreeSoilCycleValue = lagFreeSoilCycle.result.value;
     const truckLoadPhysicsValue = truckLoadPhysics.result.value;
     const terrainMaterialPhysicsValue = terrainMaterialPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
@@ -728,6 +740,28 @@ async function main() {
           armWorldObjectPhysicsValue?.pressure > 0.35,
       ],
       [
+        "all world objects except the truck remain liftable",
+        liftableObjectAuditValue?.worldColliderCount > 80 &&
+          liftableObjectAuditValue?.liftableCount === liftableObjectAuditValue?.worldColliderCount &&
+          liftableObjectAuditValue?.blockedCount === 0 &&
+          liftableObjectAuditValue?.heaviestLiftableMass > 5 &&
+          liftableObjectAuditValue?.boulderLifted &&
+          liftableObjectAuditValue?.boulderLiftHeight > 0.04 &&
+          liftableObjectAuditValue?.fenceLifted &&
+          liftableObjectAuditValue?.fenceLiftHeight > 0.04 &&
+          liftableObjectAuditValue?.truckStillBlocks,
+      ],
+      [
+        "soil and contact physics stay responsive without resistance drag",
+        lagFreeSoilCycleValue?.terrainDrag === 1 &&
+          lagFreeSoilCycleValue?.particleCount <= 88 &&
+          lagFreeSoilCycleValue?.fineGrainCount <= 180 &&
+          lagFreeSoilCycleValue?.nearbyCandidates < lagFreeSoilCycleValue?.worldColliderCount * 0.45 &&
+          lagFreeSoilCycleValue?.averageStepMs < 16 &&
+          lagFreeSoilCycleValue?.maxStepMs < 80 &&
+          lagFreeSoilCycleValue?.bucketLoad > 0.5,
+      ],
+      [
         "loaded truck sags, tilts, and compacts tire ruts",
         truckLoadPhysicsValue?.accepted > 4.5 &&
           truckLoadPhysicsValue?.loadRatio > 0.6 &&
@@ -877,6 +911,8 @@ async function main() {
           armTruckCollision: armTruckCollisionValue,
           armSubsoilResistance: armSubsoilResistanceValue,
           armWorldObjectPhysics: armWorldObjectPhysicsValue,
+          liftableObjectAudit: liftableObjectAuditValue,
+          lagFreeSoilCycle: lagFreeSoilCycleValue,
           truckLoadPhysics: truckLoadPhysicsValue,
           terrainMaterialPhysics: terrainMaterialPhysicsValue,
           roughTrack: roughTrackValue,
