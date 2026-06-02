@@ -979,17 +979,21 @@ async function main() {
       ],
       [
         "expanded map has diverse physical terrain zones",
-        mapDiversityValue?.terrainSize >= 92 &&
+        mapDiversityValue?.terrainSize >= 124 &&
           mapDiversityValue?.spacing < 0.46 &&
           mapDiversityValue?.heightRange > 0.35 &&
-          mapDiversityValue?.materialZones >= 4 &&
+          mapDiversityValue?.materialZones >= 7 &&
           mapDiversityValue?.wetlandWetness > 0.6 &&
           mapDiversityValue?.gravelFan > 0.55 &&
           mapDiversityValue?.hardBench > 0.58 &&
           mapDiversityValue?.haulRoadCompaction > 0.62 &&
+          mapDiversityValue?.outerWetness > 0.6 &&
+          mapDiversityValue?.basaltHardpack > 0.7 &&
+          mapDiversityValue?.outerHaulCompaction > 0.62 &&
           mapDiversityValue?.roughSlope > 0.025 &&
-          mapDiversityValue?.farColliderCount >= 12 &&
-          mapDiversityValue?.colliderKinds >= 6,
+          mapDiversityValue?.farColliderCount >= 40 &&
+          mapDiversityValue?.colliderKinds >= 7 &&
+          mapDiversityValue?.pipeCount >= 6,
       ],
       [
         "mobile overlay visible",

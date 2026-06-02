@@ -65,7 +65,7 @@ interface SoilParticle {
   toBucket?: boolean;
 }
 
-type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone";
+type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone" | "pipe";
 
 interface WorldCollider {
   id: number;
@@ -379,10 +379,14 @@ interface ExcavatorDebugApi {
     gravelFan: number;
     hardBench: number;
     haulRoadCompaction: number;
+    outerWetness: number;
+    basaltHardpack: number;
+    outerHaulCompaction: number;
     materialZones: number;
     roughSlope: number;
     farColliderCount: number;
     colliderKinds: number;
+    pipeCount: number;
   };
   forceFineGrainSettlement: () => {
     spawnedVolume: number;
@@ -698,8 +702,8 @@ function setCylinderBetween(
 }
 
 class HeightfieldTerrain {
-  readonly size = 96;
-  readonly segments = 224;
+  readonly size = 128;
+  readonly segments = 288;
   readonly spacing = this.size / this.segments;
   readonly mesh: THREE.Mesh;
   readonly heights: Float32Array;
@@ -763,7 +767,7 @@ class HeightfieldTerrain {
     this.mesh.receiveShadow = true;
     scene.add(this.mesh);
 
-    const grid = new THREE.GridHelper(this.size, 48, 0x6e796c, 0x495045);
+    const grid = new THREE.GridHelper(this.size, 64, 0x6e796c, 0x495045);
     grid.position.y = 0.018;
     grid.material.transparent = true;
     grid.material.opacity = 0.28;
@@ -862,10 +866,20 @@ class HeightfieldTerrain {
     const farHaulRoad =
       Math.exp(-((z - 20.5) ** 2 / 1.85)) *
       clamp(1 - Math.abs(x + 8.0) / 34.0, 0, 1);
-    const wetness = clamp(mudFlat + drainageMud + outerWetland + 0.16 * (1 - Math.max(haulRoad, farHaulRoad)), 0, 1);
-    const gravel = clamp(gravelRidge + gravelFan + hardBench * 0.45 + limestoneBench * 0.36, 0, 1);
-    const hardpack = clamp(haulRoad * 0.82 + farHaulRoad * 0.78 + gravel * 0.5 + hardBench + limestoneBench, 0, 1);
-    const compaction = clamp(Math.max(haulRoad, farHaulRoad) * 0.9 + hardpack * 0.5 - wetness * 0.22, 0, 1);
+    const farWetland =
+      0.92 *
+      Math.exp(-((x - 52.0) ** 2 / 78.0 + (z + 42.0) ** 2 / 48.0));
+    const basaltShelf =
+      0.86 *
+      Math.exp(-((x + 52.0) ** 2 / 70.0 + (z - 42.0) ** 2 / 52.0));
+    const outerHaulRoad =
+      Math.exp(-((z + 38.0) ** 2 / 2.2)) *
+      clamp(1 - Math.abs(x - 42.0) / 28.0, 0, 1);
+    const roadCompaction = Math.max(haulRoad, farHaulRoad, outerHaulRoad);
+    const wetness = clamp(mudFlat + drainageMud + outerWetland + farWetland + 0.16 * (1 - roadCompaction), 0, 1);
+    const gravel = clamp(gravelRidge + gravelFan + hardBench * 0.45 + limestoneBench * 0.36 + basaltShelf * 0.74, 0, 1);
+    const hardpack = clamp(haulRoad * 0.82 + farHaulRoad * 0.78 + outerHaulRoad * 0.86 + gravel * 0.5 + hardBench + limestoneBench + basaltShelf, 0, 1);
+    const compaction = clamp(roadCompaction * 0.9 + hardpack * 0.5 - wetness * 0.22, 0, 1);
     return {
       wetness,
       gravel,
@@ -1284,6 +1298,23 @@ class HeightfieldTerrain {
       0.16 *
       Math.exp(-((x - 33.5) ** 2 / 18.0 + (z - 4.0) ** 2 / 95.0)) *
       (0.72 + 0.28 * Math.sin(z * 0.42));
+    const farWetland =
+      -0.24 *
+      Math.exp(-((x - 52.0) ** 2 / 78.0 + (z + 42.0) ** 2 / 48.0));
+    const basaltShelf =
+      0.3 *
+      Math.exp(-((x + 52.0) ** 2 / 70.0 + (z - 42.0) ** 2 / 52.0));
+    const outerHaulRoad =
+      -0.085 *
+      Math.exp(-((z + 38.0) ** 2 / 2.2)) *
+      clamp(1 - Math.abs(x - 42.0) / 28.0, 0, 1);
+    const outerCut =
+      -0.18 *
+      Math.exp(-((x - 47.0) ** 2 / 38.0 + (z - 45.0) ** 2 / 58.0));
+    const farSpoilRidge =
+      0.2 *
+      Math.exp(-((x - 54.0) ** 2 / 30.0 + (z - 18.0) ** 2 / 92.0)) *
+      (0.66 + 0.34 * Math.cos(z * 0.36));
     const undulation = 0.075 * (fbm(x * 0.11 + 4.2, z * 0.11 - 2.8) - 0.5);
     const broadRoughness = 0.052 * (fbm(x * 0.23 - 8.4, z * 0.19 + 5.8) - 0.5);
     const ripple = 0.035 * Math.sin(x * 0.72) * Math.cos(z * 0.48);
@@ -1302,6 +1333,11 @@ class HeightfieldTerrain {
       farHaulRoad +
       outerRidge +
       spoilWindrow +
+      farWetland +
+      basaltShelf +
+      outerHaulRoad +
+      outerCut +
+      farSpoilRidge +
       undulation +
       broadRoughness +
       ripple
@@ -2942,10 +2978,10 @@ class Simulator {
     const dryClodMat = makeMat(0x8a6238, 0.96, 0.02);
     const twigMat = makeMat(0x2f281f, 0.8, 0.06);
 
-    for (let i = 0; i < 330; i += 1) {
-      const aroundDig = i < 92;
-      const farField = i > 210;
-      const radius = aroundDig ? 0.85 + Math.random() * 4.25 : farField ? 18.0 + Math.random() * 25.0 : 4.0 + Math.random() * 21.0;
+    for (let i = 0; i < 430; i += 1) {
+      const aroundDig = i < 104;
+      const farField = i > 250;
+      const radius = aroundDig ? 0.85 + Math.random() * 4.25 : farField ? 24.0 + Math.random() * 34.0 : 5.0 + Math.random() * 27.0;
       const angle = Math.random() * Math.PI * 2;
       const x = (aroundDig ? DIG_SITE.x : 0) + Math.cos(angle) * radius;
       const z = (aroundDig ? DIG_SITE.z : 0) + Math.sin(angle) * radius;
@@ -2992,6 +3028,12 @@ class Simulator {
       [30.4, 28.8, 0.33],
       [39.2, 4.8, 0.3],
       [-41.0, 7.4, 0.28],
+      [52.5, -42.8, 0.38],
+      [-54.2, 41.6, 0.4],
+      [55.0, 28.0, 0.32],
+      [-48.4, -45.2, 0.35],
+      [47.6, -51.4, 0.34],
+      [-55.5, 25.2, 0.31],
     ] as const;
     for (const [x, z, radius] of boulders) {
       const boulder = new THREE.Mesh(new THREE.IcosahedronGeometry(radius, 1), boulderMat);
@@ -3018,6 +3060,30 @@ class Simulator {
       twig.castShadow = true;
       this.scene.add(twig);
       this.registerWorldCollider(twig, "twig", 0.06, { mass: 0.12, crushable: true, restitution: 0.02, friction: 0.96, groundOffset: 0.035 });
+    }
+
+    const pipeMat = makeMat(0x697376, 0.58, 0.32);
+    const pipes = [
+      [-50.5, -39.2, 1.25, 0.42],
+      [-47.8, -37.6, 1.05, -0.18],
+      [51.5, 39.0, 1.18, 0.8],
+      [54.2, 41.8, 0.95, -0.35],
+      [44.8, -44.6, 1.1, 0.15],
+      [57.0, -36.2, 0.92, -0.62],
+    ] as const;
+    for (const [x, z, length, yaw] of pipes) {
+      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, length, 18), pipeMat);
+      pipe.position.set(x, this.terrain.getHeightAt(x, z) + 0.14, z);
+      pipe.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw)).normalize());
+      pipe.castShadow = true;
+      pipe.receiveShadow = true;
+      this.scene.add(pipe);
+      this.registerWorldCollider(pipe, "pipe", Math.max(0.34, length * 0.42), {
+        mass: 12 + length * 10,
+        restitution: 0.06,
+        friction: 0.78,
+        groundOffset: 0.14,
+      });
     }
   }
 
@@ -3684,7 +3750,7 @@ class Simulator {
         };
 
         const mud = runAt(new THREE.Vector3(9.8, 0, -8.8));
-        const hard = runAt(new THREE.Vector3(-13.2, 0, -9.6));
+        const hard = runAt(new THREE.Vector3(-8.0, 0, 20.5));
 
         this.excavator.group.position.copy(savedPosition);
         this.excavator.group.rotation.copy(savedRotation);
@@ -4467,20 +4533,30 @@ class Simulator {
           haulRoad: new THREE.Vector3(-8.0, 0, 20.5),
           ridge: new THREE.Vector3(-36.0, 0, -27.0),
           windrow: new THREE.Vector3(33.5, 0, -4.0),
+          farWetland: new THREE.Vector3(52.0, 0, -42.0),
+          basaltShelf: new THREE.Vector3(-52.0, 0, 42.0),
+          outerHaulRoad: new THREE.Vector3(42.0, 0, -38.0),
+          farSpoil: new THREE.Vector3(54.0, 0, 18.0),
         };
         const wetland = this.terrain.getSurfaceConditionAt(surfacePoints.wetland.x, surfacePoints.wetland.z);
         const gravelFan = this.terrain.getSurfaceConditionAt(surfacePoints.gravelFan.x, surfacePoints.gravelFan.z);
         const hardBench = this.terrain.getSurfaceConditionAt(surfacePoints.hardBench.x, surfacePoints.hardBench.z);
         const haulRoad = this.terrain.getSurfaceConditionAt(surfacePoints.haulRoad.x, surfacePoints.haulRoad.z);
+        const farWetland = this.terrain.getSurfaceConditionAt(surfacePoints.farWetland.x, surfacePoints.farWetland.z);
+        const basaltShelf = this.terrain.getSurfaceConditionAt(surfacePoints.basaltShelf.x, surfacePoints.basaltShelf.z);
+        const outerHaulRoad = this.terrain.getSurfaceConditionAt(surfacePoints.outerHaulRoad.x, surfacePoints.outerHaulRoad.z);
         const heights = Object.values(surfacePoints).map((point) => this.terrain.getHeightAt(point.x, point.z));
         const materialZones = [
           wetland.wetness > 0.6,
           gravelFan.gravel > 0.55,
           hardBench.hardpack > 0.58,
           haulRoad.compaction > 0.62,
+          farWetland.wetness > 0.6,
+          basaltShelf.hardpack > 0.7,
+          outerHaulRoad.compaction > 0.62,
         ].filter(Boolean).length;
         const farColliderCount = this.worldColliders.filter(
-          (collider) => Math.hypot(collider.mesh.position.x, collider.mesh.position.z) > 30,
+          (collider) => Math.hypot(collider.mesh.position.x, collider.mesh.position.z) > 38,
         ).length;
         return {
           terrainSize: this.terrain.size,
@@ -4490,6 +4566,9 @@ class Simulator {
           gravelFan: gravelFan.gravel,
           hardBench: hardBench.hardpack,
           haulRoadCompaction: haulRoad.compaction,
+          outerWetness: farWetland.wetness,
+          basaltHardpack: basaltShelf.hardpack,
+          outerHaulCompaction: outerHaulRoad.compaction,
           materialZones,
           roughSlope: Math.max(
             this.terrain.getSlopeAt(-32.5, -27.0),
@@ -4498,9 +4577,13 @@ class Simulator {
             this.terrain.getSlopeAt(33.5, 1.5),
             this.terrain.getSlopeAt(24.5, 26.0),
             this.terrain.getSlopeAt(30.5, 26.0),
+            this.terrain.getSlopeAt(50.0, -42.0),
+            this.terrain.getSlopeAt(-54.0, 42.0),
+            this.terrain.getSlopeAt(54.0, 18.0),
           ),
           farColliderCount,
           colliderKinds: new Set(this.worldColliders.map((collider) => collider.kind)).size,
+          pipeCount: this.worldColliders.filter((collider) => collider.kind === "pipe").length,
         };
       },
       forceFineGrainSettlement: () => {
@@ -5610,15 +5693,27 @@ class Simulator {
       const surface = this.terrain.getSurfaceConditionAt(center.x, center.z);
       const support = this.terrain.sampleTrackSupport(center, forward, side, TRACK_LENGTH, TRACK_WIDTH);
       const roughness = clamp((support.highHeight - support.lowHeight) * 0.9 + support.disturbedDepth * 0.24, 0, 0.72);
+      const materialSink = clamp(surface.trackSinkMultiplier * (1 + surface.wetness * 0.45 - surface.hardpack * 0.32), 0.35, 2.35);
       const depth = clamp(
         (0.006 + trackMotion * dt * 0.055) *
           (1 + slip * 1.45 + roughness * 0.85) *
-          surface.trackSinkMultiplier,
+          materialSink,
         0.002,
         0.052,
       );
       const result = this.compactTrackStripWithWake(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, depth);
       this.trackSoilWork += result.compacted;
+      if (result.compacted > 0 && surface.wetness > 0.45) {
+        const wetRutVolume = this.terrain.lowerAt(
+          center,
+          TRACK_WIDTH * 0.55,
+          depth * clamp((surface.wetness - surface.hardpack * 0.35) * 0.72, 0, 0.72),
+        );
+        if (wetRutVolume > 0) {
+          this.trackSoilWork += wetRutVolume;
+          this.wakeWorldCollidersNear(center, TRACK_WIDTH + 0.7);
+        }
+      }
       if (result.compacted > 0) {
         this.pressure = Math.max(
           this.pressure,
@@ -6765,7 +6860,7 @@ class Simulator {
     this.ui.limitText.textContent = String(this.limitImpacts);
     this.ui.safetyText.textContent = String(this.safetyViolations);
     this.ui.idleText.textContent = `${Math.round((this.idleSeconds / Math.max(this.elapsed, 1)) * 100)}%`;
-    this.ui.travelText.textContent = `${this.travelDistance.toFixed(1)} m`;
+    this.ui.travelText.textContent = `${this.travelDistance.toFixed(2)} m`;
     const travelSpeed = (this.leftTrackVelocity + this.rightTrackVelocity) * 0.5;
     const turnRate = (this.rightTrackVelocity - this.leftTrackVelocity) / TRACK_GAUGE;
     if (Math.abs(travelSpeed) > 0.05 && Math.abs(turnRate) > 0.1) {
