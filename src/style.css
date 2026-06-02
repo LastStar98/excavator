@@ -509,9 +509,9 @@ meter {
 
 .mobile-drive-pad {
   display: grid;
-  grid-template-columns: repeat(2, 46px);
-  gap: 4px;
-  padding: 5px;
+  grid-template-columns: repeat(2, 38px);
+  gap: 3px;
+  padding: 4px;
   border: 1px solid rgb(255 255 255 / 14%);
   border-radius: 8px;
   background: rgb(13 17 15 / 54%);
@@ -550,10 +550,10 @@ meter {
 
 .mobile-menu-panel {
   position: fixed;
-  top: max(52px, calc(env(safe-area-inset-top) + 52px));
-  left: max(10px, env(safe-area-inset-left));
+  top: max(44px, calc(env(safe-area-inset-top) + 44px));
+  left: max(8px, env(safe-area-inset-left));
   z-index: 8;
-  padding: 7px;
+  padding: 6px;
   border: 1px solid rgb(255 255 255 / 14%);
   border-radius: 8px;
   background: rgb(13 17 15 / 66%);
@@ -589,11 +589,11 @@ meter {
 }
 
 .mobile-drive-pad button {
-  width: 46px;
-  height: 30px;
+  width: 38px;
+  height: 24px;
   padding: 0;
   border-radius: 6px;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 850;
   touch-action: none;
 }
@@ -737,14 +737,14 @@ meter {
   }
 
   .mobile-drive-pad {
-    grid-template-columns: repeat(2, 44px);
-    padding: 5px;
+    grid-template-columns: repeat(2, 36px);
+    padding: 4px;
   }
 
   .mobile-drive-pad button {
-    width: 44px;
-    height: 28px;
-    font-size: 10px;
+    width: 36px;
+    height: 23px;
+    font-size: 9px;
   }
 
 }
