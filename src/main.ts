@@ -411,6 +411,10 @@ interface ExcavatorDebugApi {
     rutDrop: number;
     bodyYDrop: number;
     supportSpread: number;
+    loadCenterShiftX: number;
+    loadCenterShiftZ: number;
+    loadHeightConserved: number;
+    loadSlumpMoved: number;
     loadSurfaceHeight: number;
     loadSurfaceNormalY: number;
     loadSurfacePenetrationBefore: number;
@@ -1686,6 +1690,9 @@ class WorkTruck {
     this.group.rotation.x = THREE.MathUtils.lerp(this.group.rotation.x, targetRoll, response);
     this.group.rotation.y = this.baseYaw;
     this.group.rotation.z = THREE.MathUtils.lerp(this.group.rotation.z, targetPitch, response);
+    if (loadRatio > 0.025 && dt > 0) {
+      this.slumpLoadUnderGravity(dt, 0.55 + loadRatio * 0.65 + clamp(Math.abs(this.impactPitch) + Math.abs(this.impactRoll), 0, 0.18) * 2.2);
+    }
     const impactDecay = dt <= 0 ? 1 : Math.exp(-3.8 * dt);
     this.impactPitch *= impactDecay;
     this.impactRoll *= impactDecay;
@@ -2004,6 +2011,78 @@ class WorkTruck {
     this.commitLoadSurface();
   }
 
+  loadDistributionStats(): { centerX: number; centerZ: number; totalHeight: number; maxHeight: number } {
+    let totalHeight = 0;
+    let weightedX = 0;
+    let weightedZ = 0;
+    let maxHeight = 0;
+    for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+        const idx = this.loadIndex(ix, iz);
+        const height = this.loadHeights[idx];
+        if (height <= 0) {
+          continue;
+        }
+        const x = this.bedCenterX - this.bedLength / 2 + (ix / this.loadSegmentsX) * this.bedLength;
+        const z = -this.bedWidth / 2 + (iz / this.loadSegmentsZ) * this.bedWidth;
+        totalHeight += height;
+        weightedX += x * height;
+        weightedZ += z * height;
+        maxHeight = Math.max(maxHeight, height);
+      }
+    }
+
+    if (totalHeight <= 0) {
+      return { centerX: 0, centerZ: 0, totalHeight: 0, maxHeight: 0 };
+    }
+
+    return {
+      centerX: weightedX / totalHeight - this.bedCenterX,
+      centerZ: weightedZ / totalHeight,
+      totalHeight,
+      maxHeight,
+    };
+  }
+
+  slumpLoadUnderGravity(dt: number, intensity = 1): number {
+    if (!this.loadMesh.visible || dt <= 0) {
+      return 0;
+    }
+
+    const inverseTruckRotation = this.group.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const localGravity = new THREE.Vector3(0, -1, 0).applyQuaternion(inverseTruckRotation);
+    const downhill = new THREE.Vector2(localGravity.x, localGravity.z);
+    const downhillLen = downhill.length();
+    const verticalSupport = Math.max(Math.abs(localGravity.y), 0.2);
+    if (downhillLen < 0.01) {
+      return 0;
+    }
+
+    downhill.divideScalar(downhillLen);
+    const tilt = clamp(downhillLen / verticalSupport, 0, 0.95);
+    const passes = Math.max(1, Math.min(5, Math.ceil((1 + tilt * 4) * clamp(intensity, 0.25, 3.5))));
+    let moved = 0;
+
+    for (let pass = 0; pass < passes; pass += 1) {
+      for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix < this.loadSegmentsX; ix += 1) {
+          moved += this.transferLoadDownhill(ix, iz, ix + 1, iz, downhill, tilt, dt, intensity);
+        }
+      }
+      for (let iz = 0; iz < this.loadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+          moved += this.transferLoadDownhill(ix, iz, ix, iz + 1, downhill, tilt, dt, intensity);
+        }
+      }
+    }
+
+    if (moved > 0.0001) {
+      this.relaxLoad(1);
+      this.commitLoadSurface();
+    }
+    return moved;
+  }
+
   depositSoilAt(point: THREE.Vector3, volume: number, availableVolume: number): number {
     if (volume <= 0 || availableVolume <= 0 || !this.containsWorldPoint(point)) {
       return 0;
@@ -2036,28 +2115,8 @@ class WorkTruck {
   }
 
   private loadCenterOffset(): { x: number; z: number } {
-    let total = 0;
-    let weightedX = 0;
-    let weightedZ = 0;
-    for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
-      for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
-        const idx = this.loadIndex(ix, iz);
-        const height = this.loadHeights[idx];
-        if (height <= 0) {
-          continue;
-        }
-        const x = this.bedCenterX - this.bedLength / 2 + (ix / this.loadSegmentsX) * this.bedLength;
-        const z = -this.bedWidth / 2 + (iz / this.loadSegmentsZ) * this.bedWidth;
-        total += height;
-        weightedX += x * height;
-        weightedZ += z * height;
-      }
-    }
-
-    if (total <= 0) {
-      return { x: 0, z: 0 };
-    }
-    return { x: weightedX / total - this.bedCenterX, z: weightedZ / total };
+    const stats = this.loadDistributionStats();
+    return { x: stats.centerX, z: stats.centerZ };
   }
 
   private createLoadGeometry(): THREE.BufferGeometry {
@@ -2152,6 +2211,56 @@ class WorkTruck {
       this.loadHeights[a] += transfer;
       this.loadHeights[b] -= transfer;
     }
+  }
+
+  private transferLoadDownhill(
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    downhill: THREE.Vector2,
+    tilt: number,
+    dt: number,
+    intensity: number,
+  ): number {
+    const stepX = this.bedLength / this.loadSegmentsX;
+    const stepZ = this.bedWidth / this.loadSegmentsZ;
+    const dx = (bx - ax) * stepX;
+    const dz = (bz - az) * stepZ;
+    const distance = Math.max(Math.hypot(dx, dz), 0.001);
+    const alignment = (dx * downhill.x + dz * downhill.y) / distance;
+    if (Math.abs(alignment) < 0.035) {
+      return 0;
+    }
+
+    const source = alignment > 0 ? this.loadIndex(ax, az) : this.loadIndex(bx, bz);
+    const sink = alignment > 0 ? this.loadIndex(bx, bz) : this.loadIndex(ax, az);
+    const sourceHeight = this.loadHeights[source];
+    if (sourceHeight <= 0.0001) {
+      return 0;
+    }
+
+    const sinkHeight = this.loadHeights[sink];
+    const drive = Math.abs(alignment) * tilt;
+    const imbalance = sourceHeight - sinkHeight + drive * 0.24;
+    const staticRepose = 0.07;
+    if (imbalance <= staticRepose) {
+      return 0;
+    }
+
+    const timeScale = clamp(dt * 3.2, 0.08, 1);
+    const transfer = clamp(
+      (imbalance - staticRepose) * (0.11 + drive * 0.24) * clamp(intensity, 0.2, 3.5) * timeScale,
+      0,
+      sourceHeight * 0.3,
+    );
+    if (transfer <= 0) {
+      return 0;
+    }
+
+    this.loadHeights[source] -= transfer;
+    this.loadHeights[sink] += transfer;
+    return transfer;
   }
 
   private commitLoadSurface(): void {
@@ -2991,6 +3100,7 @@ class Simulator {
   private readonly worldColliderGrid = new Map<string, WorldCollider[]>();
   private readonly colliderQueryResult: WorldCollider[] = [];
   private worldColliderGridDirty = true;
+  private worldColliderGridDeferredDirty = false;
   private colliderQueryStamp = 1;
   private fpsAccumulator = 0;
   private fpsFrames = 0;
@@ -3202,8 +3312,21 @@ class Simulator {
 
   private warmWorldColliderGrid(): void {
     this.worldColliderGridDirty = true;
+    this.worldColliderGridDeferredDirty = false;
     this.rebuildWorldColliderGrid();
     this.nearbyWorldColliders(this.excavator.group.position, 2.2);
+  }
+
+  private deferWorldColliderGridRefresh(): void {
+    this.worldColliderGridDeferredDirty = true;
+  }
+
+  private flushWorldColliderGridRefresh(): void {
+    if (!this.worldColliderGridDeferredDirty) {
+      return;
+    }
+    this.worldColliderGridDeferredDirty = false;
+    this.worldColliderGridDirty = true;
   }
 
   private wakeWorldCollidersNear(center: THREE.Vector3, radius: number): number {
@@ -4972,6 +5095,12 @@ class Simulator {
         this.truckLoad = accepted;
         this.truck.updateLoad(this.truckLoad);
         this.truck.settleLoad(2);
+        const loadStatsBeforeSlump = this.truck.loadDistributionStats();
+        const loadHeightBeforeSlump = loadStatsBeforeSlump.totalHeight;
+        this.truck.group.rotation.x = 0.16;
+        this.truck.group.rotation.z = -0.12;
+        const loadSlumpMoved = this.truck.slumpLoadUnderGravity(1.2, 2.2);
+        const loadStatsAfterSlump = this.truck.loadDistributionStats();
         const state = this.truck.updatePhysics(this.terrain, this.truckLoad, 0.95, true);
         this.wakeTruckWheelColliders();
         const afterRut = this.terrain.getHeightAt(roughWheel.x, roughWheel.z);
@@ -5026,6 +5155,10 @@ class Simulator {
           rutDrop: Math.max(state.tireRutDrop, beforeRut - afterRut),
           bodyYDrop: beforeY - this.truck.group.position.y,
           supportSpread: state.supportSpread,
+          loadCenterShiftX: loadStatsAfterSlump.centerX - loadStatsBeforeSlump.centerX,
+          loadCenterShiftZ: loadStatsAfterSlump.centerZ - loadStatsBeforeSlump.centerZ,
+          loadHeightConserved: Math.abs(loadStatsAfterSlump.totalHeight - loadHeightBeforeSlump),
+          loadSlumpMoved,
           loadSurfaceHeight,
           loadSurfaceNormalY,
           loadSurfacePenetrationBefore,
@@ -5822,8 +5955,9 @@ class Simulator {
         uphillGrade * 0.34 +
         Math.max(0, surface.trackDragMultiplier - 1) * 0.16;
       const traction = clamp(1.04 + surface.compaction * 0.08 + surface.hardpack * 0.04 - materialLoss, 0.34, 1.08);
-      const groundSpeed = motorVelocity * traction;
-      const slip = clamp(Math.abs(motorVelocity - groundSpeed) / Math.max(TRACK_MAX_SPEED, 0.001), 0, 1);
+      const slip = clamp(1 - traction + roughness * 0.18 + surface.wetness * 0.08 + uphillGrade * 0.08, 0, 1);
+      const speedLoss = clamp((1 - traction) * 0.08 + uphillGrade * 0.02, 0, 0.09);
+      const groundSpeed = motorVelocity * (1 - speedLoss);
       return { traction, slip, groundSpeed, roughness, grade };
     };
 
@@ -6426,6 +6560,7 @@ class Simulator {
   }
 
   private updateLooseWorldObjects(dt: number): void {
+    this.flushWorldColliderGridRefresh();
     const bucket = this.excavator.bucketPocketWorld();
     const machine = this.excavator.group.position;
     let activeObjectMoved = false;
@@ -7888,7 +8023,7 @@ class Simulator {
         velocity.multiplyScalar(1 - Math.min(collider.friction * 0.04, 0.08));
       }
       collider.sleeping = false;
-      this.worldColliderGridDirty = true;
+      this.deferWorldColliderGridRefresh();
       this.pressure = Math.max(this.pressure, clamp(0.025 + penetration * 0.55 + fineMass * 0.4, 0, 0.2));
       collided = true;
       break;
@@ -7991,6 +8126,7 @@ class Simulator {
       }
 
       collider.sleeping = false;
+      this.deferWorldColliderGridRefresh();
       this.pressure = Math.max(this.pressure, clamp(0.08 + penetration * 0.92, 0, 0.42));
       collided = true;
       break;

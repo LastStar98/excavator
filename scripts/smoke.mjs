@@ -1017,6 +1017,9 @@ async function main() {
           truckLoadPhysicsValue?.compacted > 0.004 &&
           truckLoadPhysicsValue?.rutDrop > 0.0015 &&
           truckLoadPhysicsValue?.bodyYDrop > 0.07 &&
+          Math.hypot(truckLoadPhysicsValue?.loadCenterShiftX ?? 0, truckLoadPhysicsValue?.loadCenterShiftZ ?? 0) > 0.012 &&
+          truckLoadPhysicsValue?.loadHeightConserved < 0.0005 &&
+          truckLoadPhysicsValue?.loadSlumpMoved > 0.006 &&
           truckLoadPhysicsValue?.loadSurfaceHeight > 0.1 &&
           truckLoadPhysicsValue?.loadSurfaceNormalY > 0.45 &&
           truckLoadPhysicsValue?.loadSurfacePenetrationBefore > 0.05 &&
@@ -1037,11 +1040,11 @@ async function main() {
           terrainMaterialPhysicsValue?.hardResistance > terrainMaterialPhysicsValue?.softResistance * 1.12,
       ],
       [
-        "crawler traction converts rough terrain into slip instead of input lag",
+        "crawler traction keeps drive speed responsive while reporting slip",
         trackTractionPhysicsValue?.mudDragMultiplier > trackTractionPhysicsValue?.hardDragMultiplier &&
           trackTractionPhysicsValue?.mudTraction < trackTractionPhysicsValue?.hardTraction &&
           trackTractionPhysicsValue?.mudSlip > trackTractionPhysicsValue?.hardSlip + 0.08 &&
-          trackTractionPhysicsValue?.mudGroundSpeed < trackTractionPhysicsValue?.hardGroundSpeed * 0.92 &&
+          trackTractionPhysicsValue?.mudGroundSpeed > trackTractionPhysicsValue?.hardGroundSpeed * 0.92 &&
           trackTractionPhysicsValue?.mudRutDrop > trackTractionPhysicsValue?.hardRutDrop * 1.08,
       ],
       [
