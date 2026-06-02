@@ -260,6 +260,11 @@ interface ExcavatorDebugApi {
     bucketLoad: number;
     surfaceHeight: number;
     surfaceNormalY: number;
+    loadCenterShiftX: number;
+    loadCenterShiftZ: number;
+    loadHeightConserved: number;
+    loadLipRatio: number;
+    loadSlumpMoved: number;
     soilPenetrationBefore: number;
     soilPenetrationAfter: number;
     capturedVolume: number;
@@ -2357,6 +2362,7 @@ class ExcavatorModel {
 
   setBucketLoad(load: number): void {
     const ratio = clamp(load / BUCKET_CAPACITY, 0, 1);
+    const previousRatio = this.bucketLoadRenderedRatio;
     if (Math.abs(ratio - this.bucketLoadRenderedRatio) < 0.001) {
       return;
     }
@@ -2364,6 +2370,12 @@ class ExcavatorModel {
     this.bucketLoadMesh.visible = ratio > 0.02;
     if (ratio <= 0.02) {
       this.bucketLoadHeights.fill(0);
+    } else if (previousRatio > 0.02) {
+      const scale = ratio / Math.max(previousRatio, 0.001);
+      for (let i = 0; i < this.bucketLoadHeights.length; i += 1) {
+        this.bucketLoadHeights[i] = clamp(this.bucketLoadHeights[i] * scale, 0.004, 0.62);
+      }
+      this.relaxBucketLoad(1);
     } else {
       this.shapeBucketLoad(ratio);
     }
@@ -2379,6 +2391,89 @@ class ExcavatorModel {
       total += height;
     }
     return clamp(total / this.bucketLoadHeights.length / 0.42, 0, 1);
+  }
+
+  bucketLoadDistributionStats(): {
+    centerX: number;
+    centerZ: number;
+    totalHeight: number;
+    maxHeight: number;
+    lipRatio: number;
+  } {
+    let totalHeight = 0;
+    let lipHeight = 0;
+    let weightedX = 0;
+    let weightedZ = 0;
+    let maxHeight = 0;
+    for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
+        const idx = this.bucketLoadIndex(ix, iz);
+        const height = this.bucketLoadHeights[idx];
+        if (height <= 0) {
+          continue;
+        }
+        const x = THREE.MathUtils.lerp(this.bucketLoadMinX, this.bucketLoadMaxX, ix / this.bucketLoadSegmentsX);
+        const z = THREE.MathUtils.lerp(this.bucketLoadMinZ, this.bucketLoadMaxZ, iz / this.bucketLoadSegmentsZ);
+        totalHeight += height;
+        weightedX += x * height;
+        weightedZ += z * height;
+        maxHeight = Math.max(maxHeight, height);
+        if (ix <= 1) {
+          lipHeight += height;
+        }
+      }
+    }
+
+    if (totalHeight <= 0) {
+      return { centerX: 0, centerZ: 0, totalHeight: 0, maxHeight: 0, lipRatio: 0 };
+    }
+
+    return {
+      centerX: weightedX / totalHeight,
+      centerZ: weightedZ / totalHeight,
+      totalHeight,
+      maxHeight,
+      lipRatio: lipHeight / totalHeight,
+    };
+  }
+
+  slumpBucketLoadUnderGravity(dt: number, intensity = 1): number {
+    if (!this.bucketLoadMesh.visible || dt <= 0) {
+      return 0;
+    }
+
+    const inverseBucketRotation = this.bucketGroup.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const localGravity = new THREE.Vector3(0, -1, 0).applyQuaternion(inverseBucketRotation);
+    const downhill = new THREE.Vector2(localGravity.x, localGravity.z);
+    const downhillLen = downhill.length();
+    const verticalSupport = Math.max(Math.abs(localGravity.y), 0.2);
+    if (downhillLen < 0.012) {
+      return 0;
+    }
+
+    downhill.divideScalar(downhillLen);
+    const tilt = clamp(downhillLen / verticalSupport, 0, 1.15);
+    const passes = Math.max(1, Math.min(5, Math.ceil((1 + tilt * 3.5) * clamp(intensity, 0.25, 3.2))));
+    let moved = 0;
+
+    for (let pass = 0; pass < passes; pass += 1) {
+      for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix < this.bucketLoadSegmentsX; ix += 1) {
+          moved += this.transferBucketLoadDownhill(ix, iz, ix + 1, iz, downhill, tilt, dt, intensity);
+        }
+      }
+      for (let iz = 0; iz < this.bucketLoadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
+          moved += this.transferBucketLoadDownhill(ix, iz, ix, iz + 1, downhill, tilt, dt, intensity);
+        }
+      }
+    }
+
+    if (moved > 0.0001) {
+      this.relaxBucketLoad(1);
+      this.commitBucketLoadSurface();
+    }
+    return moved;
   }
 
   resolveBucketLoadCollision(worldPoint: THREE.Vector3, radius: number): BucketLoadSurfaceHit | null {
@@ -2770,6 +2865,56 @@ class ExcavatorModel {
       this.bucketLoadHeights[a] += transfer;
       this.bucketLoadHeights[b] -= transfer;
     }
+  }
+
+  private transferBucketLoadDownhill(
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    downhill: THREE.Vector2,
+    tilt: number,
+    dt: number,
+    intensity: number,
+  ): number {
+    const stepX = (this.bucketLoadMaxX - this.bucketLoadMinX) / this.bucketLoadSegmentsX;
+    const stepZ = (this.bucketLoadMaxZ - this.bucketLoadMinZ) / this.bucketLoadSegmentsZ;
+    const dx = (bx - ax) * stepX;
+    const dz = (bz - az) * stepZ;
+    const distance = Math.max(Math.hypot(dx, dz), 0.001);
+    const alignment = (dx * downhill.x + dz * downhill.y) / distance;
+    if (Math.abs(alignment) < 0.035) {
+      return 0;
+    }
+
+    const source = alignment > 0 ? this.bucketLoadIndex(ax, az) : this.bucketLoadIndex(bx, bz);
+    const sink = alignment > 0 ? this.bucketLoadIndex(bx, bz) : this.bucketLoadIndex(ax, az);
+    const sourceHeight = this.bucketLoadHeights[source];
+    if (sourceHeight <= 0.0001) {
+      return 0;
+    }
+
+    const sinkHeight = this.bucketLoadHeights[sink];
+    const drive = Math.abs(alignment) * tilt;
+    const imbalance = sourceHeight - sinkHeight + drive * 0.13;
+    const staticRepose = 0.045;
+    if (imbalance <= staticRepose) {
+      return 0;
+    }
+
+    const timeScale = clamp(dt * 4.2, 0.08, 1);
+    const transfer = clamp(
+      (imbalance - staticRepose) * (0.14 + drive * 0.3) * clamp(intensity, 0.2, 3.2) * timeScale,
+      0,
+      sourceHeight * 0.34,
+    );
+    if (transfer <= 0) {
+      return 0;
+    }
+
+    this.bucketLoadHeights[source] -= transfer;
+    this.bucketLoadHeights[sink] += transfer;
+    return transfer;
   }
 
   private commitBucketLoadSurface(): void {
@@ -4285,6 +4430,12 @@ class Simulator {
         Object.assign(this.angles, { swing: 0, boom: 0.54, stick: -1.16, bucket: -2.16 });
         this.excavator.applyAngles(this.angles);
         this.excavator.setBucketLoad(this.bucketLoad);
+        const loadStatsBeforeSlump = this.excavator.bucketLoadDistributionStats();
+        const loadHeightBeforeSlump = loadStatsBeforeSlump.totalHeight;
+        Object.assign(this.angles, { swing: 0, boom: 0.54, stick: -1.16, bucket: -1.92 });
+        this.excavator.applyAngles(this.angles);
+        const loadSlumpMoved = this.excavator.slumpBucketLoadUnderGravity(1.1, 2.2);
+        const loadStatsAfterSlump = this.excavator.bucketLoadDistributionStats();
 
         const probe = this.excavator.bucketGroup.localToWorld(new THREE.Vector3(-0.56, -0.18, 0.02));
         const surface = this.excavator.bucketLoadSurfaceAtWorld(probe);
@@ -4355,6 +4506,11 @@ class Simulator {
           bucketLoad: this.bucketLoad,
           surfaceHeight: surface?.loadHeight ?? 0,
           surfaceNormalY: surface?.normal.y ?? 0,
+          loadCenterShiftX: loadStatsAfterSlump.centerX - loadStatsBeforeSlump.centerX,
+          loadCenterShiftZ: loadStatsAfterSlump.centerZ - loadStatsBeforeSlump.centerZ,
+          loadHeightConserved: Math.abs(loadStatsAfterSlump.totalHeight - loadHeightBeforeSlump),
+          loadLipRatio: loadStatsAfterSlump.lipRatio,
+          loadSlumpMoved,
           soilPenetrationBefore,
           soilPenetrationAfter,
           capturedVolume,
@@ -7569,6 +7725,16 @@ class Simulator {
       }
     }
 
+    this.excavator.setBucketLoad(this.bucketLoad);
+    const bucketLoadSlumpMoved = this.excavator.slumpBucketLoadUnderGravity(
+      dt,
+      0.72 + Math.abs(this.velocities.bucket) * 0.52 + clamp(tipSpeed * 0.1, 0, 0.4),
+    );
+    if (bucketLoadSlumpMoved > 0.0005) {
+      this.pressure = Math.max(this.pressure, clamp(0.08 + bucketLoadSlumpMoved * 0.42, 0, 0.34));
+    }
+    const bucketLoadStats = this.excavator.bucketLoadDistributionStats();
+    const lipDumpBias = clamp((bucketLoadStats.lipRatio - 0.24) * 0.9 + Math.max(0, -bucketLoadStats.centerX - 0.56) * 0.36, 0, 0.58);
     const openFactor = clamp((this.angles.bucket + 0.58) / (ANGLE_LIMITS.bucket.max + 0.58), 0, 1);
     const dumpIntent = openFactor > 0.02 || this.velocities.bucket > 0.12;
     if ((openFactor > 0.08 || this.velocities.bucket > 0.18) && this.carriedWorldColliders.size > 0) {
@@ -7579,7 +7745,7 @@ class Simulator {
       this.releaseCarriedWorldObjects(releaseVelocity);
     }
     if (dumpIntent && this.bucketLoad > 0.002) {
-      const dumpRate = (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95) * dt;
+      const dumpRate = (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95 + lipDumpBias * 0.62) * dt;
       const dumped = Math.min(this.bucketLoad, dumpRate);
       this.bucketLoad -= dumped;
       const fineVolume = dumped * clamp(0.035 + openFactor * 0.055, 0.035, 0.1);

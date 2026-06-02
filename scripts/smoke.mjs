@@ -842,6 +842,10 @@ async function main() {
         "bucket load soil surface is physically solid",
         bucketLoadSurfacePhysicsValue?.surfaceHeight > 0.08 &&
           bucketLoadSurfacePhysicsValue?.surfaceNormalY > 0.28 &&
+          Math.hypot(bucketLoadSurfacePhysicsValue?.loadCenterShiftX ?? 0, bucketLoadSurfacePhysicsValue?.loadCenterShiftZ ?? 0) > 0.006 &&
+          bucketLoadSurfacePhysicsValue?.loadHeightConserved < 0.0005 &&
+          bucketLoadSurfacePhysicsValue?.loadLipRatio > 0.12 &&
+          bucketLoadSurfacePhysicsValue?.loadSlumpMoved > 0.003 &&
           bucketLoadSurfacePhysicsValue?.soilPenetrationBefore > 0.03 &&
           bucketLoadSurfacePhysicsValue?.soilPenetrationAfter < 0.02 &&
           bucketLoadSurfacePhysicsValue?.capturedVolume > 0.03 &&
