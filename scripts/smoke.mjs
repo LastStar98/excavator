@@ -972,7 +972,14 @@ async function main() {
           Math.abs(truckLoadPhysicsValue?.roll ?? 0) > 0.01 &&
           truckLoadPhysicsValue?.compacted > 0.004 &&
           truckLoadPhysicsValue?.rutDrop > 0.0015 &&
-          truckLoadPhysicsValue?.bodyYDrop > 0.07,
+          truckLoadPhysicsValue?.bodyYDrop > 0.07 &&
+          truckLoadPhysicsValue?.loadSurfaceHeight > 0.1 &&
+          truckLoadPhysicsValue?.loadSurfaceNormalY > 0.45 &&
+          truckLoadPhysicsValue?.loadSurfacePenetrationBefore > 0.05 &&
+          truckLoadPhysicsValue?.loadSurfacePenetrationAfter < truckLoadPhysicsValue?.loadSurfacePenetrationBefore - 0.02 &&
+          truckLoadPhysicsValue?.loadSurfaceObjectTravel > 0.02 &&
+          truckLoadPhysicsValue?.loadSurfaceObjectImpulse > 0.02 &&
+          truckLoadPhysicsValue?.loadSurfaceObjectVelocity > 0.005,
       ],
       [
         "terrain material zones alter track and bucket physics",

@@ -371,6 +371,13 @@ interface ExcavatorDebugApi {
     rutDrop: number;
     bodyYDrop: number;
     supportSpread: number;
+    loadSurfaceHeight: number;
+    loadSurfaceNormalY: number;
+    loadSurfacePenetrationBefore: number;
+    loadSurfacePenetrationAfter: number;
+    loadSurfaceObjectTravel: number;
+    loadSurfaceObjectImpulse: number;
+    loadSurfaceObjectVelocity: number;
   };
   forceTerrainMaterialPhysics: () => {
     mudWetness: number;
@@ -1803,6 +1810,14 @@ class WorkTruck {
       };
     }
 
+    const loadHit = this.resolveLoadSolidCollision(local, radius);
+    if (loadHit && (!best || loadHit.penetration > best.penetration)) {
+      best = {
+        normal: loadHit.normal.applyQuaternion(this.group.quaternion).normalize(),
+        penetration: loadHit.penetration,
+      };
+    }
+
     return best;
   }
 
@@ -1842,6 +1857,94 @@ class WorkTruck {
     }
 
     return best;
+  }
+
+  resolveLoadCollision(
+    worldPoint: THREE.Vector3,
+    radius: number,
+  ): { normal: THREE.Vector3; penetration: number; surfaceY: number; loadHeight: number } | null {
+    const local = this.group.worldToLocal(worldPoint.clone());
+    const loadHit = this.resolveLoadSolidCollision(local, radius);
+    if (!loadHit) {
+      return null;
+    }
+    const surfaceWorld = this.group.localToWorld(new THREE.Vector3(local.x, loadHit.surfaceY, local.z));
+    return {
+      normal: loadHit.normal.applyQuaternion(this.group.quaternion).normalize(),
+      penetration: loadHit.penetration,
+      surfaceY: surfaceWorld.y,
+      loadHeight: loadHit.loadHeight,
+    };
+  }
+
+  loadSurfaceAtWorld(worldPoint: THREE.Vector3): { point: THREE.Vector3; normal: THREE.Vector3; loadHeight: number } | null {
+    const local = this.group.worldToLocal(worldPoint.clone());
+    const sample = this.sampleLoadSurfaceLocal(local.x, local.z);
+    if (!sample) {
+      return null;
+    }
+    return {
+      point: this.group.localToWorld(new THREE.Vector3(local.x, sample.surfaceY, local.z)),
+      normal: sample.normal.applyQuaternion(this.group.quaternion).normalize(),
+      loadHeight: sample.loadHeight,
+    };
+  }
+
+  private resolveLoadSolidCollision(
+    local: THREE.Vector3,
+    radius: number,
+  ): { normal: THREE.Vector3; penetration: number; surfaceY: number; loadHeight: number } | null {
+    const sample = this.sampleLoadSurfaceLocal(local.x, local.z);
+    if (!sample || sample.loadHeight <= 0.012 || local.y < this.bedFloorY - radius * 0.65) {
+      return null;
+    }
+
+    const penetration = sample.surfaceY + radius - local.y;
+    if (penetration <= 0) {
+      return null;
+    }
+    return {
+      normal: sample.normal,
+      penetration,
+      surfaceY: sample.surfaceY,
+      loadHeight: sample.loadHeight,
+    };
+  }
+
+  private sampleLoadSurfaceLocal(localX: number, localZ: number): { surfaceY: number; loadHeight: number; normal: THREE.Vector3 } | null {
+    if (!this.loadMesh.visible) {
+      return null;
+    }
+
+    const minX = this.bedCenterX - this.bedLength / 2;
+    const maxX = this.bedCenterX + this.bedLength / 2;
+    const minZ = -this.bedWidth / 2;
+    const maxZ = this.bedWidth / 2;
+    if (localX < minX || localX > maxX || localZ < minZ || localZ > maxZ) {
+      return null;
+    }
+
+    const gx = clamp(((localX - minX) / this.bedLength) * this.loadSegmentsX, 0, this.loadSegmentsX - 0.000001);
+    const gz = clamp(((localZ - minZ) / this.bedWidth) * this.loadSegmentsZ, 0, this.loadSegmentsZ - 0.000001);
+    const ix = Math.floor(gx);
+    const iz = Math.floor(gz);
+    const fx = gx - ix;
+    const fz = gz - iz;
+    const ix1 = Math.min(ix + 1, this.loadSegmentsX);
+    const iz1 = Math.min(iz + 1, this.loadSegmentsZ);
+    const h00 = this.loadHeights[this.loadIndex(ix, iz)];
+    const h10 = this.loadHeights[this.loadIndex(ix1, iz)];
+    const h01 = this.loadHeights[this.loadIndex(ix, iz1)];
+    const h11 = this.loadHeights[this.loadIndex(ix1, iz1)];
+    const h0 = THREE.MathUtils.lerp(h00, h10, fx);
+    const h1 = THREE.MathUtils.lerp(h01, h11, fx);
+    const loadHeight = THREE.MathUtils.lerp(h0, h1, fz);
+    const stepX = this.bedLength / this.loadSegmentsX;
+    const stepZ = this.bedWidth / this.loadSegmentsZ;
+    const dHeightDx = (THREE.MathUtils.lerp(h10 - h00, h11 - h01, fz)) / Math.max(stepX, 0.001);
+    const dHeightDz = (THREE.MathUtils.lerp(h01 - h00, h11 - h10, fx)) / Math.max(stepZ, 0.001);
+    const normal = new THREE.Vector3(-dHeightDx, 1, -dHeightDz).normalize();
+    return { surfaceY: this.bedFloorY + 0.045 + loadHeight, loadHeight, normal };
   }
 
   updateLoad(load: number): void {
@@ -4486,6 +4589,45 @@ class Simulator {
         this.wakeTruckWheelColliders();
         const afterRut = this.terrain.getHeightAt(roughWheel.x, roughWheel.z);
         this.truck.updateLoad(this.truckLoad);
+
+        let loadSurfaceHeight = 0;
+        let loadSurfaceNormalY = 0;
+        let loadSurfacePenetrationBefore = 0;
+        let loadSurfacePenetrationAfter = 0;
+        let loadSurfaceObjectTravel = 0;
+        let loadSurfaceObjectImpulse = 0;
+        let loadSurfaceObjectVelocity = 0;
+        const loadProbe = this.truck.group.localToWorld(new THREE.Vector3(1.12, 1.18, 0.28));
+        const loadSurface = this.truck.loadSurfaceAtWorld(loadProbe);
+        const loadObstacle =
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "boulder") ??
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "rock");
+        if (loadSurface && loadObstacle) {
+          loadSurfaceHeight = loadSurface.loadHeight;
+          loadSurfaceNormalY = loadSurface.normal.y;
+          const savedPosition = loadObstacle.mesh.position.clone();
+          const savedVelocity = loadObstacle.velocity.clone();
+          const savedSleeping = loadObstacle.sleeping;
+          const targetPenetration = clamp(loadObstacle.radius * 0.42, 0.08, 0.18);
+          const loadLocal = this.truck.group.worldToLocal(loadSurface.point.clone());
+          loadLocal.y += loadObstacle.radius - targetPenetration;
+          loadObstacle.mesh.position.copy(this.truck.group.localToWorld(loadLocal));
+          loadObstacle.velocity.copy(loadSurface.normal).multiplyScalar(-0.7);
+          loadObstacle.sleeping = false;
+          loadSurfacePenetrationBefore = this.truck.resolveLoadCollision(loadObstacle.mesh.position, loadObstacle.radius)?.penetration ?? 0;
+          const beforePosition = loadObstacle.mesh.position.clone();
+          const beforeImpact = this.truck.physicsState().impactImpulse;
+          this.resolveLooseObjectTruckCollision(loadObstacle);
+          loadSurfacePenetrationAfter = this.truck.resolveLoadCollision(loadObstacle.mesh.position, loadObstacle.radius)?.penetration ?? 0;
+          loadSurfaceObjectTravel = loadObstacle.mesh.position.distanceTo(beforePosition);
+          loadSurfaceObjectVelocity = loadObstacle.velocity.length();
+          loadSurfaceObjectImpulse = Math.max(0, this.truck.physicsState().impactImpulse - beforeImpact);
+          loadObstacle.mesh.position.copy(savedPosition);
+          loadObstacle.velocity.copy(savedVelocity);
+          loadObstacle.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        }
+
         this.updateUi(0);
         return {
           accepted,
@@ -4497,6 +4639,13 @@ class Simulator {
           rutDrop: Math.max(state.tireRutDrop, beforeRut - afterRut),
           bodyYDrop: beforeY - this.truck.group.position.y,
           supportSpread: state.supportSpread,
+          loadSurfaceHeight,
+          loadSurfaceNormalY,
+          loadSurfacePenetrationBefore,
+          loadSurfacePenetrationAfter,
+          loadSurfaceObjectTravel,
+          loadSurfaceObjectImpulse,
+          loadSurfaceObjectVelocity,
         };
       },
       forceTerrainMaterialPhysics: () => {
