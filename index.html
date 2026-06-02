@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Excavator Web Simulator</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="sim-canvas" aria-label="3D excavator simulator"></canvas>
+
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <span>Hydraulic Excavator</span>
+        </div>
+        <div class="toolbar">
+          <label>
+            패턴
+            <select id="pattern-select">
+              <option value="ISO">ISO</option>
+              <option value="SAE">SAE</option>
+              <option value="Arcade">Arcade</option>
+            </select>
+          </label>
+          <label>
+            응답
+            <select id="response-select">
+              <option value="medium">중간</option>
+              <option value="slow">느림</option>
+              <option value="fast">빠름</option>
+            </select>
+          </label>
+          <div class="segmented" role="group" aria-label="Camera">
+            <button data-camera="orbit" class="active">외부</button>
+            <button data-camera="cab">캡</button>
+            <button data-camera="bucket">버킷</button>
+            <button data-camera="task">작업</button>
+          </div>
+          <button id="reset-button" class="ghost">리셋</button>
+        </div>
+      </header>
+
+      <aside class="panel left-panel">
+        <section class="mission">
+          <div class="section-title">작업</div>
+          <div class="metric-row">
+            <span>트럭 적재</span>
+            <strong id="truck-load-text">0%</strong>
+          </div>
+          <div class="progress-track">
+            <div id="truck-load-bar" class="progress-fill"></div>
+          </div>
+          <div id="mission-state" class="status-pill">굴착 대기</div>
+        </section>
+
+        <section class="stick-panel">
+          <div class="section-title">좌측 스틱</div>
+          <div class="stick-grid wasd" id="left-stick-grid">
+            <kbd data-key="KeyW">W</kbd>
+            <kbd data-key="KeyA">A</kbd>
+            <kbd data-key="KeyS">S</kbd>
+            <kbd data-key="KeyD">D</kbd>
+          </div>
+          <div class="stick-readout">
+            <span id="left-stick-label-y">Stick</span>
+            <span id="left-stick-label-x">Swing</span>
+          </div>
+        </section>
+
+        <section class="stick-panel">
+          <div class="section-title">우측 스틱</div>
+          <div class="stick-grid arrows" id="right-stick-grid">
+            <kbd data-key="ArrowUp">↑</kbd>
+            <kbd data-key="ArrowLeft">←</kbd>
+            <kbd data-key="ArrowDown">↓</kbd>
+            <kbd data-key="ArrowRight">→</kbd>
+          </div>
+          <div class="stick-readout">
+            <span id="right-stick-label-y">Boom</span>
+            <span id="right-stick-label-x">Bucket</span>
+          </div>
+        </section>
+
+        <section class="stick-panel">
+          <div class="section-title">트랙 주행</div>
+          <div class="track-grid" id="track-grid">
+            <kbd data-key="KeyG">G</kbd>
+            <kbd data-key="KeyH">H</kbd>
+            <kbd data-key="KeyB">B</kbd>
+            <kbd data-key="KeyN">N</kbd>
+          </div>
+          <div class="track-readout">
+            <span>G left front</span>
+            <span>H right front</span>
+            <span>B left back</span>
+            <span>N right back</span>
+          </div>
+        </section>
+      </aside>
+
+      <aside class="panel right-panel">
+        <section>
+          <div class="section-title">계기</div>
+          <div class="gauge-list">
+            <div class="gauge">
+              <span>유압 압력</span>
+              <meter id="pressure-meter" min="0" max="1" value="0"></meter>
+            </div>
+            <div class="gauge">
+              <span>버킷</span>
+              <meter id="bucket-meter" min="0" max="1" value="0"></meter>
+            </div>
+            <div class="gauge">
+              <span>안정성</span>
+              <meter id="stability-meter" min="0" max="1" value="1"></meter>
+            </div>
+          </div>
+        </section>
+
+        <section class="telemetry">
+          <div class="section-title">KPI</div>
+          <dl>
+            <div><dt>시간</dt><dd id="time-text">00:00</dd></div>
+            <div><dt>적재량</dt><dd id="soil-text">0.0 m³</dd></div>
+            <div><dt>제한 충격</dt><dd id="limit-text">0</dd></div>
+            <div><dt>안전 위반</dt><dd id="safety-text">0</dd></div>
+            <div><dt>공회전</dt><dd id="idle-text">0%</dd></div>
+            <div><dt>주행</dt><dd id="travel-text">0.0 m</dd></div>
+            <div><dt>방향</dt><dd id="travel-direction-text">중립</dd></div>
+          </dl>
+        </section>
+
+        <section class="telemetry">
+          <div class="section-title">관절</div>
+          <dl>
+            <div><dt>Swing</dt><dd id="swing-text">0°</dd></div>
+            <div><dt>Boom</dt><dd id="boom-text">0°</dd></div>
+            <div><dt>Stick</dt><dd id="stick-text">0°</dd></div>
+            <div><dt>Bucket</dt><dd id="bucket-text">0°</dd></div>
+            <div><dt>FPS</dt><dd id="fps-text">0</dd></div>
+          </dl>
+        </section>
+      </aside>
+
+      <div id="warning-strip" class="warning-strip hidden"></div>
+      <div id="center-reticle" class="reticle"></div>
+      <div id="mobile-controls" class="mobile-controls" aria-label="Mobile excavator controls">
+        <div class="mobile-joystick" id="mobile-left-joystick" data-joystick="left" aria-label="Left joystick">
+          <div class="mobile-stick-label">LEFT</div>
+          <div class="mobile-stick-pad">
+            <div class="mobile-stick-knob" data-joystick-knob="left"></div>
+          </div>
+          <div class="mobile-stick-hint">Swing / Stick</div>
+        </div>
+        <div class="mobile-drive-pad" aria-label="Crawler drive controls">
+          <button type="button" data-drive="forward">FWD</button>
+          <div class="mobile-drive-row">
+            <button type="button" data-drive="turn-left">L</button>
+            <button type="button" data-drive="turn-right">R</button>
+          </div>
+          <button type="button" data-drive="reverse">REV</button>
+        </div>
+        <div class="mobile-joystick" id="mobile-right-joystick" data-joystick="right" aria-label="Right joystick">
+          <div class="mobile-stick-label">RIGHT</div>
+          <div class="mobile-stick-pad">
+            <div class="mobile-stick-knob" data-joystick-knob="right"></div>
+          </div>
+          <div class="mobile-stick-hint">Boom / Bucket</div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

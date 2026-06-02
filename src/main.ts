@@ -1,0 +1,2562 @@
+import * as THREE from "three";
+import "./style.css";
+
+type Pattern = "ISO" | "SAE" | "Arcade";
+type ResponseMode = "slow" | "medium" | "fast";
+type CameraMode = "orbit" | "cab" | "bucket" | "task";
+
+type ActionName = "swing" | "boom" | "stick" | "bucket";
+
+interface Actions {
+  swing: number;
+  boom: number;
+  stick: number;
+  bucket: number;
+}
+
+interface ExcavatorAngles {
+  swing: number;
+  boom: number;
+  stick: number;
+  bucket: number;
+}
+
+interface ExcavatorVelocities {
+  swing: number;
+  boom: number;
+  stick: number;
+  bucket: number;
+}
+
+interface Limits {
+  min: number;
+  max: number;
+}
+
+interface JoystickAxes {
+  leftX: number;
+  leftY: number;
+  rightX: number;
+  rightY: number;
+  leftTrack: number;
+  rightTrack: number;
+}
+
+type MobileJoystickSide = "left" | "right";
+type MobileDriveMode = "forward" | "reverse" | "turn-left" | "turn-right";
+
+interface ActiveMobileJoystick {
+  side: MobileJoystickSide;
+  element: HTMLElement;
+  knob: HTMLElement;
+  centerX: number;
+  centerY: number;
+  radius: number;
+}
+
+interface SoilParticle {
+  mesh: THREE.Mesh;
+  velocity: THREE.Vector3;
+  volume: number;
+  life: number;
+  settles: boolean;
+  target?: THREE.Vector3;
+}
+
+interface ExcavatorDebugApi {
+  snapshot: () => {
+    bucketLoad: number;
+    truckLoad: number;
+    totalExcavated: number;
+    digHeight: number;
+    bucketAngle: number;
+    bucketVisualLoad: number;
+    trackSoilWork: number;
+    mobileAxes: JoystickAxes;
+    orbit: { azimuth: number; elevation: number; distance: number };
+    particleCount: number;
+    settlingParticleCount: number;
+    flowParticleCount: number;
+  };
+  forceDigPass: () => { removed: number; beforeHeight: number; afterHeight: number; bucketLoad: number };
+  forceTruckDump: () => { dumped: number; truckLoad: number; bucketLoad: number };
+  forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
+  forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
+}
+
+declare global {
+  interface Window {
+    __excavatorSim?: ExcavatorDebugApi;
+  }
+}
+
+interface UiRefs {
+  patternSelect: HTMLSelectElement;
+  responseSelect: HTMLSelectElement;
+  resetButton: HTMLButtonElement;
+  cameraButtons: HTMLButtonElement[];
+  truckLoadText: HTMLElement;
+  truckLoadBar: HTMLElement;
+  missionState: HTMLElement;
+  pressureMeter: HTMLMeterElement;
+  bucketMeter: HTMLMeterElement;
+  stabilityMeter: HTMLMeterElement;
+  timeText: HTMLElement;
+  soilText: HTMLElement;
+  limitText: HTMLElement;
+  safetyText: HTMLElement;
+  idleText: HTMLElement;
+  travelText: HTMLElement;
+  travelDirectionText: HTMLElement;
+  swingText: HTMLElement;
+  boomText: HTMLElement;
+  stickText: HTMLElement;
+  bucketText: HTMLElement;
+  fpsText: HTMLElement;
+  warningStrip: HTMLElement;
+  leftStickLabelY: HTMLElement;
+  leftStickLabelX: HTMLElement;
+  rightStickLabelY: HTMLElement;
+  rightStickLabelX: HTMLElement;
+  keyCaps: HTMLElement[];
+  mobileControls: HTMLElement;
+  mobileJoysticks: HTMLElement[];
+  mobileDriveButtons: HTMLButtonElement[];
+}
+
+const BOOM_LEN = 3.65;
+const STICK_LEN = 2.85;
+const BUCKET_LEN = 1.18;
+const BUCKET_CAPACITY = 1.55;
+const TRUCK_CAPACITY = 7.5;
+const TRACK_GAUGE = 1.48;
+const TRACK_MAX_SPEED = 1.25;
+const SOIL_REPOSE_TAN = Math.tan(THREE.MathUtils.degToRad(34));
+const DIG_SITE = new THREE.Vector3(-4.1, 0, 2.3);
+const TRUCK_CENTER = new THREE.Vector3(4.8, 0, -2.4);
+const WORKER_ZONE = new THREE.Vector3(2.0, 0, 2.15);
+
+const ANGLE_LIMITS: Record<ActionName, Limits> = {
+  swing: { min: -Infinity, max: Infinity },
+  boom: { min: 0.08, max: 1.32 },
+  stick: { min: -2.38, max: -0.12 },
+  bucket: { min: -2.62, max: 0.68 },
+};
+
+const MAX_RATES: Record<ActionName, number> = {
+  swing: 0.78,
+  boom: 0.42,
+  stick: 0.58,
+  bucket: 2.35,
+};
+
+const RESPONSE_GAIN: Record<ResponseMode, number> = {
+  slow: 2.1,
+  medium: 4.2,
+  fast: 7.5,
+};
+
+const initialAngles: ExcavatorAngles = {
+  swing: 0.16,
+  boom: 0.72,
+  stick: -1.08,
+  bucket: -1.0,
+};
+
+function byId<T extends HTMLElement>(id: string): T {
+  const element = document.getElementById(id);
+  if (!element) {
+    throw new Error(`Missing element #${id}`);
+  }
+  return element as T;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function smoothTo(current: number, target: number, gain: number, dt: number): number {
+  return current + (target - current) * (1 - Math.exp(-gain * dt));
+}
+
+function radToDeg(value: number): number {
+  return Math.round(THREE.MathUtils.radToDeg(value));
+}
+
+function fmtTime(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function makeMat(color: number, roughness = 0.78, metalness = 0.08): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+}
+
+function fract(value: number): number {
+  return value - Math.floor(value);
+}
+
+function hash2(x: number, y: number): number {
+  return fract(Math.sin(x * 127.1 + y * 311.7) * 43758.5453123);
+}
+
+function valueNoise(x: number, y: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = fract(x);
+  const fy = fract(y);
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const a = hash2(ix, iy);
+  const b = hash2(ix + 1, iy);
+  const c = hash2(ix, iy + 1);
+  const d = hash2(ix + 1, iy + 1);
+  return THREE.MathUtils.lerp(THREE.MathUtils.lerp(a, b, sx), THREE.MathUtils.lerp(c, d, sx), sy);
+}
+
+function fbm(x: number, y: number): number {
+  let sum = 0;
+  let amp = 0.5;
+  let freq = 1;
+  for (let octave = 0; octave < 5; octave += 1) {
+    sum += valueNoise(x * freq, y * freq) * amp;
+    freq *= 2.03;
+    amp *= 0.52;
+  }
+  return sum;
+}
+
+function createCanvasTexture(
+  size: number,
+  draw: (data: Uint8ClampedArray, width: number, height: number) => void,
+): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas 2D context unavailable");
+  }
+  const image = context.createImageData(size, size);
+  draw(image.data, size, size);
+  context.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 4;
+  texture.repeat.set(9.5, 9.5);
+  return texture;
+}
+
+function createSoilMaps(): { color: THREE.CanvasTexture; bump: THREE.CanvasTexture; roughness: THREE.CanvasTexture } {
+  const color = createCanvasTexture(512, (data, width, height) => {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const nx = x / width;
+        const ny = y / height;
+        const coarse = fbm(nx * 8.0, ny * 8.0);
+        const fine = fbm(nx * 38.0 + 12.5, ny * 38.0 - 7.3);
+        const pebble = valueNoise(nx * 115.0, ny * 115.0) > 0.88 ? 0.18 : 0;
+        const shade = clamp(0.52 + coarse * 0.34 + fine * 0.18 + pebble, 0, 1);
+        const wet = clamp(1 - fine * 0.65, 0, 1);
+        const i = (y * width + x) * 4;
+        data[i] = Math.round(82 + shade * 92 + pebble * 55);
+        data[i + 1] = Math.round(61 + shade * 55 + wet * 16);
+        data[i + 2] = Math.round(38 + shade * 34);
+        data[i + 3] = 255;
+      }
+    }
+  });
+
+  const bump = createCanvasTexture(512, (data, width, height) => {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const nx = x / width;
+        const ny = y / height;
+        const grit = fbm(nx * 55.0, ny * 55.0);
+        const clump = fbm(nx * 13.0 + 4.2, ny * 13.0 - 2.1);
+        const v = Math.round(clamp(70 + grit * 82 + clump * 75, 0, 255));
+        const i = (y * width + x) * 4;
+        data[i] = v;
+        data[i + 1] = v;
+        data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+  });
+
+  const roughness = createCanvasTexture(256, (data, width, height) => {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const r = Math.round(195 + fbm((x / width) * 21.0, (y / height) * 21.0) * 48);
+        const i = (y * width + x) * 4;
+        data[i] = r;
+        data[i + 1] = r;
+        data[i + 2] = r;
+        data[i + 3] = 255;
+      }
+    }
+  });
+
+  roughness.colorSpace = THREE.NoColorSpace;
+  bump.colorSpace = THREE.NoColorSpace;
+  return { color, bump, roughness };
+}
+
+function makeBox(
+  size: [number, number, number],
+  material: THREE.Material,
+  position: [number, number, number],
+): THREE.Mesh {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+  mesh.position.set(position[0], position[1], position[2]);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function setCylinderBetween(
+  mesh: THREE.Mesh,
+  start: THREE.Vector3,
+  end: THREE.Vector3,
+  radiusScale = 1,
+): void {
+  const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+  const direction = new THREE.Vector3().subVectors(end, start);
+  const length = Math.max(direction.length(), 0.001);
+  mesh.position.copy(midpoint);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+  mesh.scale.set(radiusScale, length, radiusScale);
+}
+
+class HeightfieldTerrain {
+  readonly size = 34;
+  readonly segments = 118;
+  readonly spacing = this.size / this.segments;
+  readonly mesh: THREE.Mesh;
+  readonly heights: Float32Array;
+  private readonly geometry: THREE.BufferGeometry;
+  private readonly colors: Float32Array;
+
+  constructor(scene: THREE.Scene) {
+    this.heights = new Float32Array((this.segments + 1) * (this.segments + 1));
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+    const colors: number[] = [];
+
+    for (let iz = 0; iz <= this.segments; iz += 1) {
+      for (let ix = 0; ix <= this.segments; ix += 1) {
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        const idx = this.index(ix, iz);
+        this.heights[idx] = this.initialHeight(x, z);
+        positions.push(x, this.heights[idx], z);
+        normals.push(0, 1, 0);
+        uvs.push(ix / this.segments, iz / this.segments);
+        colors.push(...this.colorForHeight(this.heights[idx], x, z));
+      }
+    }
+
+    for (let iz = 0; iz < this.segments; iz += 1) {
+      for (let ix = 0; ix < this.segments; ix += 1) {
+        const a = this.index(ix, iz);
+        const b = this.index(ix + 1, iz);
+        const c = this.index(ix, iz + 1);
+        const d = this.index(ix + 1, iz + 1);
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    this.colors = new Float32Array(colors);
+    this.geometry = new THREE.BufferGeometry();
+    this.geometry.setIndex(indices);
+    this.geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    this.geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+    this.geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    this.geometry.setAttribute("color", new THREE.Float32BufferAttribute(this.colors, 3));
+    this.geometry.computeVertexNormals();
+    (this.geometry.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    (this.geometry.attributes.normal as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    (this.geometry.attributes.color as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+
+    const soilMaps = createSoilMaps();
+    const material = new THREE.MeshStandardMaterial({
+      map: soilMaps.color,
+      bumpMap: soilMaps.bump,
+      bumpScale: 0.075,
+      roughnessMap: soilMaps.roughness,
+      vertexColors: true,
+      roughness: 0.96,
+      metalness: 0.02,
+    });
+    this.mesh = new THREE.Mesh(this.geometry, material);
+    this.mesh.receiveShadow = true;
+    scene.add(this.mesh);
+
+    const grid = new THREE.GridHelper(this.size, 34, 0x6e796c, 0x495045);
+    grid.position.y = 0.018;
+    grid.material.transparent = true;
+    grid.material.opacity = 0.28;
+    scene.add(grid);
+  }
+
+  getHeightAt(x: number, z: number): number {
+    const fx = clamp((x + this.size / 2) / this.spacing, 0, this.segments - 0.001);
+    const fz = clamp((z + this.size / 2) / this.spacing, 0, this.segments - 0.001);
+    const ix = Math.floor(fx);
+    const iz = Math.floor(fz);
+    const tx = fx - ix;
+    const tz = fz - iz;
+    const h00 = this.heights[this.index(ix, iz)];
+    const h10 = this.heights[this.index(ix + 1, iz)];
+    const h01 = this.heights[this.index(ix, iz + 1)];
+    const h11 = this.heights[this.index(ix + 1, iz + 1)];
+    const hx0 = THREE.MathUtils.lerp(h00, h10, tx);
+    const hx1 = THREE.MathUtils.lerp(h01, h11, tx);
+    return THREE.MathUtils.lerp(hx0, hx1, tz);
+  }
+
+  getSlopeAt(x: number, z: number): number {
+    const hL = this.getHeightAt(x - this.spacing, z);
+    const hR = this.getHeightAt(x + this.spacing, z);
+    const hD = this.getHeightAt(x, z - this.spacing);
+    const hU = this.getHeightAt(x, z + this.spacing);
+    const dx = (hR - hL) / (this.spacing * 2);
+    const dz = (hU - hD) / (this.spacing * 2);
+    return Math.hypot(dx, dz);
+  }
+
+  lowerAt(center: THREE.Vector3, radius: number, depth: number): number {
+    const range = this.gridRange(center.x, center.z, radius);
+    let removed = 0;
+
+    for (let iz = range.minZ; iz <= range.maxZ; iz += 1) {
+      for (let ix = range.minX; ix <= range.maxX; ix += 1) {
+        const idx = this.index(ix, iz);
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        const dist = Math.hypot(x - center.x, z - center.z);
+        if (dist <= radius) {
+          const falloff = (1 - dist / radius) ** 2;
+          const maxLower = Math.max(0, this.heights[idx] + 0.72);
+          const delta = Math.min(depth * falloff, maxLower);
+          this.heights[idx] -= delta;
+          removed += delta * this.spacing * this.spacing;
+        }
+      }
+    }
+
+    if (removed > 0) {
+      this.relaxSlopes(range, 2);
+    }
+    return removed;
+  }
+
+  excavateSweptBucket(
+    start: THREE.Vector3,
+    end: THREE.Vector3,
+    sideways: THREE.Vector3,
+    width: number,
+    depth: number,
+    volumeLimit: number,
+  ): number {
+    if (depth <= 0 || volumeLimit <= 0) {
+      return 0;
+    }
+
+    const sx = start.x;
+    const sz = start.z;
+    const ex = end.x;
+    const ez = end.z;
+    const dx = ex - sx;
+    const dz = ez - sz;
+    const lengthSq = dx * dx + dz * dz;
+    const segmentLength = Math.sqrt(lengthSq);
+    const sideX = sideways.x;
+    const sideZ = sideways.z;
+    const sideLength = Math.hypot(sideX, sideZ) || 1;
+    const halfWidth = width * 0.5;
+    const centerX = (sx + ex) * 0.5;
+    const centerZ = (sz + ez) * 0.5;
+    const rangeRadius = segmentLength * 0.5 + halfWidth + this.spacing * 3;
+    const range = this.gridRange(centerX, centerZ, rangeRadius);
+    const cellArea = this.spacing * this.spacing;
+    const candidates: Array<{ idx: number; delta: number }> = [];
+    let requestedVolume = 0;
+
+    for (let iz = range.minZ; iz <= range.maxZ; iz += 1) {
+      for (let ix = range.minX; ix <= range.maxX; ix += 1) {
+        const idx = this.index(ix, iz);
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        const t =
+          lengthSq > 0.0001
+            ? clamp(((x - sx) * dx + (z - sz) * dz) / lengthSq, 0, 1)
+            : 0.5;
+        const nearestX = sx + dx * t;
+        const nearestZ = sz + dz * t;
+        const lateralDistance = Math.hypot(x - nearestX, z - nearestZ);
+        const sideProjection = Math.abs(((x - nearestX) * sideX + (z - nearestZ) * sideZ) / sideLength);
+        const effectiveDistance = Math.max(lateralDistance * 0.72, sideProjection);
+        if (effectiveDistance > halfWidth + this.spacing * 0.8) {
+          continue;
+        }
+
+        const edgeFalloff = clamp(1 - effectiveDistance / (halfWidth + this.spacing * 0.8), 0, 1);
+        const strokeFalloff = lengthSq > 0.0001 ? 0.7 + t * 0.3 : 1;
+        const desiredDelta = depth * Math.pow(edgeFalloff, 1.35) * strokeFalloff;
+        const maxLower = Math.max(0, this.heights[idx] + 0.92);
+        const delta = Math.min(desiredDelta, maxLower);
+        if (delta <= 0) {
+          continue;
+        }
+
+        candidates.push({ idx, delta });
+        requestedVolume += delta * cellArea;
+      }
+    }
+
+    if (requestedVolume <= 0) {
+      return 0;
+    }
+
+    const scale = Math.min(1, volumeLimit / requestedVolume);
+    let removed = 0;
+    for (const candidate of candidates) {
+      const delta = candidate.delta * scale;
+      this.heights[candidate.idx] -= delta;
+      removed += delta * cellArea;
+    }
+
+    if (removed > 0) {
+      this.relaxSlopes(range, 3);
+    }
+    return removed;
+  }
+
+  displaceSweptBucket(
+    start: THREE.Vector3,
+    end: THREE.Vector3,
+    sideways: THREE.Vector3,
+    width: number,
+    depth: number,
+    volumeLimit: number,
+  ): number {
+    const moved = this.excavateSweptBucket(start, end, sideways, width, depth, volumeLimit);
+    if (moved <= 0) {
+      return 0;
+    }
+
+    const side = sideways.clone();
+    side.y = 0;
+    if (side.lengthSq() < 0.0001) {
+      side.set(0, 0, 1);
+    }
+    side.normalize();
+
+    const center = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+    const lateral = width * 0.62;
+    const left = center.clone().addScaledVector(side, lateral);
+    const right = center.clone().addScaledVector(side, -lateral);
+    this.raiseAt(left, width * 0.34, moved * 0.5);
+    this.raiseAt(right, width * 0.34, moved * 0.5);
+    return moved;
+  }
+
+  compactTrackStrip(
+    center: THREE.Vector3,
+    forward: THREE.Vector3,
+    sideways: THREE.Vector3,
+    length: number,
+    width: number,
+    depth: number,
+  ): { compacted: number; rutDrop: number; bermRise: number } {
+    if (depth <= 0) {
+      return { compacted: 0, rutDrop: 0, bermRise: 0 };
+    }
+
+    const f = forward.clone();
+    f.y = 0;
+    if (f.lengthSq() < 0.0001) {
+      f.set(1, 0, 0);
+    }
+    f.normalize();
+
+    const s = sideways.clone();
+    s.y = 0;
+    if (s.lengthSq() < 0.0001) {
+      s.set(-f.z, 0, f.x);
+    }
+    s.normalize();
+
+    const halfLength = length * 0.5;
+    const halfWidth = width * 0.5;
+    const rangeRadius = halfLength + halfWidth + this.spacing * 2;
+    const range = this.gridRange(center.x, center.z, rangeRadius);
+    const cellArea = this.spacing * this.spacing;
+    let compacted = 0;
+    let weightedDrop = 0;
+    let weightTotal = 0;
+
+    for (let iz = range.minZ; iz <= range.maxZ; iz += 1) {
+      for (let ix = range.minX; ix <= range.maxX; ix += 1) {
+        const idx = this.index(ix, iz);
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        const relX = x - center.x;
+        const relZ = z - center.z;
+        const longitudinal = relX * f.x + relZ * f.z;
+        const lateral = relX * s.x + relZ * s.z;
+        if (Math.abs(longitudinal) > halfLength || Math.abs(lateral) > halfWidth) {
+          continue;
+        }
+
+        const sideFalloff = 1 - Math.abs(lateral) / halfWidth;
+        const endFalloff = 1 - Math.abs(longitudinal) / halfLength;
+        const padNoise = 0.72 + hash2(ix * 13 + iz * 7, Math.round(center.x * 31 + center.z * 17)) * 0.28;
+        const delta = depth * (0.42 + sideFalloff * 0.58) * (0.76 + endFalloff * 0.24) * padNoise;
+        const maxLower = Math.max(0, this.heights[idx] + 0.68);
+        const applied = Math.min(delta, maxLower);
+        this.heights[idx] -= applied;
+        compacted += applied * cellArea;
+        weightedDrop += applied * (0.25 + sideFalloff);
+        weightTotal += 0.25 + sideFalloff;
+      }
+    }
+
+    if (compacted <= 0) {
+      return { compacted: 0, rutDrop: 0, bermRise: 0 };
+    }
+
+    this.relaxSlopes(range, 1);
+    const leftBerm = center.clone().addScaledVector(s, halfWidth + 0.2);
+    const rightBerm = center.clone().addScaledVector(s, -halfWidth - 0.2);
+    const beforeBerm = Math.max(this.getHeightAt(leftBerm.x, leftBerm.z), this.getHeightAt(rightBerm.x, rightBerm.z));
+    this.raiseAt(leftBerm, width * 0.34, compacted * 0.24);
+    this.raiseAt(rightBerm, width * 0.34, compacted * 0.24);
+    const afterBerm = Math.max(this.getHeightAt(leftBerm.x, leftBerm.z), this.getHeightAt(rightBerm.x, rightBerm.z));
+
+    return {
+      compacted,
+      rutDrop: weightTotal > 0 ? weightedDrop / weightTotal : 0,
+      bermRise: Math.max(0, afterBerm - beforeBerm),
+    };
+  }
+
+  settleAt(center: THREE.Vector3, radius: number, passes = 1): void {
+    this.relaxSlopes(this.gridRange(center.x, center.z, radius), passes);
+  }
+
+  raiseAt(center: THREE.Vector3, radius: number, volume: number): number {
+    const range = this.gridRange(center.x, center.z, radius);
+    const weights: Array<[number, number]> = [];
+    let totalWeight = 0;
+
+    for (let iz = range.minZ; iz <= range.maxZ; iz += 1) {
+      for (let ix = range.minX; ix <= range.maxX; ix += 1) {
+        const idx = this.index(ix, iz);
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        const dist = Math.hypot(x - center.x, z - center.z);
+        if (dist <= radius) {
+          const weight = (1 - dist / radius) ** 2 + 0.04;
+          weights.push([idx, weight]);
+          totalWeight += weight;
+        }
+      }
+    }
+
+    if (totalWeight <= 0) {
+      return 0;
+    }
+
+    let deposited = 0;
+    for (const [idx, weight] of weights) {
+      const addHeight = (volume * weight) / totalWeight / (this.spacing * this.spacing);
+      this.heights[idx] += addHeight;
+      deposited += addHeight * this.spacing * this.spacing;
+    }
+    this.relaxSlopes(range, 7);
+    return deposited;
+  }
+
+  reset(): void {
+    for (let iz = 0; iz <= this.segments; iz += 1) {
+      for (let ix = 0; ix <= this.segments; ix += 1) {
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        this.heights[this.index(ix, iz)] = this.initialHeight(x, z);
+      }
+    }
+    this.commitRange({ minX: 0, maxX: this.segments, minZ: 0, maxZ: this.segments });
+  }
+
+  private index(ix: number, iz: number): number {
+    return iz * (this.segments + 1) + ix;
+  }
+
+  private initialHeight(x: number, z: number): number {
+    const digMound =
+      0.82 *
+      Math.exp(-((x - DIG_SITE.x) ** 2 / 8.0 + (z - DIG_SITE.z) ** 2 / 4.6));
+    const lowCut =
+      -0.12 *
+      Math.exp(-((x - 1.5) ** 2 / 32.0 + (z + 1.0) ** 2 / 20.0));
+    const ripple = 0.035 * Math.sin(x * 0.72) * Math.cos(z * 0.48);
+    return digMound + lowCut + ripple;
+  }
+
+  private colorForHeight(height: number, x: number, z: number): [number, number, number] {
+    const base = new THREE.Color(0x826846);
+    const high = new THREE.Color(0xb1844d);
+    const low = new THREE.Color(0x453e32);
+    const damp = new THREE.Color(0x5d4a37);
+    const noise = fbm(x * 0.55 + 20, z * 0.55 - 11);
+    const grit = fbm(x * 3.4, z * 3.4);
+    const color = height > 0.15 ? base.clone().lerp(high, clamp(height / 1.0, 0, 1)) : base.clone().lerp(low, 0.22);
+    if (height < -0.18) {
+      color.lerp(damp, clamp((-height - 0.18) * 1.8, 0, 0.45));
+    }
+    color.offsetHSL(0.012 * (noise - 0.5), 0.08 * (grit - 0.5), (noise - 0.5) * 0.12);
+    return [color.r, color.g, color.b];
+  }
+
+  private gridRange(x: number, z: number, radius: number): { minX: number; maxX: number; minZ: number; maxZ: number } {
+    const minX = clamp(Math.floor((x - radius + this.size / 2) / this.spacing), 0, this.segments);
+    const maxX = clamp(Math.ceil((x + radius + this.size / 2) / this.spacing), 0, this.segments);
+    const minZ = clamp(Math.floor((z - radius + this.size / 2) / this.spacing), 0, this.segments);
+    const maxZ = clamp(Math.ceil((z + radius + this.size / 2) / this.spacing), 0, this.segments);
+    return { minX, maxX, minZ, maxZ };
+  }
+
+  private expandRange(
+    range: { minX: number; maxX: number; minZ: number; maxZ: number },
+    amount: number,
+  ): { minX: number; maxX: number; minZ: number; maxZ: number } {
+    return {
+      minX: clamp(range.minX - amount, 0, this.segments),
+      maxX: clamp(range.maxX + amount, 0, this.segments),
+      minZ: clamp(range.minZ - amount, 0, this.segments),
+      maxZ: clamp(range.maxZ + amount, 0, this.segments),
+    };
+  }
+
+  private relaxSlopes(range: { minX: number; maxX: number; minZ: number; maxZ: number }, passes: number): void {
+    const relaxedRange = this.expandRange(range, passes + 2);
+    const maxDelta = this.spacing * SOIL_REPOSE_TAN;
+
+    for (let pass = 0; pass < passes; pass += 1) {
+      for (let iz = relaxedRange.minZ; iz < relaxedRange.maxZ; iz += 1) {
+        for (let ix = relaxedRange.minX; ix < relaxedRange.maxX; ix += 1) {
+          this.transferIfTooSteep(this.index(ix, iz), this.index(ix + 1, iz), maxDelta);
+          this.transferIfTooSteep(this.index(ix, iz), this.index(ix, iz + 1), maxDelta);
+        }
+      }
+    }
+
+    this.commitRange(relaxedRange);
+  }
+
+  private transferIfTooSteep(a: number, b: number, maxDelta: number): void {
+    const diff = this.heights[a] - this.heights[b];
+    const excess = Math.abs(diff) - maxDelta;
+    if (excess <= 0) {
+      return;
+    }
+    const transfer = excess * 0.22;
+    if (diff > 0) {
+      this.heights[a] -= transfer;
+      this.heights[b] += transfer;
+    } else {
+      this.heights[a] += transfer;
+      this.heights[b] -= transfer;
+    }
+  }
+
+  private commitRange(range: { minX: number; maxX: number; minZ: number; maxZ: number }): void {
+    const position = this.geometry.attributes.position as THREE.BufferAttribute;
+    const color = this.geometry.attributes.color as THREE.BufferAttribute;
+
+    for (let iz = range.minZ; iz <= range.maxZ; iz += 1) {
+      for (let ix = range.minX; ix <= range.maxX; ix += 1) {
+        const idx = this.index(ix, iz);
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        const h = this.heights[idx];
+        position.setY(idx, h);
+        const nextColor = this.colorForHeight(h, x, z);
+        color.setXYZ(idx, nextColor[0], nextColor[1], nextColor[2]);
+      }
+    }
+
+    position.needsUpdate = true;
+    color.needsUpdate = true;
+    this.geometry.computeVertexNormals();
+    this.geometry.attributes.normal.needsUpdate = true;
+  }
+}
+
+class WorkTruck {
+  readonly group = new THREE.Group();
+  readonly loadMesh: THREE.Mesh;
+  private readonly loadGeometry: THREE.BufferGeometry;
+  private readonly loadHeights: Float32Array;
+  private readonly bedLength = 3.75;
+  private readonly bedWidth = 1.72;
+  private readonly bedFloorY = 0.72;
+  private readonly bedCenterX = 0.54;
+  private readonly loadSegmentsX = 10;
+  private readonly loadSegmentsZ = 6;
+
+  constructor(scene: THREE.Scene) {
+    const tireMat = makeMat(0x151817, 0.85, 0.12);
+    const bodyMat = makeMat(0x38474a, 0.68, 0.16);
+    const cabMat = makeMat(0xb4bfc2, 0.48, 0.1);
+    const soilMat = makeMat(0x7d5b32, 0.9, 0.02);
+
+    this.group.position.copy(TRUCK_CENTER);
+    this.group.rotation.y = -0.07;
+    this.group.add(makeBox([4.4, 0.22, 1.95], bodyMat, [0, 0.45, 0]));
+    this.group.add(makeBox([1.05, 0.95, 1.72], cabMat, [-2.12, 1.03, 0]));
+    this.group.add(makeBox([3.85, 0.16, 1.72], bodyMat, [0.54, this.bedFloorY, 0]));
+    this.group.add(makeBox([3.85, 0.9, 0.12], bodyMat, [0.54, 1.12, -0.86]));
+    this.group.add(makeBox([3.85, 0.9, 0.12], bodyMat, [0.54, 1.12, 0.86]));
+    this.group.add(makeBox([0.14, 0.9, 1.72], bodyMat, [-1.38, 1.12, 0]));
+    this.group.add(makeBox([0.14, 0.9, 1.72], bodyMat, [2.46, 1.12, 0]));
+
+    for (const x of [-1.7, 1.45]) {
+      for (const z of [-1.02, 1.02]) {
+        const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.28, 24), tireMat);
+        tire.rotation.x = Math.PI / 2;
+        tire.position.set(x, 0.32, z);
+        tire.castShadow = true;
+        tire.receiveShadow = true;
+        this.group.add(tire);
+      }
+    }
+
+    this.loadGeometry = this.createLoadGeometry();
+    this.loadHeights = new Float32Array((this.loadSegmentsX + 1) * (this.loadSegmentsZ + 1));
+    this.loadMesh = new THREE.Mesh(this.loadGeometry, soilMat);
+    this.loadMesh.visible = false;
+    this.loadMesh.castShadow = true;
+    this.loadMesh.receiveShadow = true;
+    this.group.add(this.loadMesh);
+    scene.add(this.group);
+  }
+
+  containsWorldPoint(point: THREE.Vector3): boolean {
+    const local = this.group.worldToLocal(point.clone());
+    return (
+      local.x > -1.34 &&
+      local.x < 2.44 &&
+      local.z > -this.bedWidth / 2 &&
+      local.z < this.bedWidth / 2 &&
+      point.y > this.group.position.y + this.bedFloorY - 0.1
+    );
+  }
+
+  updateLoad(load: number): void {
+    const ratio = clamp(load / TRUCK_CAPACITY, 0, 1);
+    this.loadMesh.visible = ratio > 0.01;
+    if (load <= 0) {
+      this.loadHeights.fill(0);
+      this.commitLoadSurface();
+    }
+  }
+
+  settleLoad(passes = 1): void {
+    if (!this.loadMesh.visible) {
+      return;
+    }
+    this.relaxLoad(passes);
+    this.commitLoadSurface();
+  }
+
+  depositSoilAt(point: THREE.Vector3, volume: number, availableVolume: number): number {
+    if (volume <= 0 || availableVolume <= 0 || !this.containsWorldPoint(point)) {
+      return 0;
+    }
+
+    const accepted = Math.min(volume, availableVolume);
+    const local = this.group.worldToLocal(point.clone());
+    this.addLoadMound(local.x, local.z, accepted);
+    this.loadMesh.visible = true;
+    return accepted;
+  }
+
+  private createLoadGeometry(): THREE.BufferGeometry {
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+
+    for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+        const x = this.bedCenterX - this.bedLength / 2 + (ix / this.loadSegmentsX) * this.bedLength;
+        const z = -this.bedWidth / 2 + (iz / this.loadSegmentsZ) * this.bedWidth;
+        positions.push(x, this.bedFloorY + 0.045, z);
+        uvs.push(ix / this.loadSegmentsX, iz / this.loadSegmentsZ);
+      }
+    }
+
+    for (let iz = 0; iz < this.loadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix < this.loadSegmentsX; ix += 1) {
+        const a = this.loadIndex(ix, iz);
+        const b = this.loadIndex(ix + 1, iz);
+        const c = this.loadIndex(ix, iz + 1);
+        const d = this.loadIndex(ix + 1, iz + 1);
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setIndex(indices);
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.computeVertexNormals();
+    (geometry.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    (geometry.attributes.normal as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    return geometry;
+  }
+
+  private addLoadMound(localX: number, localZ: number, volume: number): void {
+    const clampedX = clamp(localX, this.bedCenterX - this.bedLength * 0.48, this.bedCenterX + this.bedLength * 0.48);
+    const clampedZ = clamp(localZ, -this.bedWidth * 0.46, this.bedWidth * 0.46);
+    const weights: Array<[number, number]> = [];
+    const radius = 0.48 + Math.cbrt(volume) * 0.34;
+    let totalWeight = 0;
+
+    for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+        const x = this.bedCenterX - this.bedLength / 2 + (ix / this.loadSegmentsX) * this.bedLength;
+        const z = -this.bedWidth / 2 + (iz / this.loadSegmentsZ) * this.bedWidth;
+        const dist = Math.hypot(x - clampedX, z - clampedZ);
+        if (dist <= radius) {
+          const weight = (1 - dist / radius) ** 2 + 0.05;
+          weights.push([this.loadIndex(ix, iz), weight]);
+          totalWeight += weight;
+        }
+      }
+    }
+
+    if (totalWeight <= 0) {
+      return;
+    }
+
+    const visualCellArea = (this.bedLength / this.loadSegmentsX) * (this.bedWidth / this.loadSegmentsZ);
+    for (const [idx, weight] of weights) {
+      this.loadHeights[idx] += ((volume * weight) / totalWeight / visualCellArea) * 0.72;
+    }
+    this.relaxLoad(6);
+    this.commitLoadSurface();
+  }
+
+  private relaxLoad(passes: number): void {
+    const maxDelta = 0.13;
+    for (let pass = 0; pass < passes; pass += 1) {
+      for (let iz = 0; iz < this.loadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix < this.loadSegmentsX; ix += 1) {
+          this.transferLoadIfTooSteep(this.loadIndex(ix, iz), this.loadIndex(ix + 1, iz), maxDelta);
+          this.transferLoadIfTooSteep(this.loadIndex(ix, iz), this.loadIndex(ix, iz + 1), maxDelta);
+        }
+      }
+    }
+  }
+
+  private transferLoadIfTooSteep(a: number, b: number, maxDelta: number): void {
+    const diff = this.loadHeights[a] - this.loadHeights[b];
+    const excess = Math.abs(diff) - maxDelta;
+    if (excess <= 0) {
+      return;
+    }
+    const transfer = excess * 0.2;
+    if (diff > 0) {
+      this.loadHeights[a] -= transfer;
+      this.loadHeights[b] += transfer;
+    } else {
+      this.loadHeights[a] += transfer;
+      this.loadHeights[b] -= transfer;
+    }
+  }
+
+  private commitLoadSurface(): void {
+    const position = this.loadGeometry.attributes.position as THREE.BufferAttribute;
+    for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+        const idx = this.loadIndex(ix, iz);
+        position.setY(idx, this.bedFloorY + 0.045 + this.loadHeights[idx]);
+      }
+    }
+    position.needsUpdate = true;
+    this.loadGeometry.computeVertexNormals();
+    this.loadGeometry.attributes.normal.needsUpdate = true;
+  }
+
+  private loadIndex(ix: number, iz: number): number {
+    return iz * (this.loadSegmentsX + 1) + ix;
+  }
+}
+
+class ExcavatorModel {
+  readonly group = new THREE.Group();
+  readonly upperGroup = new THREE.Group();
+  readonly boomPivot = new THREE.Group();
+  readonly boomGroup = new THREE.Group();
+  readonly stickGroup = new THREE.Group();
+  readonly bucketGroup = new THREE.Group();
+  readonly bucketLoadMesh: THREE.Mesh;
+  readonly boomCylinder: THREE.Mesh;
+  readonly stickCylinder: THREE.Mesh;
+  readonly bucketCylinder: THREE.Mesh;
+  private readonly bucketLoadGeometry: THREE.BufferGeometry;
+  private readonly bucketLoadHeights: Float32Array;
+  private readonly bucketLoadSegmentsX = 7;
+  private readonly bucketLoadSegmentsZ = 6;
+
+  private readonly mats = {
+    yellow: makeMat(0xf1a51d, 0.62, 0.16),
+    dark: makeMat(0x222724, 0.72, 0.22),
+    glass: new THREE.MeshPhysicalMaterial({
+      color: 0x6f9eaa,
+      roughness: 0.18,
+      metalness: 0.02,
+      transmission: 0.25,
+      opacity: 0.74,
+      transparent: true,
+    }),
+    hydraulic: makeMat(0xcfd2cc, 0.34, 0.36),
+    rod: makeMat(0xe7e9e1, 0.24, 0.58),
+    soil: makeMat(0x7a542e, 0.93, 0.02),
+  };
+
+  constructor(scene: THREE.Scene) {
+    this.group.position.set(0, 0, 0);
+    scene.add(this.group);
+    this.buildLower();
+    this.buildUpper();
+    this.buildArm();
+
+    this.boomCylinder = this.makeHydraulicCylinder(scene, 0.055, this.mats.hydraulic);
+    this.stickCylinder = this.makeHydraulicCylinder(scene, 0.046, this.mats.hydraulic);
+    this.bucketCylinder = this.makeHydraulicCylinder(scene, 0.038, this.mats.rod);
+
+    this.bucketLoadGeometry = this.createBucketLoadGeometry();
+    this.bucketLoadHeights = new Float32Array((this.bucketLoadSegmentsX + 1) * (this.bucketLoadSegmentsZ + 1));
+    this.bucketLoadMesh = new THREE.Mesh(this.bucketLoadGeometry, this.mats.soil);
+    this.bucketLoadMesh.visible = false;
+    this.bucketLoadMesh.castShadow = true;
+    this.bucketLoadMesh.receiveShadow = true;
+    this.bucketGroup.add(this.bucketLoadMesh);
+  }
+
+  applyAngles(angles: ExcavatorAngles): void {
+    this.upperGroup.rotation.y = angles.swing;
+    this.boomGroup.rotation.z = angles.boom;
+    this.stickGroup.rotation.z = angles.stick;
+    this.bucketGroup.rotation.z = angles.bucket + Math.PI;
+    this.group.updateMatrixWorld(true);
+    this.updateCylinders();
+  }
+
+  setBucketLoad(load: number): void {
+    const ratio = clamp(load / BUCKET_CAPACITY, 0, 1);
+    this.bucketLoadMesh.visible = ratio > 0.02;
+    if (ratio <= 0.02) {
+      this.bucketLoadHeights.fill(0);
+    } else {
+      this.shapeBucketLoad(ratio);
+    }
+    this.commitBucketLoadSurface();
+  }
+
+  bucketLoadVisualRatio(): number {
+    if (!this.bucketLoadMesh.visible) {
+      return 0;
+    }
+    let total = 0;
+    for (const height of this.bucketLoadHeights) {
+      total += height;
+    }
+    return clamp(total / this.bucketLoadHeights.length / 0.42, 0, 1);
+  }
+
+  bucketTipWorld(): THREE.Vector3 {
+    return this.bucketGroup.localToWorld(new THREE.Vector3(-BUCKET_LEN, -0.5, 0));
+  }
+
+  bucketCuttingEdgeWorld(): THREE.Vector3[] {
+    return [-0.46, -0.23, 0, 0.23, 0.46].map((z) =>
+      this.bucketGroup.localToWorld(new THREE.Vector3(-BUCKET_LEN, -0.5, z)),
+    );
+  }
+
+  bucketPocketWorld(): THREE.Vector3 {
+    return this.bucketGroup.localToWorld(new THREE.Vector3(-0.46, -0.28, 0));
+  }
+
+  bucketForwardWorld(): THREE.Vector3 {
+    const origin = this.bucketGroup.localToWorld(new THREE.Vector3(0, 0, 0));
+    const tip = this.bucketTipWorld();
+    return tip.sub(origin).normalize();
+  }
+
+  bucketSidewaysWorld(): THREE.Vector3 {
+    const origin = this.bucketGroup.localToWorld(new THREE.Vector3(0, 0, 0));
+    return this.bucketGroup.localToWorld(new THREE.Vector3(0, 0, 1)).sub(origin).normalize();
+  }
+
+  bucketPinWorld(): THREE.Vector3 {
+    return this.bucketGroup.localToWorld(new THREE.Vector3(0, 0, 0));
+  }
+
+  stickPinWorld(): THREE.Vector3 {
+    return this.stickGroup.localToWorld(new THREE.Vector3(0, 0, 0));
+  }
+
+  boomPinWorld(): THREE.Vector3 {
+    return this.boomGroup.localToWorld(new THREE.Vector3(0, 0, 0));
+  }
+
+  cabCameraWorld(): THREE.Vector3 {
+    return this.upperGroup.localToWorld(new THREE.Vector3(0.05, 1.16, -0.72));
+  }
+
+  cabLookWorld(): THREE.Vector3 {
+    return this.upperGroup.localToWorld(new THREE.Vector3(5.5, 0.55, 0));
+  }
+
+  private createBucketLoadGeometry(): THREE.BufferGeometry {
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+    const minX = -1.02;
+    const maxX = -0.18;
+    const minZ = -0.43;
+    const maxZ = 0.43;
+
+    for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
+        const x = THREE.MathUtils.lerp(minX, maxX, ix / this.bucketLoadSegmentsX);
+        const z = THREE.MathUtils.lerp(minZ, maxZ, iz / this.bucketLoadSegmentsZ);
+        positions.push(x, this.bucketLoadBaseY(x, z), z);
+        uvs.push(ix / this.bucketLoadSegmentsX, iz / this.bucketLoadSegmentsZ);
+      }
+    }
+
+    for (let iz = 0; iz < this.bucketLoadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix < this.bucketLoadSegmentsX; ix += 1) {
+        const a = this.bucketLoadIndex(ix, iz);
+        const b = this.bucketLoadIndex(ix + 1, iz);
+        const c = this.bucketLoadIndex(ix, iz + 1);
+        const d = this.bucketLoadIndex(ix + 1, iz + 1);
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setIndex(indices);
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.computeVertexNormals();
+    (geometry.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    (geometry.attributes.normal as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    return geometry;
+  }
+
+  private shapeBucketLoad(ratio: number): void {
+    const minX = -1.02;
+    const maxX = -0.18;
+    const minZ = -0.43;
+    const maxZ = 0.43;
+    for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
+        const x = THREE.MathUtils.lerp(minX, maxX, ix / this.bucketLoadSegmentsX);
+        const z = THREE.MathUtils.lerp(minZ, maxZ, iz / this.bucketLoadSegmentsZ);
+        const nx = (x - minX) / (maxX - minX);
+        const nz = Math.abs(z) / Math.max(Math.abs(minZ), Math.abs(maxZ));
+        const pocketMound = Math.exp(-((x + 0.48) ** 2 / 0.18 + z ** 2 / 0.22));
+        const retainedTowardBack = 0.58 + nx * 0.32;
+        const sideLoss = nz ** 2 * 0.16;
+        const ripple = (hash2(ix * 17 + iz * 5, Math.round(ratio * 100)) - 0.5) * 0.025;
+        const height = clamp(
+          ratio * (0.16 + ratio * 0.3) * retainedTowardBack + pocketMound * ratio * 0.18 + ripple - sideLoss * ratio,
+          0.015,
+          0.54,
+        );
+        this.bucketLoadHeights[this.bucketLoadIndex(ix, iz)] = height;
+      }
+    }
+    this.relaxBucketLoad(2);
+  }
+
+  private relaxBucketLoad(passes: number): void {
+    const maxDelta = 0.095;
+    for (let pass = 0; pass < passes; pass += 1) {
+      for (let iz = 0; iz < this.bucketLoadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix < this.bucketLoadSegmentsX; ix += 1) {
+          this.transferBucketLoadIfTooSteep(this.bucketLoadIndex(ix, iz), this.bucketLoadIndex(ix + 1, iz), maxDelta);
+          this.transferBucketLoadIfTooSteep(this.bucketLoadIndex(ix, iz), this.bucketLoadIndex(ix, iz + 1), maxDelta);
+        }
+      }
+    }
+  }
+
+  private transferBucketLoadIfTooSteep(a: number, b: number, maxDelta: number): void {
+    const diff = this.bucketLoadHeights[a] - this.bucketLoadHeights[b];
+    const excess = Math.abs(diff) - maxDelta;
+    if (excess <= 0) {
+      return;
+    }
+    const transfer = excess * 0.2;
+    if (diff > 0) {
+      this.bucketLoadHeights[a] -= transfer;
+      this.bucketLoadHeights[b] += transfer;
+    } else {
+      this.bucketLoadHeights[a] += transfer;
+      this.bucketLoadHeights[b] -= transfer;
+    }
+  }
+
+  private commitBucketLoadSurface(): void {
+    const position = this.bucketLoadGeometry.attributes.position as THREE.BufferAttribute;
+    const minX = -1.02;
+    const maxX = -0.18;
+    const minZ = -0.43;
+    const maxZ = 0.43;
+    for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
+        const idx = this.bucketLoadIndex(ix, iz);
+        const x = THREE.MathUtils.lerp(minX, maxX, ix / this.bucketLoadSegmentsX);
+        const z = THREE.MathUtils.lerp(minZ, maxZ, iz / this.bucketLoadSegmentsZ);
+        position.setY(idx, this.bucketLoadBaseY(x, z) + this.bucketLoadHeights[idx]);
+      }
+    }
+    position.needsUpdate = true;
+    this.bucketLoadGeometry.computeVertexNormals();
+    this.bucketLoadGeometry.attributes.normal.needsUpdate = true;
+  }
+
+  private bucketLoadBaseY(x: number, z: number): number {
+    const nx = clamp((x + 1.02) / 0.84, 0, 1);
+    const sideLift = (Math.abs(z) / 0.43) ** 2 * 0.025;
+    return -0.48 + nx * 0.14 + sideLift;
+  }
+
+  private bucketLoadIndex(ix: number, iz: number): number {
+    return iz * (this.bucketLoadSegmentsX + 1) + ix;
+  }
+
+  private buildLower(): void {
+    const trackMat = this.mats.dark;
+    const padMat = makeMat(0x111412, 0.82, 0.24);
+    this.group.add(makeBox([3.2, 0.28, 1.95], trackMat, [0, 0.36, 0]));
+    this.group.add(makeBox([3.75, 0.52, 0.52], trackMat, [0, 0.28, -0.72]));
+    this.group.add(makeBox([3.75, 0.52, 0.52], trackMat, [0, 0.28, 0.72]));
+
+    for (let i = 0; i < 14; i += 1) {
+      const x = -1.7 + i * 0.26;
+      this.group.add(makeBox([0.18, 0.06, 0.6], padMat, [x, 0.58, -0.72]));
+      this.group.add(makeBox([0.18, 0.06, 0.6], padMat, [x, 0.58, 0.72]));
+    }
+
+    const turntable = new THREE.Mesh(new THREE.CylinderGeometry(1.02, 1.02, 0.24, 40), this.mats.dark);
+    turntable.position.y = 0.74;
+    turntable.castShadow = true;
+    turntable.receiveShadow = true;
+    this.group.add(turntable);
+
+    this.upperGroup.position.y = 0.86;
+    this.group.add(this.upperGroup);
+  }
+
+  private buildUpper(): void {
+    this.upperGroup.add(makeBox([2.45, 0.74, 1.3], this.mats.yellow, [-0.24, 0.3, 0]));
+    this.upperGroup.add(makeBox([0.9, 0.82, 1.22], this.mats.dark, [-1.0, 0.38, 0]));
+    this.upperGroup.add(makeBox([0.84, 0.9, 0.72], this.mats.glass, [0.54, 0.62, -0.46]));
+    this.upperGroup.add(makeBox([0.96, 0.16, 0.82], this.mats.dark, [0.55, 1.13, -0.46]));
+
+    const exhaust = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.62, 16), this.mats.dark);
+    exhaust.position.set(-1.1, 0.96, 0.47);
+    exhaust.castShadow = true;
+    this.upperGroup.add(exhaust);
+  }
+
+  private buildArm(): void {
+    this.boomPivot.position.set(0.8, 0.7, 0);
+    this.upperGroup.add(this.boomPivot);
+    this.boomPivot.add(this.boomGroup);
+
+    const boom = makeBox([BOOM_LEN, 0.28, 0.34], this.mats.yellow, [BOOM_LEN / 2, 0, 0]);
+    boom.rotation.x = 0.02;
+    this.boomGroup.add(boom);
+    this.addPin(this.boomGroup, [0, 0, 0], 0.22);
+    this.addPin(this.boomGroup, [BOOM_LEN, 0, 0], 0.2);
+
+    this.stickGroup.position.set(BOOM_LEN, 0, 0);
+    this.boomGroup.add(this.stickGroup);
+    const stick = makeBox([STICK_LEN, 0.22, 0.28], this.mats.yellow, [STICK_LEN / 2, 0, 0]);
+    this.stickGroup.add(stick);
+    this.addPin(this.stickGroup, [0, 0, 0], 0.18);
+    this.addPin(this.stickGroup, [STICK_LEN, 0, 0], 0.17);
+
+    this.bucketGroup.position.set(STICK_LEN, 0, 0);
+    this.stickGroup.add(this.bucketGroup);
+    this.buildBucket();
+  }
+
+  private buildBucket(): void {
+    const bucketMat = this.mats.dark.clone();
+    bucketMat.side = THREE.DoubleSide;
+    const wearMat = makeMat(0x111412, 0.82, 0.32);
+    const sideA = this.makeBucketSide(-0.54, bucketMat);
+    const sideB = this.makeBucketSide(0.54, bucketMat);
+    const back = makeBox([0.18, 0.74, 1.08], bucketMat, [0.2, -0.18, 0]);
+    back.rotation.z = -0.18;
+    const floor = makeBox([1.1, 0.12, 1.02], bucketMat, [-0.56, -0.5, 0]);
+    floor.rotation.z = 0.18;
+    const lip = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 1.12, 16), wearMat);
+    lip.rotation.x = Math.PI / 2;
+    lip.position.set(-1.17, -0.52, 0);
+    lip.castShadow = true;
+    this.bucketGroup.add(back, floor, sideA, sideB, lip);
+
+    for (const z of [-0.36, -0.12, 0.12, 0.36]) {
+      const tooth = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.36, 4), wearMat);
+      tooth.rotation.z = Math.PI / 2;
+      tooth.rotation.y = Math.PI / 4;
+      tooth.position.set(-1.32, -0.54, z);
+      tooth.castShadow = true;
+      this.bucketGroup.add(tooth);
+    }
+  }
+
+  private makeBucketSide(z: number, material: THREE.Material): THREE.Mesh {
+    const vertices = new Float32Array([
+      0.05, 0.18, z,
+      0.22, -0.52, z,
+      -1.12, -0.58, z,
+      -1.22, -0.38, z,
+      -0.76, 0.02, z,
+    ]);
+    const indices = z < 0 ? [0, 1, 4, 1, 2, 4, 2, 3, 4] : [0, 4, 1, 1, 4, 2, 2, 4, 3];
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    const side = new THREE.Mesh(geometry, material);
+    side.castShadow = true;
+    side.receiveShadow = true;
+    return side;
+  }
+
+  private addPin(parent: THREE.Group, pos: [number, number, number], radius: number): void {
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 0.54, 24), this.mats.hydraulic);
+    pin.rotation.x = Math.PI / 2;
+    pin.position.set(pos[0], pos[1], pos[2]);
+    pin.castShadow = true;
+    parent.add(pin);
+  }
+
+  private makeHydraulicCylinder(scene: THREE.Scene, radius: number, material: THREE.Material): THREE.Mesh {
+    const cylinder = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 1, 18), material);
+    cylinder.castShadow = true;
+    scene.add(cylinder);
+    return cylinder;
+  }
+
+  private updateCylinders(): void {
+    const boomStart = this.upperGroup.localToWorld(new THREE.Vector3(0.26, 0.35, -0.28));
+    const boomEnd = this.boomGroup.localToWorld(new THREE.Vector3(1.65, -0.14, -0.28));
+    const stickStart = this.boomGroup.localToWorld(new THREE.Vector3(2.55, 0.12, 0.27));
+    const stickEnd = this.stickGroup.localToWorld(new THREE.Vector3(1.55, -0.1, 0.27));
+    const bucketStart = this.stickGroup.localToWorld(new THREE.Vector3(2.08, 0.12, -0.24));
+    const bucketEnd = this.bucketGroup.localToWorld(new THREE.Vector3(0.44, 0.13, -0.24));
+    setCylinderBetween(this.boomCylinder, boomStart, boomEnd);
+    setCylinderBetween(this.stickCylinder, stickStart, stickEnd);
+    setCylinderBetween(this.bucketCylinder, bucketStart, bucketEnd);
+  }
+}
+
+class Simulator {
+  private readonly canvas = byId<HTMLCanvasElement>("sim-canvas");
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly camera = new THREE.PerspectiveCamera(58, 1, 0.05, 140);
+  private readonly clock = new THREE.Clock();
+  private readonly terrain: HeightfieldTerrain;
+  private readonly excavator: ExcavatorModel;
+  private readonly truck: WorkTruck;
+  private readonly ui: UiRefs;
+  private readonly keys = new Set<string>();
+  private readonly touchAxes: JoystickAxes = { leftX: 0, leftY: 0, rightX: 0, rightY: 0, leftTrack: 0, rightTrack: 0 };
+  private readonly activeMobileJoysticks = new Map<number, ActiveMobileJoystick>();
+  private readonly pressedDriveControls = new Set<MobileDriveMode>();
+  private readonly activeDrivePointers = new Map<number, MobileDriveMode>();
+  private readonly canvasPointers = new Map<number, { x: number; y: number }>();
+  private readonly soilParticles: SoilParticle[] = [];
+  private readonly looseSoilMats = [
+    makeMat(0x6d4c2c, 0.95, 0.02),
+    makeMat(0x855f36, 0.94, 0.02),
+    makeMat(0x5a4734, 0.96, 0.02),
+  ];
+  private readonly targetActions: Actions = { swing: 0, boom: 0, stick: 0, bucket: 0 };
+  private readonly velocities: ExcavatorVelocities = { swing: 0, boom: 0, stick: 0, bucket: 0 };
+  private readonly angles: ExcavatorAngles = { ...initialAngles };
+  private readonly orbit = { azimuth: -0.95, elevation: 0.48, distance: 9.0, dragging: false, lastX: 0, lastY: 0 };
+  private readonly cameraLookTarget = new THREE.Vector3(0.8, 1.1, 0);
+  private readonly previousBucketTip = new THREE.Vector3();
+  private pinchDistance = 0;
+  private cameraMode: CameraMode = "orbit";
+  private pattern: Pattern = "ISO";
+  private responseMode: ResponseMode = "medium";
+  private elapsed = 0;
+  private truckLoad = 0;
+  private bucketLoad = 0;
+  private totalExcavated = 0;
+  private limitImpacts = 0;
+  private safetyViolations = 0;
+  private limitCooldown = 0;
+  private safetyCooldown = 0;
+  private idleSeconds = 0;
+  private pressure = 0;
+  private stability = 1;
+  private leftTrackVelocity = 0;
+  private rightTrackVelocity = 0;
+  private travelDistance = 0;
+  private trackSoilWork = 0;
+  private soilSettleAccumulator = 0;
+  private fpsAccumulator = 0;
+  private fpsFrames = 0;
+  private fps = 0;
+  private lastWarning = "";
+
+  constructor() {
+    this.ui = this.readUi();
+    this.renderer = new THREE.WebGLRenderer({
+      canvas: this.canvas,
+      antialias: true,
+      powerPreference: "high-performance",
+    });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.scene.background = new THREE.Color(0x9fb4b6);
+    this.scene.fog = new THREE.Fog(0x9fb4b6, 24, 74);
+
+    this.buildWorld();
+    this.terrain = new HeightfieldTerrain(this.scene);
+    this.truck = new WorkTruck(this.scene);
+    this.excavator = new ExcavatorModel(this.scene);
+    this.excavator.applyAngles(this.angles);
+    this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+    this.buildWorksiteMarkers();
+    this.scatterSoilDetails();
+    this.bindEvents();
+    this.resize();
+    this.updatePatternLabels();
+    this.updateCamera(1);
+    this.updateUi(0);
+    this.installDebugApi();
+    this.renderer.setAnimationLoop(() => this.tick());
+  }
+
+  reset(): void {
+    this.terrain.reset();
+    Object.assign(this.angles, initialAngles);
+    Object.assign(this.velocities, { swing: 0, boom: 0, stick: 0, bucket: 0 });
+    this.truckLoad = 0;
+    this.bucketLoad = 0;
+    this.totalExcavated = 0;
+    this.limitImpacts = 0;
+    this.safetyViolations = 0;
+    this.idleSeconds = 0;
+    this.elapsed = 0;
+    this.pressure = 0;
+    this.stability = 1;
+    this.leftTrackVelocity = 0;
+    this.rightTrackVelocity = 0;
+    this.travelDistance = 0;
+    this.trackSoilWork = 0;
+    this.soilSettleAccumulator = 0;
+    this.clearMobileInput();
+    this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+    this.excavator.group.rotation.y = 0;
+    for (const particle of this.soilParticles) {
+      this.scene.remove(particle.mesh);
+      particle.mesh.geometry.dispose();
+    }
+    this.soilParticles.length = 0;
+    this.truck.updateLoad(0);
+    this.excavator.setBucketLoad(0);
+    this.excavator.applyAngles(this.angles);
+    this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+  }
+
+  private clearMobileInput(): void {
+    Object.assign(this.touchAxes, { leftX: 0, leftY: 0, rightX: 0, rightY: 0, leftTrack: 0, rightTrack: 0 });
+    this.activeMobileJoysticks.clear();
+    this.pressedDriveControls.clear();
+    this.activeDrivePointers.clear();
+    this.canvasPointers.clear();
+    this.pinchDistance = 0;
+    this.ui.mobileJoysticks.forEach((element) => {
+      element.classList.remove("active");
+      element.querySelector<HTMLElement>("[data-joystick-knob]")?.style.setProperty("transform", "translate(-50%, -50%)");
+    });
+    this.ui.mobileDriveButtons.forEach((button) => button.classList.remove("active"));
+  }
+
+  private readUi(): UiRefs {
+    return {
+      patternSelect: byId<HTMLSelectElement>("pattern-select"),
+      responseSelect: byId<HTMLSelectElement>("response-select"),
+      resetButton: byId<HTMLButtonElement>("reset-button"),
+      cameraButtons: Array.from(document.querySelectorAll<HTMLButtonElement>("[data-camera]")),
+      truckLoadText: byId("truck-load-text"),
+      truckLoadBar: byId("truck-load-bar"),
+      missionState: byId("mission-state"),
+      pressureMeter: byId<HTMLMeterElement>("pressure-meter"),
+      bucketMeter: byId<HTMLMeterElement>("bucket-meter"),
+      stabilityMeter: byId<HTMLMeterElement>("stability-meter"),
+      timeText: byId("time-text"),
+      soilText: byId("soil-text"),
+      limitText: byId("limit-text"),
+      safetyText: byId("safety-text"),
+      idleText: byId("idle-text"),
+      travelText: byId("travel-text"),
+      travelDirectionText: byId("travel-direction-text"),
+      swingText: byId("swing-text"),
+      boomText: byId("boom-text"),
+      stickText: byId("stick-text"),
+      bucketText: byId("bucket-text"),
+      fpsText: byId("fps-text"),
+      warningStrip: byId("warning-strip"),
+      leftStickLabelY: byId("left-stick-label-y"),
+      leftStickLabelX: byId("left-stick-label-x"),
+      rightStickLabelY: byId("right-stick-label-y"),
+      rightStickLabelX: byId("right-stick-label-x"),
+      keyCaps: Array.from(document.querySelectorAll<HTMLElement>("kbd[data-key]")),
+      mobileControls: byId("mobile-controls"),
+      mobileJoysticks: Array.from(document.querySelectorAll<HTMLElement>("[data-joystick]")),
+      mobileDriveButtons: Array.from(document.querySelectorAll<HTMLButtonElement>("[data-drive]")),
+    };
+  }
+
+  private buildWorld(): void {
+    const hemi = new THREE.HemisphereLight(0xeef7ff, 0x423723, 1.35);
+    this.scene.add(hemi);
+
+    const sun = new THREE.DirectionalLight(0xfff1ca, 3.2);
+    sun.position.set(-8, 13, 7);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 42;
+    sun.shadow.camera.left = -18;
+    sun.shadow.camera.right = 18;
+    sun.shadow.camera.top = 18;
+    sun.shadow.camera.bottom = -18;
+    this.scene.add(sun);
+
+    const yardMat = makeMat(0x3d453d, 0.86, 0.03);
+    for (let i = 0; i < 22; i += 1) {
+      const post = makeBox([0.08, 0.92, 0.08], yardMat, [-10.5 + i, 0.46, -8.4]);
+      this.scene.add(post);
+    }
+    const rail = makeBox([21.2, 0.08, 0.08], yardMat, [0, 0.86, -8.4]);
+    this.scene.add(rail);
+  }
+
+  private buildWorksiteMarkers(): void {
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xf1ad34, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+    const digRing = new THREE.Mesh(new THREE.RingGeometry(1.55, 1.62, 72), ringMat);
+    digRing.rotation.x = -Math.PI / 2;
+    digRing.position.set(DIG_SITE.x, 0.04, DIG_SITE.z);
+    this.scene.add(digRing);
+
+    const safeMat = new THREE.MeshBasicMaterial({ color: 0xdb553f, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
+    const safeRing = new THREE.Mesh(new THREE.CircleGeometry(1.08, 48), safeMat);
+    safeRing.rotation.x = -Math.PI / 2;
+    safeRing.position.set(WORKER_ZONE.x, 0.05, WORKER_ZONE.z);
+    this.scene.add(safeRing);
+
+    const coneMat = makeMat(0xe2602d, 0.65, 0.04);
+    for (const offset of [
+      [-0.95, -0.95],
+      [0.95, -0.95],
+      [-0.95, 0.95],
+      [0.95, 0.95],
+    ] as const) {
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.46, 18), coneMat);
+      cone.position.set(WORKER_ZONE.x + offset[0], 0.24, WORKER_ZONE.z + offset[1]);
+      cone.castShadow = true;
+      this.scene.add(cone);
+    }
+  }
+
+  private scatterSoilDetails(): void {
+    const rockMat = makeMat(0x4f4638, 0.88, 0.08);
+    const dryClodMat = makeMat(0x8a6238, 0.96, 0.02);
+    const twigMat = makeMat(0x2f281f, 0.8, 0.06);
+
+    for (let i = 0; i < 95; i += 1) {
+      const aroundDig = i < 52;
+      const radius = aroundDig ? 1.2 + Math.random() * 3.7 : 4.0 + Math.random() * 10.0;
+      const angle = Math.random() * Math.PI * 2;
+      const x = (aroundDig ? DIG_SITE.x : 0) + Math.cos(angle) * radius;
+      const z = (aroundDig ? DIG_SITE.z : 0) + Math.sin(angle) * radius;
+      if (Math.hypot(x - TRUCK_CENTER.x, z - TRUCK_CENTER.z) < 2.6) {
+        continue;
+      }
+
+      const isRock = Math.random() > 0.56;
+      const geometry = isRock
+        ? new THREE.IcosahedronGeometry(0.035 + Math.random() * 0.08, 0)
+        : new THREE.DodecahedronGeometry(0.045 + Math.random() * 0.1, 0);
+      const mesh = new THREE.Mesh(geometry, isRock ? rockMat : dryClodMat);
+      mesh.position.set(x, this.terrain.getHeightAt(x, z) + 0.035, z);
+      mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      mesh.scale.y = 0.45 + Math.random() * 0.55;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+    }
+
+    for (let i = 0; i < 16; i += 1) {
+      const x = DIG_SITE.x + (Math.random() - 0.5) * 8.5;
+      const z = DIG_SITE.z + (Math.random() - 0.5) * 5.5;
+      const twig = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.018, 0.45 + Math.random() * 0.42, 7), twigMat);
+      twig.position.set(x, this.terrain.getHeightAt(x, z) + 0.035, z);
+      twig.rotation.set(Math.PI / 2 + (Math.random() - 0.5) * 0.35, Math.random() * Math.PI, Math.random() * Math.PI);
+      twig.castShadow = true;
+      this.scene.add(twig);
+    }
+  }
+
+  private bindEvents(): void {
+    window.addEventListener("resize", () => this.resize());
+    window.addEventListener("keydown", (event) => {
+      if (this.isSimKey(event.code)) {
+        event.preventDefault();
+        this.keys.add(event.code);
+      }
+    });
+    window.addEventListener("keyup", (event) => {
+      if (this.isSimKey(event.code)) {
+        event.preventDefault();
+        this.keys.delete(event.code);
+      }
+    });
+
+    this.ui.patternSelect.addEventListener("change", () => {
+      this.pattern = this.ui.patternSelect.value as Pattern;
+      this.updatePatternLabels();
+    });
+    this.ui.responseSelect.addEventListener("change", () => {
+      this.responseMode = this.ui.responseSelect.value as ResponseMode;
+    });
+    this.ui.resetButton.addEventListener("click", () => this.reset());
+    this.ui.cameraButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        this.cameraMode = button.dataset.camera as CameraMode;
+        this.ui.cameraButtons.forEach((candidate) => candidate.classList.toggle("active", candidate === button));
+      });
+    });
+
+    this.canvas.addEventListener("pointerdown", (event) => this.handleCanvasPointerDown(event));
+    this.canvas.addEventListener("pointermove", (event) => this.handleCanvasPointerMove(event));
+    this.canvas.addEventListener("pointerup", (event) => this.handleCanvasPointerEnd(event));
+    this.canvas.addEventListener("pointercancel", (event) => this.handleCanvasPointerEnd(event));
+    this.canvas.addEventListener(
+      "wheel",
+      (event) => {
+        if (this.cameraMode !== "orbit" && this.cameraMode !== "task") {
+          return;
+        }
+        event.preventDefault();
+        this.orbit.distance = clamp(this.orbit.distance + event.deltaY * 0.01, 5.0, 16.5);
+      },
+      { passive: false },
+    );
+    this.bindMobileControls();
+  }
+
+  private bindMobileControls(): void {
+    this.ui.mobileJoysticks.forEach((element) => {
+      const side = element.dataset.joystick as MobileJoystickSide | undefined;
+      const knob = element.querySelector<HTMLElement>("[data-joystick-knob]");
+      if (!side || !knob) {
+        return;
+      }
+      element.addEventListener("pointerdown", (event) => this.handleMobileJoystickDown(event, side, element, knob));
+    });
+
+    this.ui.mobileDriveButtons.forEach((button) => {
+      const mode = button.dataset.drive as MobileDriveMode | undefined;
+      if (!mode) {
+        return;
+      }
+      button.addEventListener("pointerdown", (event) => this.handleDrivePointerDown(event, mode, button));
+    });
+
+    window.addEventListener("pointermove", (event) => this.handleMobilePointerMove(event));
+    window.addEventListener("pointerup", (event) => this.handleMobilePointerEnd(event));
+    window.addEventListener("pointercancel", (event) => this.handleMobilePointerEnd(event));
+  }
+
+  private handleCanvasPointerDown(event: PointerEvent): void {
+    if (this.cameraMode !== "orbit" && this.cameraMode !== "task") {
+      return;
+    }
+    event.preventDefault();
+    this.canvasPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    this.orbit.dragging = true;
+    this.orbit.lastX = event.clientX;
+    this.orbit.lastY = event.clientY;
+    if (this.canvasPointers.size >= 2) {
+      this.pinchDistance = this.currentPinchDistance();
+    }
+    try {
+      this.canvas.setPointerCapture(event.pointerId);
+    } catch {
+      // Synthetic test events and some browsers may not allow pointer capture.
+    }
+  }
+
+  private handleCanvasPointerMove(event: PointerEvent): void {
+    if (!this.canvasPointers.has(event.pointerId) || (this.cameraMode !== "orbit" && this.cameraMode !== "task")) {
+      return;
+    }
+    event.preventDefault();
+    this.canvasPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (this.canvasPointers.size >= 2) {
+      const nextPinchDistance = this.currentPinchDistance();
+      if (this.pinchDistance > 0 && nextPinchDistance > 0) {
+        this.orbit.distance = clamp(this.orbit.distance + (this.pinchDistance - nextPinchDistance) * 0.018, 5.0, 16.5);
+      }
+      this.pinchDistance = nextPinchDistance;
+      return;
+    }
+
+    if (!this.orbit.dragging) {
+      return;
+    }
+    const dx = event.clientX - this.orbit.lastX;
+    const dy = event.clientY - this.orbit.lastY;
+    this.orbit.lastX = event.clientX;
+    this.orbit.lastY = event.clientY;
+    this.orbit.azimuth -= dx * 0.006;
+    this.orbit.elevation = clamp(this.orbit.elevation + dy * 0.004, 0.18, 1.12);
+  }
+
+  private handleCanvasPointerEnd(event: PointerEvent): void {
+    this.canvasPointers.delete(event.pointerId);
+    this.orbit.dragging = this.canvasPointers.size > 0;
+    this.pinchDistance = this.canvasPointers.size >= 2 ? this.currentPinchDistance() : 0;
+    try {
+      this.canvas.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may not have been established.
+    }
+  }
+
+  private currentPinchDistance(): number {
+    const points = Array.from(this.canvasPointers.values());
+    if (points.length < 2) {
+      return 0;
+    }
+    return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+  }
+
+  private handleMobileJoystickDown(
+    event: PointerEvent,
+    side: MobileJoystickSide,
+    element: HTMLElement,
+    knob: HTMLElement,
+  ): void {
+    event.preventDefault();
+    const pad = element.querySelector<HTMLElement>(".mobile-stick-pad") ?? element;
+    const rect = pad.getBoundingClientRect();
+    const radius = Math.max(32, Math.min(rect.width, rect.height) * 0.36);
+    const active: ActiveMobileJoystick = {
+      side,
+      element,
+      knob,
+      centerX: rect.left + rect.width * 0.5,
+      centerY: rect.top + rect.height * 0.5,
+      radius,
+    };
+    this.activeMobileJoysticks.set(event.pointerId, active);
+    element.classList.add("active");
+    try {
+      element.setPointerCapture(event.pointerId);
+    } catch {
+      // Synthetic test events and some mobile browsers may skip pointer capture.
+    }
+    this.updateMobileJoystickAxis(event.pointerId, event.clientX, event.clientY);
+  }
+
+  private handleMobilePointerMove(event: PointerEvent): void {
+    if (this.activeMobileJoysticks.has(event.pointerId)) {
+      event.preventDefault();
+      this.updateMobileJoystickAxis(event.pointerId, event.clientX, event.clientY);
+    }
+  }
+
+  private handleMobilePointerEnd(event: PointerEvent): void {
+    const joystick = this.activeMobileJoysticks.get(event.pointerId);
+    if (joystick) {
+      this.activeMobileJoysticks.delete(event.pointerId);
+      this.setMobileJoystickAxis(joystick.side, 0, 0);
+      joystick.knob.style.transform = "translate(-50%, -50%)";
+      joystick.element.classList.remove("active");
+      try {
+        joystick.element.releasePointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture may not have been established.
+      }
+    }
+
+    const driveMode = this.activeDrivePointers.get(event.pointerId);
+    if (driveMode) {
+      this.activeDrivePointers.delete(event.pointerId);
+      this.pressedDriveControls.delete(driveMode);
+      this.ui.mobileDriveButtons
+        .filter((button) => button.dataset.drive === driveMode)
+        .forEach((button) => button.classList.remove("active"));
+      this.updateMobileTrackAxes();
+    }
+  }
+
+  private updateMobileJoystickAxis(pointerId: number, clientX: number, clientY: number): void {
+    const joystick = this.activeMobileJoysticks.get(pointerId);
+    if (!joystick) {
+      return;
+    }
+    const dx = clientX - joystick.centerX;
+    const dy = clientY - joystick.centerY;
+    const distance = Math.hypot(dx, dy);
+    const limited = Math.min(distance, joystick.radius);
+    const angle = distance > 0.001 ? Math.atan2(dy, dx) : 0;
+    const knobX = Math.cos(angle) * limited;
+    const knobY = Math.sin(angle) * limited;
+    const axisX = clamp(knobX / joystick.radius, -1, 1);
+    const axisY = clamp(-knobY / joystick.radius, -1, 1);
+    joystick.knob.style.transform = `translate(calc(-50% + ${knobX.toFixed(1)}px), calc(-50% + ${knobY.toFixed(1)}px))`;
+    this.setMobileJoystickAxis(joystick.side, axisX, axisY);
+  }
+
+  private setMobileJoystickAxis(side: MobileJoystickSide, x: number, y: number): void {
+    if (side === "left") {
+      this.touchAxes.leftX = x;
+      this.touchAxes.leftY = y;
+    } else {
+      this.touchAxes.rightX = x;
+      this.touchAxes.rightY = y;
+    }
+  }
+
+  private handleDrivePointerDown(event: PointerEvent, mode: MobileDriveMode, button: HTMLButtonElement): void {
+    event.preventDefault();
+    this.activeDrivePointers.set(event.pointerId, mode);
+    this.pressedDriveControls.add(mode);
+    button.classList.add("active");
+    try {
+      button.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may not have been established.
+    }
+    this.updateMobileTrackAxes();
+  }
+
+  private updateMobileTrackAxes(): void {
+    const forward = this.pressedDriveControls.has("forward") ? 1 : 0;
+    const reverse = this.pressedDriveControls.has("reverse") ? 1 : 0;
+    const turnLeft = this.pressedDriveControls.has("turn-left") ? 1 : 0;
+    const turnRight = this.pressedDriveControls.has("turn-right") ? 1 : 0;
+    this.touchAxes.leftTrack = clamp(forward - reverse + turnRight - turnLeft, -1, 1);
+    this.touchAxes.rightTrack = clamp(forward - reverse + turnLeft - turnRight, -1, 1);
+  }
+
+  private installDebugApi(): void {
+    window.__excavatorSim = {
+      snapshot: () => ({
+        bucketLoad: this.bucketLoad,
+        truckLoad: this.truckLoad,
+        totalExcavated: this.totalExcavated,
+        digHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
+        bucketAngle: this.angles.bucket,
+        bucketVisualLoad: this.excavator.bucketLoadVisualRatio(),
+        trackSoilWork: this.trackSoilWork,
+        mobileAxes: { ...this.touchAxes },
+        orbit: { azimuth: this.orbit.azimuth, elevation: this.orbit.elevation, distance: this.orbit.distance },
+        particleCount: this.soilParticles.length,
+        settlingParticleCount: this.soilParticles.filter((particle) => particle.settles).length,
+        flowParticleCount: this.soilParticles.filter((particle) => !particle.settles).length,
+      }),
+      forceDigPass: () => {
+        const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
+        const start = new THREE.Vector3(DIG_SITE.x - 0.55, beforeHeight + 0.02, DIG_SITE.z);
+        const end = new THREE.Vector3(DIG_SITE.x + 0.55, beforeHeight - 0.18, DIG_SITE.z);
+        const removed = this.terrain.excavateSweptBucket(
+          start,
+          end,
+          new THREE.Vector3(0, 0, 1),
+          1.08,
+          0.24,
+          BUCKET_CAPACITY - this.bucketLoad,
+        );
+        this.bucketLoad += removed;
+        this.totalExcavated += removed;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.updateUi(0);
+        return {
+          removed,
+          beforeHeight,
+          afterHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
+          bucketLoad: this.bucketLoad,
+        };
+      },
+      forceTruckDump: () => {
+        const worldPoint = new THREE.Vector3(TRUCK_CENTER.x + 0.54, TRUCK_CENTER.y + 1.24, TRUCK_CENTER.z);
+        const dumped = this.truck.depositSoilAt(worldPoint, this.bucketLoad, TRUCK_CAPACITY - this.truckLoad);
+        this.bucketLoad -= dumped;
+        this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + dumped);
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.truck.updateLoad(this.truckLoad);
+        this.updateUi(0);
+        return { dumped, truckLoad: this.truckLoad, bucketLoad: this.bucketLoad };
+      },
+      forceFullBucketPush: () => {
+        this.bucketLoad = BUCKET_CAPACITY;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        const centerBefore = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
+        const bermBefore = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z + 0.78);
+        const start = new THREE.Vector3(DIG_SITE.x - 0.55, centerBefore + 0.02, DIG_SITE.z);
+        const end = new THREE.Vector3(DIG_SITE.x + 0.55, centerBefore - 0.12, DIG_SITE.z);
+        const displaced = this.terrain.displaceSweptBucket(
+          start,
+          end,
+          new THREE.Vector3(0, 0, 1),
+          1.16,
+          0.16,
+          0.22,
+        );
+        const centerAfter = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
+        const bermAfter = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z + 0.78);
+        this.updateUi(0);
+        return {
+          displaced,
+          bucketLoad: this.bucketLoad,
+          centerDrop: centerBefore - centerAfter,
+          bermRise: bermAfter - bermBefore,
+        };
+      },
+      forceTrackPass: () => {
+        const center = new THREE.Vector3(DIG_SITE.x, 0, DIG_SITE.z - 1.6);
+        const forward = new THREE.Vector3(1, 0, 0);
+        const side = new THREE.Vector3(0, 0, 1);
+        const rutBefore = this.terrain.getHeightAt(center.x, center.z);
+        const bermPoint = center.clone().addScaledVector(side, 0.46);
+        const bermBefore = this.terrain.getHeightAt(bermPoint.x, bermPoint.z);
+        const result = this.terrain.compactTrackStrip(center, forward, side, 3.65, 0.5, 0.13);
+        this.trackSoilWork += result.compacted;
+        const rutAfter = this.terrain.getHeightAt(center.x, center.z);
+        const bermAfter = this.terrain.getHeightAt(bermPoint.x, bermPoint.z);
+        this.updateUi(0);
+        return {
+          compacted: result.compacted,
+          rutDrop: rutBefore - rutAfter,
+          bermRise: bermAfter - bermBefore,
+          trackSoilWork: this.trackSoilWork,
+        };
+      },
+    };
+  }
+
+  private tick(): void {
+    const dt = Math.min(this.clock.getDelta(), 0.033);
+    this.elapsed += dt;
+    this.limitCooldown = Math.max(0, this.limitCooldown - dt);
+    this.safetyCooldown = Math.max(0, this.safetyCooldown - dt);
+
+    const axes = this.readAxes();
+    const actions = this.mapAxesToActions(axes);
+    Object.assign(this.targetActions, actions);
+    this.updateHydraulics(dt, axes);
+    this.updateTravel(dt, axes);
+    this.updateAngles(dt);
+    this.excavator.applyAngles(this.angles);
+    this.updateSoil(dt);
+    this.updateSoilParticles(dt);
+    this.updatePassiveSoil(dt);
+    this.updateSafety(dt);
+    this.updateCamera(dt);
+    this.updateUi(dt);
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private readAxes(): JoystickAxes {
+    const keyboardAxes = {
+      leftX: (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0),
+      leftY: (this.keys.has("KeyW") ? 1 : 0) - (this.keys.has("KeyS") ? 1 : 0),
+      rightX: (this.keys.has("ArrowRight") ? 1 : 0) - (this.keys.has("ArrowLeft") ? 1 : 0),
+      rightY: (this.keys.has("ArrowUp") ? 1 : 0) - (this.keys.has("ArrowDown") ? 1 : 0),
+      leftTrack: (this.keys.has("KeyG") ? 1 : 0) - (this.keys.has("KeyB") ? 1 : 0),
+      rightTrack: (this.keys.has("KeyH") ? 1 : 0) - (this.keys.has("KeyN") ? 1 : 0),
+    };
+    return {
+      leftX: clamp(keyboardAxes.leftX + this.touchAxes.leftX, -1, 1),
+      leftY: clamp(keyboardAxes.leftY + this.touchAxes.leftY, -1, 1),
+      rightX: clamp(keyboardAxes.rightX + this.touchAxes.rightX, -1, 1),
+      rightY: clamp(keyboardAxes.rightY + this.touchAxes.rightY, -1, 1),
+      leftTrack: clamp(keyboardAxes.leftTrack + this.touchAxes.leftTrack, -1, 1),
+      rightTrack: clamp(keyboardAxes.rightTrack + this.touchAxes.rightTrack, -1, 1),
+    };
+  }
+
+  private mapAxesToActions(axes: JoystickAxes): Actions {
+    if (this.pattern === "ISO") {
+      return {
+        swing: -axes.leftX,
+        stick: axes.leftY,
+        boom: -axes.rightY,
+        bucket: axes.rightX,
+      };
+    }
+
+    if (this.pattern === "SAE") {
+      return {
+        swing: -axes.leftX,
+        boom: -axes.leftY,
+        stick: axes.rightY,
+        bucket: axes.rightX,
+      };
+    }
+
+    return {
+      swing: -axes.leftX,
+      boom: axes.leftY,
+      stick: axes.rightY,
+      bucket: axes.rightX,
+    };
+  }
+
+  private updateHydraulics(dt: number, axes: JoystickAxes): void {
+    const gain = RESPONSE_GAIN[this.responseMode];
+    let targetPressure = Math.max(Math.abs(axes.leftTrack), Math.abs(axes.rightTrack)) * 0.42;
+
+    for (const action of Object.keys(this.velocities) as ActionName[]) {
+      const target = this.targetActions[action] * MAX_RATES[action];
+      const actionGain = action === "bucket" ? gain * 1.62 : gain;
+      this.velocities[action] = smoothTo(this.velocities[action], target, actionGain, dt);
+      if (Math.abs(this.targetActions[action]) < 0.02 && Math.abs(this.velocities[action]) < 0.005) {
+        this.velocities[action] = 0;
+      }
+      targetPressure = Math.max(targetPressure, Math.abs(this.targetActions[action]));
+    }
+
+    const loadFactor = this.bucketLoad / BUCKET_CAPACITY;
+    this.pressure = smoothTo(this.pressure, clamp(targetPressure * (0.55 + loadFactor * 0.45), 0, 1), 3.8, dt);
+    if (targetPressure < 0.03) {
+      this.idleSeconds += dt;
+    }
+  }
+
+  private updateTravel(dt: number, axes: JoystickAxes): void {
+    const gain = RESPONSE_GAIN[this.responseMode] * 0.65;
+    const leftTarget = axes.leftTrack * TRACK_MAX_SPEED;
+    const rightTarget = axes.rightTrack * TRACK_MAX_SPEED;
+    const leftGain = leftTarget * this.leftTrackVelocity < -0.01 ? gain * 2.15 : gain;
+    const rightGain = rightTarget * this.rightTrackVelocity < -0.01 ? gain * 2.15 : gain;
+    this.leftTrackVelocity = smoothTo(this.leftTrackVelocity, leftTarget, leftGain, dt);
+    this.rightTrackVelocity = smoothTo(this.rightTrackVelocity, rightTarget, rightGain, dt);
+
+    if (Math.abs(leftTarget) < 0.02 && Math.abs(this.leftTrackVelocity) < 0.01) {
+      this.leftTrackVelocity = 0;
+    }
+    if (Math.abs(rightTarget) < 0.02 && Math.abs(this.rightTrackVelocity) < 0.01) {
+      this.rightTrackVelocity = 0;
+    }
+
+    const forwardSpeed = (this.leftTrackVelocity + this.rightTrackVelocity) * 0.5;
+    const turnRate = (this.rightTrackVelocity - this.leftTrackVelocity) / TRACK_GAUGE;
+    this.excavator.group.rotation.y -= turnRate * dt;
+
+    const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
+    const move = forwardSpeed * dt;
+    this.excavator.group.position.addScaledVector(forward, move);
+    this.excavator.group.position.y = smoothTo(
+      this.excavator.group.position.y,
+      this.terrain.getHeightAt(this.excavator.group.position.x, this.excavator.group.position.z),
+      8,
+      dt,
+    );
+    this.travelDistance += Math.abs(move);
+    this.updateTrackSoilInteraction(dt, forward);
+  }
+
+  private updateTrackSoilInteraction(dt: number, forward: THREE.Vector3): void {
+    const base = this.excavator.group.position;
+    const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    const trackLength = 3.65;
+    const trackWidth = 0.5;
+
+    for (const [offset, velocity] of [
+      [-0.72, this.leftTrackVelocity],
+      [0.72, this.rightTrackVelocity],
+    ] as const) {
+      const trackMotion = Math.abs(velocity);
+      if (trackMotion < 0.035) {
+        continue;
+      }
+      const center = base.clone().addScaledVector(side, offset);
+      center.y = this.terrain.getHeightAt(center.x, center.z);
+      const slip = Math.abs(this.leftTrackVelocity - this.rightTrackVelocity) / Math.max(TRACK_MAX_SPEED * 2, 0.001);
+      const depth = clamp((0.006 + trackMotion * dt * 0.055) * (1 + slip * 1.45), 0.002, 0.026);
+      const result = this.terrain.compactTrackStrip(center, forward, side, trackLength, trackWidth, depth);
+      this.trackSoilWork += result.compacted;
+      if (result.compacted > 0) {
+        this.pressure = Math.max(this.pressure, clamp(0.08 + result.rutDrop * 4.8 + slip * 0.18, 0, 0.64));
+        const terrainDrag = clamp(1 - (result.rutDrop * 2.2 + slip * 0.018), 0.88, 0.995);
+        if (offset < 0) {
+          this.leftTrackVelocity *= terrainDrag;
+        } else {
+          this.rightTrackVelocity *= terrainDrag;
+        }
+      }
+    }
+  }
+
+  private updateAngles(dt: number): void {
+    this.angles.swing += this.velocities.swing * dt;
+
+    for (const action of ["boom", "stick", "bucket"] as ActionName[]) {
+      const previous = this.angles[action];
+      const proposed = previous + this.velocities[action] * dt;
+      const limit = ANGLE_LIMITS[action];
+      const next = clamp(proposed, limit.min, limit.max);
+      this.angles[action] = next;
+      if (next !== proposed) {
+        this.velocities[action] = 0;
+        if (Math.abs(this.targetActions[action]) > 0.25 && this.limitCooldown <= 0) {
+          this.limitImpacts += 1;
+          this.limitCooldown = 0.42;
+        }
+      }
+    }
+  }
+
+  private updateSoil(dt: number): void {
+    const tip = this.excavator.bucketTipWorld();
+    const pocket = this.excavator.bucketPocketWorld();
+    const edgePoints = this.excavator.bucketCuttingEdgeWorld();
+    const sideways = this.excavator.bucketSidewaysWorld();
+    const slope = this.terrain.getSlopeAt(tip.x, tip.z);
+    const tipSpeed = tip.distanceTo(this.previousBucketTip) / Math.max(dt, 0.001);
+    const forward = this.excavator.bucketForwardWorld();
+    let maxPenetration = 0;
+    let contactCount = 0;
+
+    for (const point of edgePoints) {
+      const ground = this.terrain.getHeightAt(point.x, point.z);
+      const penetration = ground + 0.14 - point.y;
+      if (penetration > 0) {
+        maxPenetration = Math.max(maxPenetration, penetration);
+        contactCount += 1;
+      }
+    }
+
+    const contactRatio = contactCount / edgePoints.length;
+    const attackAngle = Math.asin(clamp(-forward.y, -1, 1));
+    const attackEfficiency = clamp((attackAngle - 0.18) / 0.78, 0.08, 1);
+    const curlInSpeed = Math.max(0, -this.velocities.bucket);
+    const stickPullSpeed = Math.max(0, -this.velocities.stick);
+    const isDiggingMotion =
+      curlInSpeed > 0.06 ||
+      stickPullSpeed > 0.06 ||
+      tipSpeed > 0.18;
+
+    if (contactRatio > 0) {
+      const penetration = clamp(maxPenetration, 0.01, 0.72);
+      const loadRatio = this.bucketLoad / BUCKET_CAPACITY;
+      const resistance = clamp(
+        penetration * 2.05 + contactRatio * 0.26 + slope * 0.36 + loadRatio * 0.34 + (1 - attackEfficiency) * 0.22,
+        0.1,
+        1,
+      );
+      const drag = clamp(1 - resistance * (0.1 + tipSpeed * 0.055), 0.34, 0.95);
+      this.velocities.boom *= drag;
+      this.velocities.stick *= drag;
+      const bucketDrag = clamp(1 - resistance * (0.028 + tipSpeed * 0.018), 0.68, 0.995);
+      this.velocities.bucket *= bucketDrag;
+      this.pressure = Math.max(this.pressure, resistance);
+    }
+
+    if (contactRatio > 0 && isDiggingMotion && this.bucketLoad < BUCKET_CAPACITY) {
+      const freeCapacity = BUCKET_CAPACITY - this.bucketLoad;
+      const penetration = clamp(maxPenetration, 0.01, 0.62);
+      const bite = clamp(
+        (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.32 + 0.22) *
+          attackEfficiency *
+          (0.5 + contactRatio * 0.5),
+        0.05,
+        1.55,
+      );
+      const digDepth = clamp((penetration * 0.58 + Math.min(tipSpeed, 1.8) * 0.045) * bite * dt * 3.4, 0.004, 0.16);
+      const removed = this.terrain.excavateSweptBucket(
+        this.previousBucketTip,
+        tip,
+        sideways,
+        1.08,
+        digDepth,
+        freeCapacity,
+      );
+      this.bucketLoad += removed;
+      this.totalExcavated += removed;
+      if (removed > 0) {
+        this.pressure = Math.max(this.pressure, clamp(0.42 + removed * 1.8 + contactRatio * 0.22, 0, 1));
+        this.spawnCuttingFlow(edgePoints, pocket, removed);
+      }
+    }
+
+    if (contactRatio > 0 && isDiggingMotion && this.bucketLoad >= BUCKET_CAPACITY * 0.985) {
+      const displacementDepth = clamp(maxPenetration * (0.035 + tipSpeed * 0.025), 0.002, 0.045);
+      const displaced = this.terrain.displaceSweptBucket(
+        this.previousBucketTip,
+        tip,
+        sideways,
+        1.16,
+        displacementDepth,
+        0.08 * (0.35 + contactRatio),
+      );
+      if (displaced > 0) {
+        this.pressure = Math.max(this.pressure, clamp(0.72 + displaced * 2.6, 0, 1));
+      }
+    }
+
+    const openFactor = clamp((this.angles.bucket + 0.58) / (ANGLE_LIMITS.bucket.max + 0.58), 0, 1);
+    const dumpIntent = openFactor > 0.02 || this.velocities.bucket > 0.12;
+    if (dumpIntent && this.bucketLoad > 0.002) {
+      const dumpRate = (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95) * dt;
+      const dumped = Math.min(this.bucketLoad, dumpRate);
+      this.bucketLoad -= dumped;
+      this.spawnSoilParticles(pocket, dumped, forward, openFactor);
+    }
+
+    this.excavator.setBucketLoad(this.bucketLoad);
+    this.truck.updateLoad(this.truckLoad);
+    this.previousBucketTip.copy(tip);
+  }
+
+  private spawnCuttingFlow(edgePoints: THREE.Vector3[], pocket: THREE.Vector3, volume: number): void {
+    const count = clamp(Math.ceil(volume * 22), 2, 9);
+    for (let i = 0; i < count; i += 1) {
+      if (this.soilParticles.length > 160) {
+        const oldest = this.soilParticles.shift();
+        if (oldest) {
+          this.depositParticle(oldest);
+        }
+      }
+      const source = edgePoints[i % edgePoints.length].clone();
+      source.add(new THREE.Vector3((Math.random() - 0.5) * 0.1, 0.04 + Math.random() * 0.08, (Math.random() - 0.5) * 0.1));
+      const radius = 0.035 + Math.random() * 0.045;
+      const geometry = new THREE.DodecahedronGeometry(radius, 0);
+      const mesh = new THREE.Mesh(geometry, this.looseSoilMats[(i + this.soilParticles.length) % this.looseSoilMats.length]);
+      mesh.position.copy(source);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+      const target = pocket.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.18, (Math.random() - 0.5) * 0.08, (Math.random() - 0.5) * 0.28));
+      const velocity = target.clone().sub(source).multiplyScalar(2.8 + Math.random() * 1.2);
+      this.soilParticles.push({ mesh, velocity, volume: 0, life: 0, settles: false, target });
+    }
+  }
+
+  private spawnSoilParticles(origin: THREE.Vector3, volume: number, bucketForward: THREE.Vector3, openFactor: number): void {
+    if (volume <= 0) {
+      return;
+    }
+    const count = clamp(Math.ceil(volume * 26), 1, 14);
+    const perParticle = volume / count;
+
+    for (let i = 0; i < count; i += 1) {
+      if (this.soilParticles.length > 160) {
+        const oldest = this.soilParticles.shift();
+        if (oldest) {
+          this.depositParticle(oldest);
+        }
+      }
+      const radius = clamp(0.07 + Math.cbrt(perParticle) * 0.11, 0.07, 0.18);
+      const geometry = new THREE.DodecahedronGeometry(radius, 0);
+      const position = geometry.attributes.position as THREE.BufferAttribute;
+      for (let vertex = 0; vertex < position.count; vertex += 1) {
+        const x = position.getX(vertex);
+        const y = position.getY(vertex);
+        const z = position.getZ(vertex);
+        const scale = 0.76 + hash2(vertex + i * 7, Math.round(perParticle * 1000)) * 0.42;
+        position.setXYZ(vertex, x * scale, y * (0.72 + scale * 0.25), z * scale);
+      }
+      geometry.computeVertexNormals();
+      const mesh = new THREE.Mesh(geometry, this.looseSoilMats[(i + this.soilParticles.length) % this.looseSoilMats.length]);
+      const jitter = new THREE.Vector3((Math.random() - 0.5) * 0.36, (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.52);
+      mesh.position.copy(origin).add(jitter);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+
+      const sideways = new THREE.Vector3(-bucketForward.z, 0, bucketForward.x).normalize();
+      const velocity = bucketForward
+        .clone()
+        .multiplyScalar(0.24 + openFactor * 0.76)
+        .addScaledVector(sideways, (Math.random() - 0.5) * 0.8)
+        .add(new THREE.Vector3(0, -0.45 - openFactor * 1.15, 0));
+      this.soilParticles.push({ mesh, velocity, volume: perParticle, life: 0, settles: true });
+    }
+  }
+
+  private updateSoilParticles(dt: number): void {
+    for (let i = this.soilParticles.length - 1; i >= 0; i -= 1) {
+      const particle = this.soilParticles[i];
+      particle.life += dt;
+
+      if (!particle.settles) {
+        if (particle.target) {
+          const desired = particle.target.clone().sub(particle.mesh.position).multiplyScalar(3.4);
+          particle.velocity.lerp(desired, 1 - Math.exp(-8.5 * dt));
+        }
+        particle.mesh.position.addScaledVector(particle.velocity, dt);
+        particle.mesh.rotation.x += 5.2 * dt;
+        particle.mesh.rotation.z -= 4.4 * dt;
+        particle.mesh.scale.multiplyScalar(1 - Math.min(dt * 1.5, 0.055));
+        const reached = particle.target ? particle.mesh.position.distanceTo(particle.target) < 0.08 : false;
+        if (reached || particle.life > 0.7) {
+          this.soilParticles.splice(i, 1);
+          this.scene.remove(particle.mesh);
+          particle.mesh.geometry.dispose();
+        }
+        continue;
+      }
+
+      particle.velocity.y -= 9.81 * dt;
+      particle.velocity.multiplyScalar(1 - Math.min(dt * 0.22, 0.08));
+      particle.mesh.position.addScaledVector(particle.velocity, dt);
+      particle.mesh.rotation.x += particle.velocity.z * dt;
+      particle.mesh.rotation.z -= particle.velocity.x * dt;
+
+      const pos = particle.mesh.position;
+      const ground = this.terrain.getHeightAt(pos.x, pos.z);
+      const inTruck = this.truck.containsWorldPoint(pos) && pos.y < TRUCK_CENTER.y + 1.72;
+      const hitGround = pos.y <= ground + 0.05;
+      if (inTruck || hitGround || particle.life > 5.5) {
+        this.soilParticles.splice(i, 1);
+        if (inTruck) {
+          const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
+          this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
+          if (accepted < particle.volume) {
+            this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted);
+          }
+        } else {
+          this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume);
+        }
+        this.scene.remove(particle.mesh);
+        particle.mesh.geometry.dispose();
+      }
+    }
+  }
+
+  private updatePassiveSoil(dt: number): void {
+    this.soilSettleAccumulator += dt;
+    if (this.soilSettleAccumulator < 0.22) {
+      return;
+    }
+    this.soilSettleAccumulator = 0;
+    this.terrain.settleAt(DIG_SITE, 2.6, 1);
+    const tip = this.excavator.bucketTipWorld();
+    this.terrain.settleAt(tip, 1.15, 1);
+    if (this.truckLoad > 0.02) {
+      this.truck.settleLoad(1);
+    }
+  }
+
+  private depositParticle(particle: SoilParticle): void {
+    const pos = particle.mesh.position;
+    if (this.truck.containsWorldPoint(pos)) {
+      const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
+      this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
+      if (accepted < particle.volume) {
+        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted);
+      }
+    } else {
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume);
+    }
+    this.scene.remove(particle.mesh);
+    particle.mesh.geometry.dispose();
+  }
+
+  private updateSafety(dt: number): void {
+    const tip = this.excavator.bucketTipWorld();
+    const pin = this.excavator.bucketPinWorld();
+    const reach = Math.hypot(tip.x, tip.z);
+    const loadMoment = reach * (0.4 + this.bucketLoad);
+    this.stability = smoothTo(this.stability, clamp(1.15 - loadMoment / 10.0, 0, 1), 2.5, dt);
+
+    const nearWorker =
+      Math.hypot(tip.x - WORKER_ZONE.x, tip.z - WORKER_ZONE.z) < 1.1 ||
+      Math.hypot(pin.x - WORKER_ZONE.x, pin.z - WORKER_ZONE.z) < 1.1;
+    if (nearWorker && Math.min(tip.y, pin.y) < 2.2 && this.safetyCooldown <= 0) {
+      this.safetyViolations += 1;
+      this.safetyCooldown = 1.2;
+    }
+
+    if (nearWorker) {
+      this.lastWarning = "작업 반경 안전구역 접근";
+    } else if (this.stability < 0.28) {
+      this.lastWarning = "장비 안정성 저하: 적재 상태에서 팔을 접거나 붐을 올리세요";
+    } else if (this.limitCooldown > 0.25) {
+      this.lastWarning = "관절 제한 충격";
+    } else if (this.truckLoad >= TRUCK_CAPACITY) {
+      this.lastWarning = "트럭 적재 완료";
+    } else if (this.bucketLoad >= BUCKET_CAPACITY * 0.96) {
+      this.lastWarning = "버킷 만재";
+    } else {
+      this.lastWarning = "";
+    }
+  }
+
+  private updateCamera(dt: number): void {
+    const bucketTip = this.excavator.bucketTipWorld();
+    const target = new THREE.Vector3(0, 0.9, 0).lerp(bucketTip, 0.25);
+    const desiredPosition = new THREE.Vector3();
+    const desiredLook = new THREE.Vector3();
+
+    if (this.cameraMode === "cab") {
+      desiredPosition.copy(this.excavator.cabCameraWorld());
+      desiredLook.copy(this.excavator.cabLookWorld()).lerp(bucketTip, 0.22);
+    } else if (this.cameraMode === "bucket") {
+      const forward = this.excavator.bucketForwardWorld();
+      desiredPosition.copy(bucketTip).addScaledVector(forward, -1.6).add(new THREE.Vector3(0, 0.7, 0));
+      desiredLook.copy(bucketTip).addScaledVector(forward, 0.8);
+    } else if (this.cameraMode === "task") {
+      desiredPosition.set(6.7, 6.1, 7.2);
+      desiredLook.set(0.7, 0.7, -0.2).lerp(bucketTip, 0.18);
+    } else {
+      const x = Math.cos(this.orbit.azimuth) * Math.cos(this.orbit.elevation) * this.orbit.distance;
+      const y = Math.sin(this.orbit.elevation) * this.orbit.distance + 1.8;
+      const z = Math.sin(this.orbit.azimuth) * Math.cos(this.orbit.elevation) * this.orbit.distance;
+      desiredPosition.copy(target).add(new THREE.Vector3(x, y, z));
+      desiredLook.copy(target);
+    }
+
+    const factor = 1 - Math.exp(-7.5 * dt);
+    this.camera.position.lerp(desiredPosition, factor);
+    this.cameraLookTarget.lerp(desiredLook, factor);
+    this.camera.lookAt(this.cameraLookTarget);
+  }
+
+  private updateUi(dt: number): void {
+    const loadRatio = clamp(this.truckLoad / TRUCK_CAPACITY, 0, 1);
+    this.ui.truckLoadText.textContent = `${Math.round(loadRatio * 100)}%`;
+    this.ui.truckLoadBar.style.width = `${loadRatio * 100}%`;
+    this.ui.missionState.textContent =
+      loadRatio >= 1 ? "작업 완료" : this.bucketLoad > 0.2 ? "운반 중" : this.pressure > 0.12 ? "굴착 중" : "굴착 대기";
+
+    this.ui.pressureMeter.value = this.pressure;
+    this.ui.bucketMeter.value = clamp(this.bucketLoad / BUCKET_CAPACITY, 0, 1);
+    this.ui.stabilityMeter.value = this.stability;
+    this.ui.timeText.textContent = fmtTime(this.elapsed);
+    this.ui.soilText.textContent = `${this.totalExcavated.toFixed(1)} m³`;
+    this.ui.limitText.textContent = String(this.limitImpacts);
+    this.ui.safetyText.textContent = String(this.safetyViolations);
+    this.ui.idleText.textContent = `${Math.round((this.idleSeconds / Math.max(this.elapsed, 1)) * 100)}%`;
+    this.ui.travelText.textContent = `${this.travelDistance.toFixed(1)} m`;
+    const travelSpeed = (this.leftTrackVelocity + this.rightTrackVelocity) * 0.5;
+    const turnRate = (this.rightTrackVelocity - this.leftTrackVelocity) / TRACK_GAUGE;
+    if (Math.abs(travelSpeed) > 0.05 && Math.abs(turnRate) > 0.1) {
+      this.ui.travelDirectionText.textContent = travelSpeed > 0 ? "전진 선회" : "후진 선회";
+    } else if (travelSpeed > 0.05) {
+      this.ui.travelDirectionText.textContent = "전진";
+    } else if (travelSpeed < -0.05) {
+      this.ui.travelDirectionText.textContent = "후진";
+    } else if (turnRate > 0.1) {
+      this.ui.travelDirectionText.textContent = "좌피벗";
+    } else if (turnRate < -0.1) {
+      this.ui.travelDirectionText.textContent = "우피벗";
+    } else {
+      this.ui.travelDirectionText.textContent = "중립";
+    }
+    this.ui.swingText.textContent = `${radToDeg(this.angles.swing)}°`;
+    this.ui.boomText.textContent = `${radToDeg(this.angles.boom)}°`;
+    this.ui.stickText.textContent = `${radToDeg(this.angles.stick)}°`;
+    this.ui.bucketText.textContent = `${radToDeg(this.angles.bucket)}°`;
+
+    this.ui.keyCaps.forEach((cap) => {
+      const key = cap.dataset.key ?? "";
+      cap.classList.toggle("active", this.keys.has(key));
+    });
+
+    this.fpsAccumulator += dt;
+    this.fpsFrames += 1;
+    if (this.fpsAccumulator >= 0.35) {
+      this.fps = Math.round(this.fpsFrames / this.fpsAccumulator);
+      this.fpsAccumulator = 0;
+      this.fpsFrames = 0;
+      this.ui.fpsText.textContent = String(this.fps);
+    }
+
+    this.ui.warningStrip.textContent = this.lastWarning;
+    this.ui.warningStrip.classList.toggle("hidden", this.lastWarning.length === 0);
+  }
+
+  private updatePatternLabels(): void {
+    if (this.pattern === "ISO") {
+      this.ui.leftStickLabelY.textContent = "W/S Stick";
+      this.ui.leftStickLabelX.textContent = "A/D Swing";
+      this.ui.rightStickLabelY.textContent = "↑/↓ Boom";
+      this.ui.rightStickLabelX.textContent = "← Scoop / → Dump";
+    } else if (this.pattern === "SAE") {
+      this.ui.leftStickLabelY.textContent = "W/S Boom";
+      this.ui.leftStickLabelX.textContent = "A/D Swing";
+      this.ui.rightStickLabelY.textContent = "↑/↓ Stick";
+      this.ui.rightStickLabelX.textContent = "← Scoop / → Dump";
+    } else {
+      this.ui.leftStickLabelY.textContent = "W/S Boom";
+      this.ui.leftStickLabelX.textContent = "A/D Swing";
+      this.ui.rightStickLabelY.textContent = "↑/↓ Reach";
+      this.ui.rightStickLabelX.textContent = "← Scoop / → Dump";
+    }
+  }
+
+  private resize(): void {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    this.renderer.setSize(width, height, false);
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+  }
+
+  private isSimKey(code: string): boolean {
+    return (
+      code === "KeyW" ||
+      code === "KeyA" ||
+      code === "KeyS" ||
+      code === "KeyD" ||
+      code === "KeyB" ||
+      code === "KeyG" ||
+      code === "KeyN" ||
+      code === "KeyH" ||
+      code === "ArrowUp" ||
+      code === "ArrowDown" ||
+      code === "ArrowLeft" ||
+      code === "ArrowRight"
+    );
+  }
+}
+
+new Simulator();
