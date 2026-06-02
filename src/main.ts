@@ -2272,6 +2272,9 @@ class Simulator {
     makeMat(0x855f36, 0.94, 0.02),
     makeMat(0x5a4734, 0.96, 0.02),
   ];
+  private readonly pooledSoilGeometry = new THREE.DodecahedronGeometry(1, 0);
+  private readonly soilParticlePool: THREE.Mesh[] = [];
+  private readonly soilParticlePoolLimit = 170;
   private readonly fineGrainMax = 300;
   private readonly fineGrainPositions = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainVelocities = new Float32Array(this.fineGrainMax * 3);
@@ -2411,8 +2414,7 @@ class Simulator {
     this.excavator.group.rotation.set(0, 0, 0);
     this.truck.reset(this.terrain);
     for (const particle of this.soilParticles) {
-      this.scene.remove(particle.mesh);
-      particle.mesh.geometry.dispose();
+      this.recycleSoilParticle(particle);
     }
     this.soilParticles.length = 0;
     this.excavator.setBucketLoad(0);
@@ -4558,12 +4560,12 @@ class Simulator {
       const source = edgePoints[i % edgePoints.length].clone();
       source.add(new THREE.Vector3((Math.random() - 0.5) * 0.16, 0.025 + Math.random() * 0.08, (Math.random() - 0.5) * 0.16));
       const radius = clamp(0.028 + Math.cbrt(perParticle) * 0.055 + Math.random() * 0.018, 0.03, 0.1);
-      const geometry = new THREE.DodecahedronGeometry(radius, 0);
-      const mesh = new THREE.Mesh(geometry, this.looseSoilMats[(i + this.soilParticles.length) % this.looseSoilMats.length]);
+      const mesh = this.acquireSoilParticleMesh(
+        radius,
+        this.looseSoilMats[(i + this.soilParticles.length) % this.looseSoilMats.length],
+        i + Math.round(perParticle * 1000),
+      );
       mesh.position.copy(source);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.scene.add(mesh);
       const target = pocket.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.18, (Math.random() - 0.5) * 0.08, (Math.random() - 0.5) * 0.28));
       const flightTime = 0.32 + Math.random() * 0.12;
       const velocity = target
@@ -4595,22 +4597,13 @@ class Simulator {
         }
       }
       const radius = clamp(0.04 + Math.cbrt(perParticle) * 0.08, 0.04, 0.13);
-      const geometry = new THREE.DodecahedronGeometry(radius, 0);
-      const position = geometry.attributes.position as THREE.BufferAttribute;
-      for (let vertex = 0; vertex < position.count; vertex += 1) {
-        const x = position.getX(vertex);
-        const y = position.getY(vertex);
-        const z = position.getZ(vertex);
-        const scale = 0.76 + hash2(vertex + i * 7, Math.round(perParticle * 1000)) * 0.42;
-        position.setXYZ(vertex, x * scale, y * (0.72 + scale * 0.25), z * scale);
-      }
-      geometry.computeVertexNormals();
-      const mesh = new THREE.Mesh(geometry, this.looseSoilMats[(i + this.soilParticles.length) % this.looseSoilMats.length]);
+      const mesh = this.acquireSoilParticleMesh(
+        radius,
+        this.looseSoilMats[(i + this.soilParticles.length) % this.looseSoilMats.length],
+        i * 7 + Math.round(perParticle * 1000),
+      );
       const jitter = new THREE.Vector3((Math.random() - 0.5) * 0.36, (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.52);
       mesh.position.copy(origin).add(jitter);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.scene.add(mesh);
 
       const velocity = flowDirection
         .clone()
@@ -4618,6 +4611,35 @@ class Simulator {
         .addScaledVector(sideways, (Math.random() - 0.5) * 0.8)
         .add(new THREE.Vector3(0, -0.45 - openFactor * 1.15, 0));
       this.soilParticles.push({ mesh, velocity, volume: perParticle, life: 0, settles: true });
+    }
+  }
+
+  private acquireSoilParticleMesh(radius: number, material: THREE.Material, seed: number): THREE.Mesh {
+    const mesh = this.soilParticlePool.pop() ?? new THREE.Mesh(this.pooledSoilGeometry, material);
+    const squash = 0.72 + hash2(seed, 11) * 0.28;
+    const stretchX = 0.82 + hash2(seed, 17) * 0.36;
+    const stretchZ = 0.82 + hash2(seed, 23) * 0.36;
+
+    mesh.material = material;
+    mesh.visible = true;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.scale.set(radius * stretchX, radius * squash, radius * stretchZ);
+    mesh.rotation.set(hash2(seed, 31) * Math.PI, hash2(seed, 37) * Math.PI, hash2(seed, 41) * Math.PI);
+    this.scene.add(mesh);
+    return mesh;
+  }
+
+  private recycleSoilParticle(particle: SoilParticle): void {
+    const mesh = particle.mesh;
+    this.scene.remove(mesh);
+    mesh.visible = false;
+    mesh.position.set(0, -1000, 0);
+    mesh.rotation.set(0, 0, 0);
+    mesh.scale.set(1, 1, 1);
+    mesh.material = this.looseSoilMats[0];
+    if (this.soilParticlePool.length < this.soilParticlePoolLimit) {
+      this.soilParticlePool.push(mesh);
     }
   }
 
@@ -4804,8 +4826,7 @@ class Simulator {
               this.releaseTransitParticleToWorld(particle);
             }
           }
-          this.scene.remove(particle.mesh);
-          particle.mesh.geometry.dispose();
+          this.recycleSoilParticle(particle);
         }
         continue;
       }
@@ -4831,8 +4852,7 @@ class Simulator {
         } else {
           this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
         }
-        this.scene.remove(particle.mesh);
-        particle.mesh.geometry.dispose();
+        this.recycleSoilParticle(particle);
       }
     }
   }
@@ -4898,8 +4918,7 @@ class Simulator {
       } else {
         this.releaseTransitParticleToWorld(particle);
       }
-      this.scene.remove(particle.mesh);
-      particle.mesh.geometry.dispose();
+      this.recycleSoilParticle(particle);
       return;
     }
 
@@ -4913,8 +4932,7 @@ class Simulator {
     } else {
       this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
     }
-    this.scene.remove(particle.mesh);
-    particle.mesh.geometry.dispose();
+    this.recycleSoilParticle(particle);
   }
 
   private updateSafety(dt: number): void {
