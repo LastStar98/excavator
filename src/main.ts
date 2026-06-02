@@ -116,6 +116,16 @@ interface TruckPhysicsState {
   bodyY: number;
 }
 
+interface TruckCrawlerContactResult {
+  contact: boolean;
+  contactCount: number;
+  cornerContacts: number;
+  maxPenetration: number;
+  minApproachSpeed: number;
+  leftBlocked: boolean;
+  rightBlocked: boolean;
+}
+
 interface ArmCollisionSample {
   action: "boom" | "stick" | "bucket";
   point: THREE.Vector3;
@@ -198,7 +208,24 @@ interface ExcavatorDebugApi {
     linkSymmetry: number;
   };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
-  forceTruckCollision: () => { beforeX: number; afterX: number; blocked: boolean; collisionCount: number; pressure: number };
+  forceTruckCollision: () => {
+    beforeX: number;
+    afterX: number;
+    blocked: boolean;
+    sideBeforeZ: number;
+    sideAfterZ: number;
+    sideBlocked: boolean;
+    diagonalBeforeX: number;
+    diagonalBeforeZ: number;
+    diagonalAfterX: number;
+    diagonalAfterZ: number;
+    diagonalBlocked: boolean;
+    frontContact: TruckCrawlerContactResult;
+    sideContact: TruckCrawlerContactResult;
+    diagonalContact: TruckCrawlerContactResult;
+    collisionCount: number;
+    pressure: number;
+  };
   forceArmTruckCollision: () => {
     collided: boolean;
     angleBlocked: boolean;
@@ -3558,22 +3585,63 @@ class Simulator {
         };
       },
       forceTruckCollision: () => {
-        const localStart = new THREE.Vector3(-3.72, 0, 0);
-        const start = this.truck.group.localToWorld(localStart.clone());
-        const beforeLocal = this.truck.group.worldToLocal(start.clone());
-        this.excavator.group.position.set(start.x, this.terrain.getHeightAt(start.x, start.z), start.z);
-        this.excavator.group.rotation.set(0, this.truck.group.rotation.y, 0);
-        this.leftTrackVelocity = TRACK_MAX_SPEED;
-        this.rightTrackVelocity = TRACK_MAX_SPEED;
-        const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
-        this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward);
-        const afterLocal = this.truck.group.worldToLocal(this.excavator.group.position.clone());
-        this.updateExcavatorSupport(0.3, forward);
+        const yawFromForward = (worldForward: THREE.Vector3) => Math.atan2(-worldForward.z, worldForward.x);
+        const runScenario = (localStart: THREE.Vector3, localForward: THREE.Vector3) => {
+          const start = this.truck.group.localToWorld(localStart.clone());
+          const forwardWorld = localForward
+            .clone()
+            .normalize()
+            .applyQuaternion(this.truck.group.quaternion)
+            .setY(0)
+            .normalize();
+          const beforeLocal = this.truck.group.worldToLocal(start.clone());
+          this.excavator.group.position.set(start.x, this.terrain.getHeightAt(start.x, start.z), start.z);
+          this.excavator.group.rotation.set(0, yawFromForward(forwardWorld), 0);
+          this.leftTrackVelocity = TRACK_MAX_SPEED;
+          this.rightTrackVelocity = TRACK_MAX_SPEED;
+          this.collisionCooldown = 0;
+          const result = this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forwardWorld);
+          const afterLocal = this.truck.group.worldToLocal(this.excavator.group.position.clone());
+          return {
+            beforeLocal,
+            afterLocal,
+            contact: result.truckContact,
+            leftTrackVelocity: this.leftTrackVelocity,
+            rightTrackVelocity: this.rightTrackVelocity,
+          };
+        };
+
+        const front = runScenario(new THREE.Vector3(-3.1, 0, 0), new THREE.Vector3(1, 0, 0));
+        const side = runScenario(new THREE.Vector3(0.24, 0, -2.72), new THREE.Vector3(0, 0, 1));
+        const diagonal = runScenario(new THREE.Vector3(-3.18, 0, -2.28), new THREE.Vector3(1, 0, 0.72));
+        const supportForward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
+        this.updateExcavatorSupport(0.3, supportForward);
         this.updateUi(0);
         return {
-          beforeX: beforeLocal.x,
-          afterX: afterLocal.x,
-          blocked: afterLocal.x < -3.74 && Math.abs(this.leftTrackVelocity) < TRACK_MAX_SPEED * 0.55,
+          beforeX: front.beforeLocal.x,
+          afterX: front.afterLocal.x,
+          blocked:
+            front.afterLocal.x < front.beforeLocal.x - 0.08 &&
+            Math.abs(front.leftTrackVelocity) < TRACK_MAX_SPEED * 0.58 &&
+            Math.abs(front.rightTrackVelocity) < TRACK_MAX_SPEED * 0.58,
+          sideBeforeZ: side.beforeLocal.z,
+          sideAfterZ: side.afterLocal.z,
+          sideBlocked:
+            side.afterLocal.z < side.beforeLocal.z - 0.06 &&
+            Math.abs(side.leftTrackVelocity) < TRACK_MAX_SPEED * 0.7 &&
+            Math.abs(side.rightTrackVelocity) < TRACK_MAX_SPEED * 0.7,
+          diagonalBeforeX: diagonal.beforeLocal.x,
+          diagonalBeforeZ: diagonal.beforeLocal.z,
+          diagonalAfterX: diagonal.afterLocal.x,
+          diagonalAfterZ: diagonal.afterLocal.z,
+          diagonalBlocked:
+            diagonal.afterLocal.x < diagonal.beforeLocal.x - 0.04 &&
+            diagonal.afterLocal.z < diagonal.beforeLocal.z - 0.04 &&
+            (Math.abs(diagonal.leftTrackVelocity) < TRACK_MAX_SPEED * 0.72 ||
+              Math.abs(diagonal.rightTrackVelocity) < TRACK_MAX_SPEED * 0.72),
+          frontContact: front.contact,
+          sideContact: side.contact,
+          diagonalContact: diagonal.contact,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
         };
@@ -4510,8 +4578,122 @@ class Simulator {
     this.updateExcavatorSupport(dt, forward);
   }
 
-  private resolveWorldCollisions(forwardSpeed: number, turnRate: number, forward: THREE.Vector3): void {
+  private emptyTruckCrawlerContact(): TruckCrawlerContactResult {
+    return {
+      contact: false,
+      contactCount: 0,
+      cornerContacts: 0,
+      maxPenetration: 0,
+      minApproachSpeed: 0,
+      leftBlocked: false,
+      rightBlocked: false,
+    };
+  }
+
+  private resolveTruckCrawlerFootprintCollision(
+    forwardSpeed: number,
+    turnRate: number,
+    forward: THREE.Vector3,
+  ): TruckCrawlerContactResult {
+    const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    const base = this.excavator.group.position;
+    const samples = [
+      { x: TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5 },
+      { x: TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5 },
+      { x: 0, z: -TRACK_GAUGE * 0.5 },
+      { x: 0, z: TRACK_GAUGE * 0.5 },
+      { x: -TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5 },
+      { x: -TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5 },
+    ] as const;
+
+    let contactCount = 0;
+    let cornerContacts = 0;
+    let maxPenetration = 0;
+    let minApproachSpeed = 0;
+    let leftSeverity = 0;
+    let rightSeverity = 0;
+    let correctionWeight = 0;
+    const correctionNormal = new THREE.Vector3();
+
+    for (const sample of samples) {
+      const world = base
+        .clone()
+        .addScaledVector(forward, sample.x)
+        .addScaledVector(side, sample.z);
+      const hit = this.truck.resolveBodyCollision(world, TRACK_WIDTH * 0.54);
+      if (!hit) {
+        continue;
+      }
+
+      const sampleVelocity = forward
+        .clone()
+        .multiplyScalar(forwardSpeed + turnRate * sample.z)
+        .addScaledVector(side, -turnRate * sample.x);
+      const approachSpeed = sampleVelocity.dot(hit.normal);
+      const severity = clamp(hit.penetration * 2.2 + Math.max(0, -approachSpeed) * 0.75 + Math.abs(turnRate) * 0.08, 0, 1);
+
+      contactCount += 1;
+      maxPenetration = Math.max(maxPenetration, hit.penetration);
+      minApproachSpeed = Math.min(minApproachSpeed, approachSpeed);
+      correctionWeight += Math.min(hit.penetration + Math.max(0, -approachSpeed) * 0.04, 0.36);
+      correctionNormal.addScaledVector(hit.normal, 0.12 + severity);
+      if (Math.abs(sample.x) > TRACK_LENGTH * 0.34 && Math.abs(sample.z) > TRACK_GAUGE * 0.34) {
+        cornerContacts += 1;
+      }
+      if (sample.z < 0) {
+        leftSeverity = Math.max(leftSeverity, severity);
+      } else {
+        rightSeverity = Math.max(rightSeverity, severity);
+      }
+    }
+
+    if (contactCount === 0) {
+      return this.emptyTruckCrawlerContact();
+    }
+
+    if (correctionNormal.lengthSq() < 0.000001) {
+      const centerHit = this.truck.resolveBodyCollision(base, 1.62);
+      if (!centerHit) {
+        return this.emptyTruckCrawlerContact();
+      }
+      correctionNormal.copy(centerHit.normal);
+    }
+    correctionNormal.normalize();
+    const correction = Math.min(0.36, correctionWeight / contactCount + 0.012);
+    this.excavator.group.position.addScaledVector(correctionNormal, correction);
+
+    if (leftSeverity > 0.02) {
+      this.leftTrackVelocity *= clamp(1 - leftSeverity * 1.7, 0, 0.58);
+    }
+    if (rightSeverity > 0.02) {
+      this.rightTrackVelocity *= clamp(1 - rightSeverity * 1.7, 0, 0.58);
+    }
+
+    const peakSeverity = Math.max(leftSeverity, rightSeverity, maxPenetration * 1.8);
+    this.pressure = Math.max(this.pressure, clamp(0.36 + peakSeverity * 0.54, 0, 1));
+    if (this.collisionCooldown <= 0 && peakSeverity > 0.07) {
+      this.collisionCount += 1;
+      this.collisionCooldown = 0.34;
+    }
+
+    return {
+      contact: true,
+      contactCount,
+      cornerContacts,
+      maxPenetration,
+      minApproachSpeed,
+      leftBlocked: leftSeverity > 0.18,
+      rightBlocked: rightSeverity > 0.18,
+    };
+  }
+
+  private resolveWorldCollisions(
+    forwardSpeed: number,
+    turnRate: number,
+    forward: THREE.Vector3,
+  ): { truckContact: TruckCrawlerContactResult; bodyHit: boolean } {
     const hasDriveIntent = Math.abs(forwardSpeed) > 0.02 || Math.abs(turnRate) > 0.05;
+    const truckContact = this.resolveTruckCrawlerFootprintCollision(forwardSpeed, turnRate, forward);
     const hit = this.truck.resolveBodyCollision(this.excavator.group.position, 1.62);
     if (hit) {
       this.applyCollisionResponse(hit.normal, hit.penetration, forwardSpeed, turnRate, forward, 1.0);
@@ -4552,6 +4734,8 @@ class Simulator {
         }
       }
     }
+
+    return { truckContact, bodyHit: Boolean(hit) };
   }
 
   private applyCollisionResponse(

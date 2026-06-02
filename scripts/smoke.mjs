@@ -825,7 +825,18 @@ async function main() {
       [
         "truck collision blocks crawler body",
         truckCollisionValue?.blocked &&
+          truckCollisionValue?.sideBlocked &&
+          truckCollisionValue?.diagonalBlocked &&
+          truckCollisionValue?.frontContact?.contact &&
+          truckCollisionValue?.sideContact?.contact &&
+          truckCollisionValue?.diagonalContact?.contact &&
+          truckCollisionValue?.frontContact?.contactCount >= 2 &&
+          truckCollisionValue?.sideContact?.contactCount >= 2 &&
+          truckCollisionValue?.diagonalContact?.cornerContacts >= 1 &&
           truckCollisionValue?.afterX < truckCollisionValue?.beforeX - 0.08 &&
+          truckCollisionValue?.sideAfterZ < truckCollisionValue?.sideBeforeZ - 0.06 &&
+          truckCollisionValue?.diagonalAfterX < truckCollisionValue?.diagonalBeforeX - 0.04 &&
+          truckCollisionValue?.diagonalAfterZ < truckCollisionValue?.diagonalBeforeZ - 0.04 &&
           truckCollisionValue?.collisionCount > 0 &&
           truckCollisionValue?.pressure > 0.4,
       ],
