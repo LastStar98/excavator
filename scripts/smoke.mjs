@@ -311,6 +311,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const cuttingFlowPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceCuttingFlowPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const bucketKinematics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceBucketKinematics()`,
       returnByValue: true,
@@ -465,6 +470,7 @@ async function main() {
     const soilAfterDumpValue = soilAfterDump.result.value;
     const fineGrainSettlementValue = fineGrainSettlement.result.value;
     const soilPushValue = soilPush.result.value;
+    const cuttingFlowPhysicsValue = cuttingFlowPhysics.result.value;
     const bucketKinematicsValue = bucketKinematics.result.value;
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
@@ -592,6 +598,14 @@ async function main() {
           soilPushValue?.centerDrop > 0.01 &&
           soilPushValue?.bermRise > 0.003 &&
           soilPushValue?.bucketLoad > 1.5,
+      ],
+      [
+        "cutting flow particles use physics before entering bucket",
+        cuttingFlowPhysicsValue?.spawnedVolume > 0.12 &&
+          cuttingFlowPhysicsValue?.capturedVolume > 0.12 &&
+          Math.abs(cuttingFlowPhysicsValue?.transitRemaining ?? 1) < 0.003 &&
+          cuttingFlowPhysicsValue?.gravityDelta > 0.08 &&
+          cuttingFlowPhysicsValue?.activeFlowAfter === 0,
       ],
       [
         "bucket linkage and scoop geometry are coherent",
@@ -742,6 +756,7 @@ async function main() {
           soilAfterDump: soilAfterDumpValue,
           fineGrainSettlement: fineGrainSettlementValue,
           soilPush: soilPushValue,
+          cuttingFlowPhysics: cuttingFlowPhysicsValue,
           bucketKinematics: bucketKinematicsValue,
           trackPass: trackPassValue,
           pitSink: pitSinkValue,

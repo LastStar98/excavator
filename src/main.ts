@@ -61,6 +61,7 @@ interface SoilParticle {
   life: number;
   settles: boolean;
   target?: THREE.Vector3;
+  toBucket?: boolean;
 }
 
 type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone";
@@ -114,6 +115,7 @@ interface TruckPhysicsState {
 interface ExcavatorDebugApi {
   snapshot: () => {
     bucketLoad: number;
+    bucketTransitLoad: number;
     truckLoad: number;
     totalExcavated: number;
     digHeight: number;
@@ -142,6 +144,13 @@ interface ExcavatorDebugApi {
   forceDigPass: () => { removed: number; beforeHeight: number; afterHeight: number; bucketLoad: number; airborneFines: number };
   forceTruckDump: () => { dumped: number; truckLoad: number; bucketLoad: number };
   forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
+  forceCuttingFlowPhysics: () => {
+    spawnedVolume: number;
+    capturedVolume: number;
+    transitRemaining: number;
+    gravityDelta: number;
+    activeFlowAfter: number;
+  };
   forceBucketKinematics: () => {
     edgeWidth: number;
     pocketBehindEdge: number;
@@ -2035,6 +2044,7 @@ class Simulator {
   private elapsed = 0;
   private truckLoad = 0;
   private bucketLoad = 0;
+  private bucketTransitLoad = 0;
   private totalExcavated = 0;
   private limitImpacts = 0;
   private safetyViolations = 0;
@@ -2115,6 +2125,7 @@ class Simulator {
     Object.assign(this.velocities, { swing: 0, boom: 0, stick: 0, bucket: 0 });
     this.truckLoad = 0;
     this.bucketLoad = 0;
+    this.bucketTransitLoad = 0;
     this.totalExcavated = 0;
     this.limitImpacts = 0;
     this.safetyViolations = 0;
@@ -2653,6 +2664,7 @@ class Simulator {
         const truckPhysics = this.truck.physicsState();
         return {
           bucketLoad: this.bucketLoad,
+          bucketTransitLoad: this.bucketTransitLoad,
           truckLoad: this.truckLoad,
           totalExcavated: this.totalExcavated,
           digHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
@@ -2745,6 +2757,30 @@ class Simulator {
           bucketLoad: this.bucketLoad,
           centerDrop: centerBefore - centerAfter,
           bermRise: bermAfter - bermBefore,
+        };
+      },
+      forceCuttingFlowPhysics: () => {
+        const beforeBucket = this.bucketLoad;
+        const beforeTransit = this.bucketTransitLoad;
+        const volume = 0.18;
+        this.bucketTransitLoad += volume;
+        this.spawnCuttingFlow(this.excavator.bucketCuttingEdgeWorld(), this.excavator.bucketPocketWorld(), volume);
+        const flowParticles = this.soilParticles.filter((particle) => particle.toBucket);
+        const first = flowParticles[0];
+        const initialVy = first?.velocity.y ?? 0;
+        this.updateSoilParticles(1 / 45);
+        const gravityDelta = first ? initialVy - first.velocity.y : 0;
+        for (let step = 0; step < 150; step += 1) {
+          this.updateSoilParticles(1 / 60);
+        }
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.updateUi(0);
+        return {
+          spawnedVolume: volume,
+          capturedVolume: this.bucketLoad - beforeBucket,
+          transitRemaining: this.bucketTransitLoad - beforeTransit,
+          gravityDelta,
+          activeFlowAfter: this.soilParticles.filter((particle) => particle.toBucket).length,
         };
       },
       forceBucketKinematics: () => {
@@ -3425,8 +3461,8 @@ class Simulator {
       this.pressure = Math.max(this.pressure, clamp(resistance / 1.25, 0, 1));
     }
 
-    if (contactRatio > 0 && isDiggingMotion && this.bucketLoad < BUCKET_CAPACITY) {
-      const freeCapacity = BUCKET_CAPACITY - this.bucketLoad;
+    if (contactRatio > 0 && isDiggingMotion && this.bucketLoad + this.bucketTransitLoad < BUCKET_CAPACITY) {
+      const freeCapacity = BUCKET_CAPACITY - this.bucketLoad - this.bucketTransitLoad;
       const penetration = clamp(maxPenetration, 0.01, 0.9);
       const bite = clamp(
         (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.32 + 0.22) *
@@ -3451,12 +3487,14 @@ class Simulator {
       const airborneFines = removed * clamp(0.045 + tipSpeed * 0.012 + (1 - attackEfficiency) * 0.02, 0.045, 0.11);
       const bucketAccepted = Math.min(freeCapacity, Math.max(0, removed - airborneFines));
       const spill = Math.max(0, removed - airborneFines - bucketAccepted);
-      this.bucketLoad += bucketAccepted;
       this.totalExcavated += removed;
       if (removed > 0) {
         this.pressure = Math.max(this.pressure, clamp(0.42 + removed * 1.8 + contactRatio * 0.22, 0, 1));
         if (bucketAccepted > 0.001) {
+          this.bucketTransitLoad += bucketAccepted;
           this.spawnCuttingFlow(edgePoints, pocket, bucketAccepted);
+        } else {
+          this.bucketLoad += bucketAccepted;
         }
         if (airborneFines > 0.001) {
           this.spawnFineGrains(edgePoints[0], airborneFines, forward.clone().multiplyScalar(-1).add(new THREE.Vector3(0, 0.35, 0)), true, 1.35);
@@ -3467,7 +3505,7 @@ class Simulator {
       }
     }
 
-    if (contactRatio > 0 && isDiggingMotion && this.bucketLoad >= BUCKET_CAPACITY * 0.985) {
+    if (contactRatio > 0 && isDiggingMotion && this.bucketLoad + this.bucketTransitLoad >= BUCKET_CAPACITY * 0.985) {
       const displacementDepth = clamp(maxPenetration * (0.035 + tipSpeed * 0.025), 0.002, 0.045);
       const displaced = this.terrain.displaceSweptBucket(
         this.previousBucketTip,
@@ -3500,7 +3538,11 @@ class Simulator {
   }
 
   private spawnCuttingFlow(edgePoints: THREE.Vector3[], pocket: THREE.Vector3, volume: number): void {
+    if (volume <= 0) {
+      return;
+    }
     const count = clamp(Math.ceil(volume * 42), 4, 18);
+    const perParticle = volume / count;
     for (let i = 0; i < count; i += 1) {
       if (this.soilParticles.length > 220) {
         const oldest = this.soilParticles.shift();
@@ -3510,7 +3552,7 @@ class Simulator {
       }
       const source = edgePoints[i % edgePoints.length].clone();
       source.add(new THREE.Vector3((Math.random() - 0.5) * 0.16, 0.025 + Math.random() * 0.08, (Math.random() - 0.5) * 0.16));
-      const radius = 0.02 + Math.random() * 0.04;
+      const radius = clamp(0.028 + Math.cbrt(perParticle) * 0.055 + Math.random() * 0.018, 0.03, 0.1);
       const geometry = new THREE.DodecahedronGeometry(radius, 0);
       const mesh = new THREE.Mesh(geometry, this.looseSoilMats[(i + this.soilParticles.length) % this.looseSoilMats.length]);
       mesh.position.copy(source);
@@ -3518,8 +3560,13 @@ class Simulator {
       mesh.receiveShadow = true;
       this.scene.add(mesh);
       const target = pocket.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.18, (Math.random() - 0.5) * 0.08, (Math.random() - 0.5) * 0.28));
-      const velocity = target.clone().sub(source).multiplyScalar(2.8 + Math.random() * 1.2);
-      this.soilParticles.push({ mesh, velocity, volume: 0, life: 0, settles: false, target });
+      const flightTime = 0.32 + Math.random() * 0.12;
+      const velocity = target
+        .clone()
+        .sub(source)
+        .divideScalar(flightTime)
+        .add(new THREE.Vector3((Math.random() - 0.5) * 0.18, 0.5 * 9.81 * flightTime, (Math.random() - 0.5) * 0.18));
+      this.soilParticles.push({ mesh, velocity, volume: perParticle, life: 0, settles: false, target, toBucket: true });
     }
   }
 
@@ -3716,17 +3763,38 @@ class Simulator {
       particle.life += dt;
 
       if (!particle.settles) {
-        if (particle.target) {
+        if (particle.toBucket) {
+          particle.velocity.y -= 9.81 * dt;
+          particle.velocity.multiplyScalar(1 - Math.min(dt * 0.36, 0.08));
+        } else if (particle.target) {
           const desired = particle.target.clone().sub(particle.mesh.position).multiplyScalar(3.4);
           particle.velocity.lerp(desired, 1 - Math.exp(-8.5 * dt));
         }
         particle.mesh.position.addScaledVector(particle.velocity, dt);
-        particle.mesh.rotation.x += 5.2 * dt;
-        particle.mesh.rotation.z -= 4.4 * dt;
-        particle.mesh.scale.multiplyScalar(1 - Math.min(dt * 1.5, 0.055));
-        const reached = particle.target ? particle.mesh.position.distanceTo(particle.target) < 0.08 : false;
-        if (reached || particle.life > 0.7) {
+        particle.mesh.rotation.x += particle.velocity.z * dt * 3.2;
+        particle.mesh.rotation.z -= particle.velocity.x * dt * 3.2;
+        if (!particle.toBucket) {
+          particle.mesh.scale.multiplyScalar(1 - Math.min(dt * 1.5, 0.055));
+        }
+        const pos = particle.mesh.position;
+        const ground = this.terrain.getHeightAt(pos.x, pos.z);
+        const reached =
+          particle.toBucket
+            ? this.isBucketParticleCaptured(particle)
+            : particle.target
+              ? pos.distanceTo(particle.target) < 0.08
+              : false;
+        const grounded = particle.toBucket && pos.y <= ground + 0.045;
+        const expired = particle.life > (particle.toBucket ? 2.2 : 0.7);
+        if (reached || grounded || expired) {
           this.soilParticles.splice(i, 1);
+          if (particle.toBucket) {
+            if (reached) {
+              this.captureParticleIntoBucket(particle);
+            } else {
+              this.releaseTransitParticleToWorld(particle);
+            }
+          }
           this.scene.remove(particle.mesh);
           particle.mesh.geometry.dispose();
         }
@@ -3760,6 +3828,46 @@ class Simulator {
     }
   }
 
+  private isBucketParticleCaptured(particle: SoilParticle): boolean {
+    const pos = particle.mesh.position;
+    const pocket = this.excavator.bucketPocketWorld();
+    return pos.distanceTo(pocket) < 0.42 || Boolean(particle.target && pos.distanceTo(particle.target) < 0.26);
+  }
+
+  private captureParticleIntoBucket(particle: SoilParticle): void {
+    const volume = Math.max(0, particle.volume);
+    this.bucketTransitLoad = Math.max(0, this.bucketTransitLoad - volume);
+    if (volume <= 0) {
+      return;
+    }
+    const accepted = Math.min(volume, Math.max(0, BUCKET_CAPACITY - this.bucketLoad));
+    this.bucketLoad += accepted;
+    if (accepted < volume) {
+      const pos = particle.mesh.position;
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.34 + Math.cbrt(volume - accepted) * 0.1, volume - accepted);
+    }
+    this.excavator.setBucketLoad(this.bucketLoad);
+  }
+
+  private releaseTransitParticleToWorld(particle: SoilParticle): void {
+    const volume = Math.max(0, particle.volume);
+    this.bucketTransitLoad = Math.max(0, this.bucketTransitLoad - volume);
+    if (volume <= 0) {
+      return;
+    }
+    const pos = particle.mesh.position;
+    if (this.truck.containsWorldPoint(pos)) {
+      const accepted = this.truck.depositSoilAt(pos, volume, TRUCK_CAPACITY - this.truckLoad);
+      this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
+      if (accepted < volume) {
+        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.36, volume - accepted);
+      }
+    } else {
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.32 + Math.cbrt(volume) * 0.1, volume);
+    }
+    this.truck.updateLoad(this.truckLoad);
+  }
+
   private updatePassiveSoil(dt: number): void {
     this.soilSettleAccumulator += dt;
     if (this.soilSettleAccumulator < 0.22) {
@@ -3775,6 +3883,17 @@ class Simulator {
   }
 
   private depositParticle(particle: SoilParticle): void {
+    if (particle.toBucket) {
+      if (this.isBucketParticleCaptured(particle)) {
+        this.captureParticleIntoBucket(particle);
+      } else {
+        this.releaseTransitParticleToWorld(particle);
+      }
+      this.scene.remove(particle.mesh);
+      particle.mesh.geometry.dispose();
+      return;
+    }
+
     const pos = particle.mesh.position;
     if (this.truck.containsWorldPoint(pos)) {
       const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
