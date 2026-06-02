@@ -455,6 +455,10 @@ interface ExcavatorDebugApi {
     debrisTravel: number;
     hardTravel: number;
     railTravel: number;
+    excavatorPenetrationBefore: number;
+    excavatorPenetrationAfter: number;
+    excavatorObjectTravel: number;
+    excavatorObjectVelocity: number;
     trackContactCount: number;
     cornerContacts: number;
     movedMass: number;
@@ -5450,6 +5454,10 @@ class Simulator {
         let debrisTravel = 0;
         let hardTravel = 0;
         let railTravel = 0;
+        let excavatorPenetrationBefore = 0;
+        let excavatorPenetrationAfter = 0;
+        let excavatorObjectTravel = 0;
+        let excavatorObjectVelocity = 0;
         let truckPenetrationBefore = 0;
         let truckPenetrationAfter = 0;
         let pairDistanceBefore = 0;
@@ -5530,6 +5538,28 @@ class Simulator {
           truckPenetrationAfter = this.truck.resolveSolidCollision(debris.mesh.position, debris.radius)?.penetration ?? 0;
         }
 
+        if (debris) {
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+          this.excavator.group.rotation.set(0, 0, 0);
+          Object.assign(this.angles, { swing: 0, boom: 0.46, stick: -1.16, bucket: -1.9 });
+          this.excavator.applyAngles(this.angles);
+          const base = this.excavator.group.position;
+          const normal = new THREE.Vector3(0, 0, 1);
+          const trackPoint = base.clone().add(new THREE.Vector3(0, 0, TRACK_GAUGE * 0.5));
+          trackPoint.y = base.y + 0.34;
+          debris.mesh.position.copy(trackPoint).addScaledVector(normal, TRACK_WIDTH * 0.72 + debris.radius - 0.16);
+          debris.velocity.copy(normal).multiplyScalar(-0.72);
+          debris.sleeping = false;
+          this.worldColliderGridDirty = true;
+          excavatorPenetrationBefore = this.resolveLooseObjectExcavatorHit(debris)?.penetration ?? 0;
+          const beforePosition = debris.mesh.position.clone();
+          this.collisionCooldown = 0;
+          this.resolveLooseObjectExcavatorCollision(debris);
+          excavatorPenetrationAfter = this.resolveLooseObjectExcavatorHit(debris)?.penetration ?? 0;
+          excavatorObjectTravel = debris.mesh.position.distanceTo(beforePosition);
+          excavatorObjectVelocity = debris.velocity.length();
+        }
+
         if (debris && hard) {
           const pairBase = new THREE.Vector3(1.15, 0, 2.85);
           const ground = this.terrain.getHeightAt(pairBase.x, pairBase.z);
@@ -5553,6 +5583,10 @@ class Simulator {
           debrisTravel,
           hardTravel,
           railTravel,
+          excavatorPenetrationBefore,
+          excavatorPenetrationAfter,
+          excavatorObjectTravel,
+          excavatorObjectVelocity,
           trackContactCount,
           cornerContacts,
           movedMass,
@@ -6773,6 +6807,9 @@ class Simulator {
       if (this.resolveLooseObjectTruckCollision(collider)) {
         activeObjectMoved = true;
       }
+      if (nearCrawlerBody && this.resolveLooseObjectExcavatorCollision(collider)) {
+        activeObjectMoved = true;
+      }
       if (this.resolveLooseObjectBucketLoadCollision(collider)) {
         activeObjectMoved = true;
       }
@@ -6837,6 +6874,102 @@ class Simulator {
     collider.sleeping = false;
     this.pressure = Math.max(this.pressure, clamp(0.34 + hit.penetration * 1.8 + collider.mass * 0.008, 0, 0.9));
     if (this.collisionCooldown <= 0 && hit.penetration > 0.025) {
+      this.collisionCount += 1;
+      this.collisionCooldown = 0.34;
+    }
+    return true;
+  }
+
+  private resolveLooseObjectExcavatorHit(collider: WorldCollider): { normal: THREE.Vector3; penetration: number } | null {
+    const pos = collider.mesh.position;
+    const base = this.excavator.group.position;
+    const yaw = this.excavator.group.rotation.y;
+    const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw).normalize();
+    const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    let best: { normal: THREE.Vector3; penetration: number } | null = null;
+
+    const considerHorizontal = (point: THREE.Vector3, radius: number): void => {
+      if (Math.abs(pos.y - point.y) > collider.radius + 0.72) {
+        return;
+      }
+      const dx = pos.x - point.x;
+      const dz = pos.z - point.z;
+      const combined = radius + collider.radius;
+      const distanceSq = dx * dx + dz * dz;
+      if (distanceSq >= combined * combined) {
+        return;
+      }
+      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+      const normal = distanceSq < 0.000001 ? forward.clone() : new THREE.Vector3(dx / distance, 0, dz / distance);
+      const penetration = combined - distance;
+      if (!best || penetration > best.penetration) {
+        best = { normal, penetration };
+      }
+    };
+
+    const considerSphere = (point: THREE.Vector3, radius: number): void => {
+      const delta = pos.clone().sub(point);
+      const combined = radius + collider.radius;
+      const distanceSq = delta.lengthSq();
+      if (distanceSq >= combined * combined) {
+        return;
+      }
+      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+      const normal = distanceSq < 0.000001 ? new THREE.Vector3(1, 0, 0) : delta.divideScalar(distance);
+      const penetration = combined - distance;
+      if (!best || penetration > best.penetration) {
+        best = { normal, penetration };
+      }
+    };
+
+    for (const sample of [
+      { x: TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.66 },
+      { x: TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.66 },
+      { x: 0, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.72 },
+      { x: 0, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.72 },
+      { x: -TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.66 },
+      { x: -TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.66 },
+    ] as const) {
+      const point = base.clone().addScaledVector(forward, sample.x).addScaledVector(side, sample.z);
+      point.y = base.y + 0.34;
+      considerHorizontal(point, sample.radius);
+    }
+
+    for (const sample of [...this.excavator.upperCollisionSamples(), ...this.excavator.armCollisionSamples()]) {
+      considerSphere(sample.point, sample.radius);
+    }
+
+    return best;
+  }
+
+  private resolveLooseObjectExcavatorCollision(collider: WorldCollider): boolean {
+    let hit = this.resolveLooseObjectExcavatorHit(collider);
+    if (!hit) {
+      return false;
+    }
+
+    const responseNormal = hit.normal.clone().normalize();
+    let maxPenetration = hit.penetration;
+    for (let i = 0; i < 2 && hit; i += 1) {
+      const normal = hit.normal.clone().normalize();
+      maxPenetration = Math.max(maxPenetration, hit.penetration);
+      collider.mesh.position.addScaledVector(normal, Math.min(hit.penetration + 0.004, 0.42));
+      hit = this.resolveLooseObjectExcavatorHit(collider);
+      if (!hit || hit.penetration < 0.012) {
+        break;
+      }
+    }
+
+    const normalSpeed = collider.velocity.dot(responseNormal);
+    const tangent = collider.velocity.clone().addScaledVector(responseNormal, -normalSpeed);
+    const tangentDamping = 1 - clamp(0.08 + collider.friction * 0.2, 0.08, 0.34);
+    const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.04, 0.06, 0.42) : Math.max(normalSpeed, 0);
+    collider.velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(responseNormal, bounceSpeed);
+    collider.sleeping = false;
+    this.worldColliderGridDirty = true;
+
+    this.pressure = Math.max(this.pressure, clamp(0.22 + maxPenetration * 1.45 + collider.mass * 0.006, 0, 0.82));
+    if (this.collisionCooldown <= 0 && maxPenetration > 0.02) {
       this.collisionCount += 1;
       this.collisionCooldown = 0.34;
     }

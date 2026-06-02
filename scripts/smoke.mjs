@@ -1075,6 +1075,10 @@ async function main() {
           worldObjectPhysicsValue?.cornerContacts >= 1 &&
           worldObjectPhysicsValue?.movedMass > 6 &&
           (worldObjectPhysicsValue?.leftImpulse > 0.01 || worldObjectPhysicsValue?.rightImpulse > 0.01) &&
+          worldObjectPhysicsValue?.excavatorPenetrationBefore > worldObjectPhysicsValue?.excavatorPenetrationAfter &&
+          worldObjectPhysicsValue?.excavatorPenetrationAfter < 0.04 &&
+          worldObjectPhysicsValue?.excavatorObjectTravel > 0.03 &&
+          worldObjectPhysicsValue?.excavatorObjectVelocity > 0.01 &&
           worldObjectPhysicsValue?.truckPenetrationBefore > worldObjectPhysicsValue?.truckPenetrationAfter &&
           worldObjectPhysicsValue?.truckPenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.pairDistanceAfter > worldObjectPhysicsValue?.pairDistanceBefore &&
