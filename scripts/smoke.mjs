@@ -776,7 +776,10 @@ async function main() {
         fineGrainSettlementValue?.spawnedVolume > 0.05 &&
           Math.abs((fineGrainSettlementValue?.settledVolume ?? 0) - fineGrainSettlementValue.spawnedVolume) < 0.004 &&
           fineGrainSettlementValue?.activeAfter === 0 &&
-          fineGrainSettlementValue?.terrainGain > 0.035,
+          fineGrainSettlementValue?.terrainGain > 0.035 &&
+          fineGrainSettlementValue?.fineObjectImpulse > 0.002 &&
+          fineGrainSettlementValue?.fineObjectTravel > 0.0001 &&
+          fineGrainSettlementValue?.fineObjectPenetrationBefore > fineGrainSettlementValue?.fineObjectPenetrationAfter,
       ],
       [
         "full bucket pushes soil into berms",

@@ -389,6 +389,10 @@ interface ExcavatorDebugApi {
     settledVolume: number;
     activeAfter: number;
     terrainGain: number;
+    fineObjectImpulse: number;
+    fineObjectTravel: number;
+    fineObjectPenetrationBefore: number;
+    fineObjectPenetrationAfter: number;
     truckLoad: number;
   };
   forceExcavatorPitSink: () => {
@@ -4511,12 +4515,69 @@ class Simulator {
         for (let step = 0; step < 180; step += 1) {
           this.updateFineGrains(1 / 45);
         }
+
+        let fineObjectImpulse = 0;
+        let fineObjectTravel = 0;
+        let fineObjectPenetrationBefore = 0;
+        let fineObjectPenetrationAfter = 0;
+        const fineTarget =
+          this.worldColliders.find((collider) => collider.kind === "cone") ??
+          this.worldColliders.find((collider) => collider.kind === "rock") ??
+          this.worldColliders.find((collider) => collider.kind === "boulder");
+        if (fineTarget) {
+          const savedPosition = fineTarget.mesh.position.clone();
+          const savedQuaternion = fineTarget.mesh.quaternion.clone();
+          const savedScale = fineTarget.mesh.scale.clone();
+          const savedVelocity = fineTarget.velocity.clone();
+          const savedSleeping = fineTarget.sleeping;
+          const radius = 0.026;
+          const idx = this.fineGrainCursor;
+          const p = idx * 3;
+          const start = fineTarget.mesh.position.clone();
+          this.deactivateFineGrain(idx);
+          this.fineGrainPositions[p] = fineTarget.mesh.position.x - fineTarget.radius - radius + 0.018;
+          this.fineGrainPositions[p + 1] = fineTarget.mesh.position.y + Math.min(0.08, fineTarget.radius * 0.18);
+          this.fineGrainPositions[p + 2] = fineTarget.mesh.position.z;
+          this.fineGrainVelocities[p] = 0.82;
+          this.fineGrainVelocities[p + 1] = -0.04;
+          this.fineGrainVelocities[p + 2] = 0.02;
+          this.fineGrainVolumes[idx] = 0.035;
+          this.fineGrainLife[idx] = 0;
+          this.fineGrainMaxLife[idx] = 1;
+          this.fineGrainSettles[idx] = 1;
+          fineTarget.velocity.set(0, 0, 0);
+          fineTarget.sleeping = false;
+          this.worldColliderGridDirty = true;
+          fineObjectPenetrationBefore =
+            fineTarget.radius +
+            radius -
+            fineTarget.mesh.position.distanceTo(new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2]));
+          this.resolveFineGrainCollisions(idx, radius);
+          fineObjectImpulse = fineTarget.velocity.length();
+          fineObjectTravel = fineTarget.mesh.position.distanceTo(start);
+          fineObjectPenetrationAfter =
+            fineTarget.radius +
+            radius -
+            fineTarget.mesh.position.distanceTo(new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2]));
+          this.deactivateFineGrain(idx);
+          fineTarget.mesh.position.copy(savedPosition);
+          fineTarget.mesh.quaternion.copy(savedQuaternion);
+          fineTarget.mesh.scale.copy(savedScale);
+          fineTarget.velocity.copy(savedVelocity);
+          fineTarget.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        }
+
         this.updateUi(0);
         return {
           spawnedVolume,
           settledVolume: this.fineGrainSettledVolume - beforeSettled,
           activeAfter: this.fineGrainCount(),
           terrainGain: this.terrain.terrainVolumeDelta() - beforeTerrain,
+          fineObjectImpulse,
+          fineObjectTravel,
+          fineObjectPenetrationBefore,
+          fineObjectPenetrationAfter,
           truckLoad: this.truckLoad,
         };
       },
@@ -6403,6 +6464,7 @@ class Simulator {
       }
     }
 
+    const fineMass = Math.max(0.006, this.fineGrainVolumes[i] * 1.8);
     for (const collider of this.nearbyWorldColliders(pos, radius + FINE_GRAIN_COLLISION_QUERY_PADDING)) {
       if (this.carriedWorldColliders.has(collider)) {
         continue;
@@ -6416,16 +6478,38 @@ class Simulator {
         continue;
       }
       const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-      const normal = new THREE.Vector3(dx / distance, dy / distance, dz / distance);
+      const normal = distanceSq < 0.000001 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(dx / distance, dy / distance, dz / distance);
       const penetration = combined - distance;
-      pos.addScaledVector(normal, penetration + 0.002);
-      const closingSpeed = velocity.dot(normal);
-      if (closingSpeed < 0) {
-        const impulse = -closingSpeed * 0.035;
-        velocity.addScaledVector(normal, -closingSpeed * (1.08 + collider.restitution));
-        collider.velocity.addScaledVector(normal, -impulse / Math.max(collider.mass, 0.1));
-        collider.sleeping = false;
+      const invFine = 1 / fineMass;
+      const invObject = collider.immovable ? 0 : 1 / Math.max(collider.mass, 0.05);
+      const totalInvMass = invFine + invObject;
+      if (totalInvMass <= 0) {
+        continue;
       }
+
+      const correction = Math.min(penetration * 0.9 + 0.002, 0.12);
+      pos.addScaledVector(normal, correction * (invFine / totalInvMass));
+      collider.mesh.position.addScaledVector(normal, -correction * (invObject / totalInvMass));
+
+      const relativeVelocity = velocity.clone().sub(collider.velocity);
+      const closingSpeed = relativeVelocity.dot(normal);
+      if (closingSpeed < 0) {
+        const restitution = Math.min(0.16, collider.restitution + 0.03);
+        const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
+        velocity.addScaledVector(normal, impulse * invFine);
+        collider.velocity.addScaledVector(normal, -impulse * invObject);
+      }
+
+      const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
+      if (tangent.lengthSq() > 0.000001) {
+        tangent.normalize().multiplyScalar(clamp(collider.friction * 0.055, 0.018, 0.08));
+        velocity.addScaledVector(tangent, -invFine / totalInvMass);
+        collider.velocity.addScaledVector(tangent, invObject / totalInvMass);
+        velocity.multiplyScalar(1 - Math.min(collider.friction * 0.04, 0.08));
+      }
+      collider.sleeping = false;
+      this.worldColliderGridDirty = true;
+      this.pressure = Math.max(this.pressure, clamp(0.025 + penetration * 0.55 + fineMass * 0.4, 0, 0.2));
       collided = true;
       break;
     }
