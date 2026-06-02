@@ -290,6 +290,18 @@ interface ExcavatorDebugApi {
     impactRoll: number;
     truckStayedPut: boolean;
   };
+  forceTruckWheelPhysics: () => {
+    wheelPenetrationBefore: number;
+    wheelPenetrationAfter: number;
+    solidPenetrationBefore: number;
+    objectTravel: number;
+    objectImpulse: number;
+    objectVelocity: number;
+    soilPenetrationBefore: number;
+    soilPenetrationAfter: number;
+    soilImpactImpulse: number;
+    truckImpactImpulse: number;
+  };
   forceUpperStructurePhysics: () => {
     truckCollided: boolean;
     truckBlocked: boolean;
@@ -1778,6 +1790,52 @@ class WorkTruck {
         continue;
       }
       const normal = localNormal.applyQuaternion(this.group.quaternion).normalize();
+      if (!best || penetration > best.penetration) {
+        best = { normal, penetration };
+      }
+    }
+
+    const wheelHit = this.resolveWheelSolidCollision(local, radius);
+    if (wheelHit && (!best || wheelHit.penetration > best.penetration)) {
+      best = {
+        normal: wheelHit.normal.applyQuaternion(this.group.quaternion).normalize(),
+        penetration: wheelHit.penetration,
+      };
+    }
+
+    return best;
+  }
+
+  resolveWheelCollision(worldPoint: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
+    const local = this.group.worldToLocal(worldPoint.clone());
+    const wheelHit = this.resolveWheelSolidCollision(local, radius);
+    if (!wheelHit) {
+      return null;
+    }
+    return {
+      normal: wheelHit.normal.applyQuaternion(this.group.quaternion).normalize(),
+      penetration: wheelHit.penetration,
+    };
+  }
+
+  private resolveWheelSolidCollision(local: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
+    let best: { normal: THREE.Vector3; penetration: number } | null = null;
+    const tireRadius = 0.36;
+    const halfTireWidth = 0.18;
+
+    for (const wheel of this.wheelLocals) {
+      const center = new THREE.Vector3(wheel.x, 0.32, wheel.z);
+      const closest = new THREE.Vector3(center.x, center.y, clamp(local.z, center.z - halfTireWidth, center.z + halfTireWidth));
+      const delta = local.clone().sub(closest);
+      const distanceSq = delta.lengthSq();
+      const combined = tireRadius + radius;
+      if (distanceSq >= combined * combined) {
+        continue;
+      }
+
+      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+      const normal = distanceSq < 0.000001 ? new THREE.Vector3(0, 1, 0) : delta.divideScalar(distance);
+      const penetration = combined - distance;
       if (!best || penetration > best.penetration) {
         best = { normal, penetration };
       }
@@ -4029,6 +4087,77 @@ class Simulator {
           impactPitch: Math.max(Math.abs(afterCrawlerImpact.impactPitch), Math.abs(afterCrawlerBody.impactPitch), Math.abs(afterBody.impactPitch)),
           impactRoll: Math.max(Math.abs(afterCrawlerImpact.impactRoll), Math.abs(afterCrawlerBody.impactRoll), Math.abs(afterBody.impactRoll)),
           truckStayedPut: Math.hypot(this.truck.group.position.x - TRUCK_CENTER.x, this.truck.group.position.z - TRUCK_CENTER.z) < 0.02,
+        };
+      },
+      forceTruckWheelPhysics: () => {
+        this.truck.reset(this.terrain);
+        this.truckLoad = 0;
+        this.truck.updateLoad(this.truckLoad);
+        const wheelProbe = this.truck.group.localToWorld(new THREE.Vector3(-1.7, 0.32, -1.22));
+        const probeRadius = 0.08;
+        const wheelPenetrationBefore = this.truck.resolveWheelCollision(wheelProbe, probeRadius)?.penetration ?? 0;
+        const solidPenetrationBefore = this.truck.resolveSolidCollision(wheelProbe, probeRadius)?.penetration ?? 0;
+        const impactStart = this.truck.physicsState().impactImpulse;
+
+        let wheelPenetrationAfter = 0;
+        let objectTravel = 0;
+        let objectImpulse = 0;
+        let objectVelocity = 0;
+        const obstacle =
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "rock") ??
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "clod") ??
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "boulder");
+        if (obstacle) {
+          const savedPosition = obstacle.mesh.position.clone();
+          const savedVelocity = obstacle.velocity.clone();
+          const savedSleeping = obstacle.sleeping;
+          obstacle.mesh.position.copy(wheelProbe);
+          const hit = this.truck.resolveWheelCollision(obstacle.mesh.position, obstacle.radius);
+          obstacle.velocity.copy(hit?.normal ?? new THREE.Vector3(0, 0, -1)).multiplyScalar(-0.72);
+          obstacle.sleeping = false;
+          const beforeObject = obstacle.mesh.position.clone();
+          const beforeImpact = this.truck.physicsState().impactImpulse;
+          this.resolveLooseObjectTruckCollision(obstacle);
+          wheelPenetrationAfter = this.truck.resolveWheelCollision(obstacle.mesh.position, obstacle.radius)?.penetration ?? 0;
+          objectTravel = obstacle.mesh.position.distanceTo(beforeObject);
+          objectVelocity = obstacle.velocity.length();
+          objectImpulse = Math.max(0, this.truck.physicsState().impactImpulse - beforeImpact);
+          obstacle.mesh.position.copy(savedPosition);
+          obstacle.velocity.copy(savedVelocity);
+          obstacle.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        }
+
+        const soilRadius = 0.07;
+        const soilMesh = this.acquireSoilParticleMesh(soilRadius, this.looseSoilMats[0], 4551);
+        soilMesh.position.copy(wheelProbe);
+        const soilParticle: SoilParticle = {
+          mesh: soilMesh,
+          velocity: new THREE.Vector3(0, -0.05, -0.55),
+          volume: 0.04,
+          radius: soilRadius,
+          life: 0,
+          settles: true,
+        };
+        const soilPenetrationBefore = this.truck.resolveWheelCollision(soilMesh.position, soilRadius)?.penetration ?? 0;
+        const beforeSoilImpact = this.truck.physicsState().impactImpulse;
+        this.resolveSoilParticleCollisions(soilParticle);
+        const soilPenetrationAfter = this.truck.resolveWheelCollision(soilMesh.position, soilRadius)?.penetration ?? 0;
+        const soilImpactImpulse = Math.max(0, this.truck.physicsState().impactImpulse - beforeSoilImpact);
+        this.recycleSoilParticle(soilParticle);
+        this.updateUi(0);
+
+        return {
+          wheelPenetrationBefore,
+          wheelPenetrationAfter,
+          solidPenetrationBefore,
+          objectTravel,
+          objectImpulse,
+          objectVelocity,
+          soilPenetrationBefore,
+          soilPenetrationAfter,
+          soilImpactImpulse,
+          truckImpactImpulse: Math.max(0, this.truck.physicsState().impactImpulse - impactStart),
         };
       },
       forceUpperStructurePhysics: () => {

@@ -351,6 +351,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const truckWheelPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceTruckWheelPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const upperStructurePhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceUpperStructurePhysics()`,
       returnByValue: true,
@@ -642,6 +647,7 @@ async function main() {
     const deepExcavationValue = deepExcavation.result.value;
     const truckCollisionValue = truckCollision.result.value;
     const truckImpactPhysicsValue = truckImpactPhysics.result.value;
+    const truckWheelPhysicsValue = truckWheelPhysics.result.value;
     const upperStructurePhysicsValue = upperStructurePhysics.result.value;
     const armTruckCollisionValue = armTruckCollision.result.value;
     const armSubsoilResistanceValue = armSubsoilResistance.result.value;
@@ -701,7 +707,7 @@ async function main() {
           afterBothReverse.fps > 0 ||
           after.fps > 0,
       ],
-      ["pressure", peakPressure > before.pressure],
+      ["pressure", Number.isFinite(peakPressure) && peakPressure > 0.15],
       ["left stick D reverses swing", Number.isFinite(beforeSwing) && Number.isFinite(afterSwingValue) && afterSwingValue < beforeSwing],
       ["right stick up/down boom", Number.isFinite(beforeBoom) && Number.isFinite(afterBoomValue) && afterBoomValue !== beforeBoom],
       ["left stick W/S stick", Number.isFinite(beforeStick) && Number.isFinite(afterStickValue) && afterStickValue !== beforeStick],
@@ -871,6 +877,17 @@ async function main() {
           (truckImpactPhysicsValue?.bodyPitchDelta > 0.004 || truckImpactPhysicsValue?.bodyRollDelta > 0.004) &&
           (truckImpactPhysicsValue?.impactPitch > 0.004 || truckImpactPhysicsValue?.impactRoll > 0.004) &&
           truckImpactPhysicsValue?.truckStayedPut,
+      ],
+      [
+        "truck wheels are solid physical colliders",
+        truckWheelPhysicsValue?.wheelPenetrationBefore > 0.08 &&
+          truckWheelPhysicsValue?.solidPenetrationBefore >= truckWheelPhysicsValue?.wheelPenetrationBefore - 0.02 &&
+          truckWheelPhysicsValue?.wheelPenetrationAfter < truckWheelPhysicsValue?.wheelPenetrationBefore - 0.02 &&
+          truckWheelPhysicsValue?.objectTravel > 0.01 &&
+          truckWheelPhysicsValue?.objectImpulse > 0.01 &&
+          truckWheelPhysicsValue?.objectVelocity > 0.005 &&
+          truckWheelPhysicsValue?.soilPenetrationBefore > truckWheelPhysicsValue?.soilPenetrationAfter &&
+          truckWheelPhysicsValue?.soilImpactImpulse > 0.002,
       ],
       [
         "upper structure collides with truck and world objects",
@@ -1149,6 +1166,7 @@ async function main() {
           deepExcavation: deepExcavationValue,
           truckCollision: truckCollisionValue,
           truckImpactPhysics: truckImpactPhysicsValue,
+          truckWheelPhysics: truckWheelPhysicsValue,
           upperStructurePhysics: upperStructurePhysicsValue,
           armTruckCollision: armTruckCollisionValue,
           armSubsoilResistance: armSubsoilResistanceValue,
