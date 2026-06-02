@@ -67,11 +67,18 @@ interface SoilParticle {
 
 type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone" | "pipe";
 
+interface WorldColliderCapsule {
+  localA: THREE.Vector3;
+  localB: THREE.Vector3;
+  radius: number;
+}
+
 interface WorldCollider {
   id: number;
   mesh: THREE.Object3D;
   kind: WorldColliderKind;
   radius: number;
+  capsule?: WorldColliderCapsule;
   mass: number;
   immovable: boolean;
   crushable: boolean;
@@ -463,6 +470,10 @@ interface ExcavatorDebugApi {
     excavatorPenetrationAfter: number;
     excavatorObjectTravel: number;
     excavatorObjectVelocity: number;
+    pipeSphereFalsePenetration: number;
+    pipeCapsuleFalsePenetration: number;
+    pipeCapsuleHitBefore: number;
+    pipeCapsuleHitAfter: number;
     trackContactCount: number;
     cornerContacts: number;
     movedMass: number;
@@ -3362,13 +3373,22 @@ class Simulator {
     mesh: THREE.Object3D,
     kind: WorldColliderKind,
     radius: number,
-    options: Partial<Pick<WorldCollider, "mass" | "immovable" | "crushable" | "restitution" | "friction" | "groundOffset">> = {},
+    options: Partial<Pick<WorldCollider, "mass" | "immovable" | "crushable" | "restitution" | "friction" | "groundOffset">> & {
+      capsule?: WorldColliderCapsule;
+    } = {},
   ): WorldCollider {
     const collider: WorldCollider = {
       id: this.nextWorldColliderId,
       mesh,
       kind,
       radius,
+      capsule: options.capsule
+        ? {
+            localA: options.capsule.localA.clone(),
+            localB: options.capsule.localB.clone(),
+            radius: options.capsule.radius,
+          }
+        : undefined,
       mass: options.mass ?? 1,
       immovable: options.immovable ?? false,
       crushable: options.crushable ?? false,
@@ -3683,7 +3703,17 @@ class Simulator {
     for (let i = 0; i < 21; i += 1) {
       const rail = makeBox([0.92, 0.08, 0.08], yardMat, [-10 + i, 0.86, -8.4]);
       this.scene.add(rail);
-      this.registerWorldCollider(rail, "fence", 0.48, { mass: 3.2, restitution: 0.04, friction: 0.9, groundOffset: 0.86 });
+      this.registerWorldCollider(rail, "fence", 0.48, {
+        mass: 3.2,
+        restitution: 0.04,
+        friction: 0.9,
+        groundOffset: 0.86,
+        capsule: {
+          localA: new THREE.Vector3(-0.46, 0, 0),
+          localB: new THREE.Vector3(0.46, 0, 0),
+          radius: 0.075,
+        },
+      });
     }
   }
 
@@ -3796,12 +3826,24 @@ class Simulator {
     for (let i = 0; i < 16; i += 1) {
       const x = DIG_SITE.x + (Math.random() - 0.5) * 8.5;
       const z = DIG_SITE.z + (Math.random() - 0.5) * 5.5;
-      const twig = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.018, 0.45 + Math.random() * 0.42, 7), twigMat);
+      const twigLength = 0.45 + Math.random() * 0.42;
+      const twig = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.018, twigLength, 7), twigMat);
       twig.position.set(x, this.terrain.getHeightAt(x, z) + 0.035, z);
       twig.rotation.set(Math.PI / 2 + (Math.random() - 0.5) * 0.35, Math.random() * Math.PI, Math.random() * Math.PI);
       twig.castShadow = true;
       this.scene.add(twig);
-      this.registerWorldCollider(twig, "twig", 0.06, { mass: 0.12, crushable: true, restitution: 0.02, friction: 0.96, groundOffset: 0.035 });
+      this.registerWorldCollider(twig, "twig", Math.max(0.08, twigLength * 0.52), {
+        mass: 0.12,
+        crushable: true,
+        restitution: 0.02,
+        friction: 0.96,
+        groundOffset: 0.035,
+        capsule: {
+          localA: new THREE.Vector3(0, -twigLength * 0.5, 0),
+          localB: new THREE.Vector3(0, twigLength * 0.5, 0),
+          radius: 0.024,
+        },
+      });
     }
 
     const pipeMat = makeMat(0x697376, 0.58, 0.32);
@@ -3825,6 +3867,11 @@ class Simulator {
         restitution: 0.06,
         friction: 0.78,
         groundOffset: 0.14,
+        capsule: {
+          localA: new THREE.Vector3(0, -length * 0.5, 0),
+          localB: new THREE.Vector3(0, length * 0.5, 0),
+          radius: 0.11,
+        },
       });
     }
   }
@@ -5500,6 +5547,7 @@ class Simulator {
         const debris = this.worldColliders.find((collider) => !collider.immovable && (collider.kind === "clod" || collider.kind === "cone" || collider.kind === "rock"));
         const hard = this.worldColliders.find((collider) => collider.kind === "boulder");
         const rail = this.worldColliders.find((collider) => collider.kind === "fence" && collider.radius > 0.4);
+        const pipe = this.worldColliders.find((collider) => collider.kind === "pipe" && collider.capsule);
         const forward = new THREE.Vector3(1, 0, 0);
         let debrisTravel = 0;
         let hardTravel = 0;
@@ -5508,6 +5556,10 @@ class Simulator {
         let excavatorPenetrationAfter = 0;
         let excavatorObjectTravel = 0;
         let excavatorObjectVelocity = 0;
+        let pipeSphereFalsePenetration = 0;
+        let pipeCapsuleFalsePenetration = 0;
+        let pipeCapsuleHitBefore = 0;
+        let pipeCapsuleHitAfter = 0;
         let truckPenetrationBefore = 0;
         let truckPenetrationAfter = 0;
         let pairDistanceBefore = 0;
@@ -5610,6 +5662,32 @@ class Simulator {
           excavatorObjectVelocity = debris.velocity.length();
         }
 
+        if (pipe) {
+          const capsule = this.worldColliderCapsuleWorld(pipe);
+          if (capsule) {
+            const axis = capsule.b.clone().sub(capsule.a);
+            const side = new THREE.Vector3(-axis.z, 0, axis.x);
+            if (side.lengthSq() < 0.000001) {
+              side.set(1, 0, 0);
+            } else {
+              side.normalize();
+            }
+            const midpoint = capsule.a.clone().lerp(capsule.b, 0.5);
+            const probeRadius = 0.08;
+            const falseProbe = midpoint.clone().addScaledVector(side, capsule.radius + probeRadius + 0.08);
+            pipeSphereFalsePenetration = Math.max(0, pipe.radius + probeRadius - falseProbe.distanceTo(pipe.mesh.position));
+            pipeCapsuleFalsePenetration = this.resolveWorldColliderSampleHit(pipe, falseProbe, probeRadius)?.penetration ?? 0;
+
+            const hitProbe = midpoint.clone().addScaledVector(side, capsule.radius + probeRadius - 0.045);
+            const hitBefore = this.resolveWorldColliderSampleHit(pipe, hitProbe, probeRadius);
+            pipeCapsuleHitBefore = hitBefore?.penetration ?? 0;
+            if (hitBefore) {
+              hitProbe.addScaledVector(hitBefore.normal, hitBefore.penetration + 0.004);
+            }
+            pipeCapsuleHitAfter = this.resolveWorldColliderSampleHit(pipe, hitProbe, probeRadius)?.penetration ?? 0;
+          }
+        }
+
         if (debris && hard) {
           const pairBase = new THREE.Vector3(1.15, 0, 2.85);
           const ground = this.terrain.getHeightAt(pairBase.x, pairBase.z);
@@ -5637,6 +5715,10 @@ class Simulator {
           excavatorPenetrationAfter,
           excavatorObjectTravel,
           excavatorObjectVelocity,
+          pipeSphereFalsePenetration,
+          pipeCapsuleFalsePenetration,
+          pipeCapsuleHitBefore,
+          pipeCapsuleHitAfter,
           trackContactCount,
           cornerContacts,
           movedMass,
@@ -6474,18 +6556,13 @@ class Simulator {
           .clone()
           .addScaledVector(forward, sample.x)
           .addScaledVector(side, sample.z);
-        const dx = samplePoint.x - collider.mesh.position.x;
-        const dz = samplePoint.z - collider.mesh.position.z;
-        const distanceSq = dx * dx + dz * dz;
-        const combinedRadius = sample.radius + collider.radius;
-        if (distanceSq >= combinedRadius * combinedRadius) {
+        const hit = this.resolveColliderHit(collider, samplePoint, sample.radius);
+        if (!hit) {
           continue;
         }
 
-        const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-        const normal =
-          distanceSq < 0.000001 ? forward.clone().multiplyScalar(-1) : new THREE.Vector3(dx / distance, 0, dz / distance);
-        const penetration = combinedRadius - distance;
+        const normal = hit.normal;
+        const penetration = hit.penetration;
         const sampleVelocity = forward
           .clone()
           .multiplyScalar(forwardSpeed + turnRate * sample.z)
@@ -6624,7 +6701,94 @@ class Simulator {
     }
   }
 
+  private worldColliderCapsuleWorld(collider: WorldCollider): { a: THREE.Vector3; b: THREE.Vector3; radius: number } | null {
+    if (!collider.capsule) {
+      return null;
+    }
+    return {
+      a: collider.mesh.localToWorld(collider.capsule.localA.clone()),
+      b: collider.mesh.localToWorld(collider.capsule.localB.clone()),
+      radius: collider.capsule.radius,
+    };
+  }
+
+  private resolveWorldColliderSampleHit(
+    collider: WorldCollider,
+    samplePoint: THREE.Vector3,
+    sampleRadius: number,
+  ): { normal: THREE.Vector3; penetration: number } | null {
+    const capsule = this.worldColliderCapsuleWorld(collider);
+    if (capsule) {
+      const axis = capsule.b.clone().sub(capsule.a);
+      const axisLenSq = axis.lengthSq();
+      const t = axisLenSq > 0.000001 ? clamp(samplePoint.clone().sub(capsule.a).dot(axis) / axisLenSq, 0, 1) : 0;
+      const closest = capsule.a.clone().addScaledVector(axis, t);
+      const delta = samplePoint.clone().sub(closest);
+      const combinedRadius = sampleRadius + capsule.radius;
+      const distanceSq = delta.lengthSq();
+      if (distanceSq >= combinedRadius * combinedRadius) {
+        return null;
+      }
+      if (distanceSq < 0.000001) {
+        const fallback = samplePoint.clone().sub(collider.mesh.position);
+        if (fallback.lengthSq() > 0.000001) {
+          fallback.normalize();
+        } else {
+          fallback.set(1, 0, 0);
+        }
+        return { normal: fallback, penetration: combinedRadius };
+      }
+      const distance = Math.sqrt(distanceSq);
+      return {
+        normal: delta.divideScalar(distance),
+        penetration: combinedRadius - distance,
+      };
+    }
+
+    const delta = samplePoint.clone().sub(collider.mesh.position);
+    const combinedRadius = sampleRadius + collider.radius;
+    const distanceSq = delta.lengthSq();
+    if (distanceSq >= combinedRadius * combinedRadius) {
+      return null;
+    }
+    if (distanceSq < 0.000001) {
+      return { normal: new THREE.Vector3(1, 0, 0), penetration: combinedRadius };
+    }
+    const distance = Math.sqrt(distanceSq);
+    return {
+      normal: delta.divideScalar(distance),
+      penetration: combinedRadius - distance,
+    };
+  }
+
   private resolveColliderHit(collider: WorldCollider, bodyPosition: THREE.Vector3, bodyRadius: number): { normal: THREE.Vector3; penetration: number } | null {
+    const capsule = this.worldColliderCapsuleWorld(collider);
+    if (capsule) {
+      const axisX = capsule.b.x - capsule.a.x;
+      const axisZ = capsule.b.z - capsule.a.z;
+      const axisLenSq = axisX * axisX + axisZ * axisZ;
+      const rawT =
+        axisLenSq > 0.000001 ? ((bodyPosition.x - capsule.a.x) * axisX + (bodyPosition.z - capsule.a.z) * axisZ) / axisLenSq : 0;
+      const t = clamp(rawT, 0, 1);
+      const closestX = capsule.a.x + axisX * t;
+      const closestZ = capsule.a.z + axisZ * t;
+      const dx = bodyPosition.x - closestX;
+      const dz = bodyPosition.z - closestZ;
+      const distanceSq = dx * dx + dz * dz;
+      const combinedRadius = bodyRadius + capsule.radius;
+      if (distanceSq >= combinedRadius * combinedRadius) {
+        return null;
+      }
+      if (distanceSq < 0.000001) {
+        return { normal: new THREE.Vector3(-1, 0, 0), penetration: combinedRadius };
+      }
+      const distance = Math.sqrt(distanceSq);
+      return {
+        normal: new THREE.Vector3(dx / distance, 0, dz / distance),
+        penetration: combinedRadius - distance,
+      };
+    }
+
     const obstacle = collider.mesh.position;
     const dx = bodyPosition.x - obstacle.x;
     const dz = bodyPosition.z - obstacle.z;
@@ -7428,18 +7592,13 @@ class Simulator {
       for (let i = 0; i < currentSamples.length; i += 1) {
         const sample = currentSamples[i];
         const previous = previousSamples[i] ?? sample;
-        const dx = sample.point.x - obstacle.x;
-        const dy = sample.point.y - obstacle.y;
-        const dz = sample.point.z - obstacle.z;
-        const combinedRadius = sample.radius + collider.radius;
-        const distanceSq = dx * dx + dy * dy + dz * dz;
-        if (distanceSq >= combinedRadius * combinedRadius) {
+        const hit = this.resolveWorldColliderSampleHit(collider, sample.point, sample.radius);
+        if (!hit) {
           continue;
         }
 
-        const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-        const normal = distanceSq < 0.000001 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(dx / distance, dy / distance, dz / distance);
-        const penetration = combinedRadius - distance;
+        const normal = hit.normal;
+        const penetration = hit.penetration;
         const motion = sample.point.clone().sub(previous.point);
         const approach = Math.max(0, -motion.dot(normal));
         const severity = clamp(penetration * 2.65 + approach * 6.2 + (collider.immovable ? 0.18 : 0), 0, 1);
@@ -7640,20 +7799,15 @@ class Simulator {
       for (let i = 0; i < currentSamples.length; i += 1) {
         const sample = currentSamples[i];
         const previous = previousSamples[i] ?? sample;
-        const dx = sample.point.x - obstacle.x;
-        const dy = sample.point.y - obstacle.y;
-        const dz = sample.point.z - obstacle.z;
-        const combinedRadius = sample.radius + collider.radius;
-        const distanceSq = dx * dx + dy * dy + dz * dz;
-        if (distanceSq >= combinedRadius * combinedRadius) {
+        const hit = this.resolveWorldColliderSampleHit(collider, sample.point, sample.radius);
+        if (!hit) {
           continue;
         }
 
-        const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-        const normalX = distanceSq < 0.000001 ? 1 : dx / distance;
-        const normalY = distanceSq < 0.000001 ? 0 : dy / distance;
-        const normalZ = distanceSq < 0.000001 ? 0 : dz / distance;
-        const penetration = combinedRadius - distance;
+        const normalX = hit.normal.x;
+        const normalY = hit.normal.y;
+        const normalZ = hit.normal.z;
+        const penetration = hit.penetration;
         const motionX = sample.point.x - previous.point.x;
         const motionY = sample.point.y - previous.point.y;
         const motionZ = sample.point.z - previous.point.z;
@@ -8436,17 +8590,12 @@ class Simulator {
       if (this.carriedWorldColliders.has(collider)) {
         continue;
       }
-      const dx = pos.x - collider.mesh.position.x;
-      const dy = pos.y - collider.mesh.position.y;
-      const dz = pos.z - collider.mesh.position.z;
-      const combined = radius + collider.radius;
-      const distanceSq = dx * dx + dy * dy + dz * dz;
-      if (distanceSq >= combined * combined) {
+      const hit = this.resolveWorldColliderSampleHit(collider, pos, radius);
+      if (!hit) {
         continue;
       }
-      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-      const normal = distanceSq < 0.000001 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(dx / distance, dy / distance, dz / distance);
-      const penetration = combined - distance;
+      const normal = hit.normal;
+      const penetration = hit.penetration;
       const invFine = 1 / fineMass;
       const invObject = collider.immovable ? 0 : 1 / Math.max(collider.mass, 0.05);
       const totalInvMass = invFine + invObject;
@@ -8542,18 +8691,13 @@ class Simulator {
       if (this.carriedWorldColliders.has(collider)) {
         continue;
       }
-      const dx = pos.x - collider.mesh.position.x;
-      const dy = pos.y - collider.mesh.position.y;
-      const dz = pos.z - collider.mesh.position.z;
-      const combined = radius + collider.radius;
-      const distanceSq = dx * dx + dy * dy + dz * dz;
-      if (distanceSq >= combined * combined) {
+      const hit = this.resolveWorldColliderSampleHit(collider, pos, radius);
+      if (!hit) {
         continue;
       }
 
-      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-      const normal = new THREE.Vector3(dx / distance, dy / distance, dz / distance);
-      const penetration = combined - distance;
+      const normal = hit.normal;
+      const penetration = hit.penetration;
       const invSoil = 1 / soilMass;
       const invObject = collider.immovable ? 0 : 1 / Math.max(collider.mass, 0.05);
       const totalInvMass = invSoil + invObject;
