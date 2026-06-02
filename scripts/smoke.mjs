@@ -301,6 +301,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const playableDig = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forcePlayableDigPass()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const fineGrainSettlement = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceFineGrainSettlement()`,
       returnByValue: true,
@@ -483,6 +488,7 @@ async function main() {
     const soilAfterDigValue = soilAfterDig.result.value;
     const soilDumpValue = soilDump.result.value;
     const soilAfterDumpValue = soilAfterDump.result.value;
+    const playableDigValue = playableDig.result.value;
     const fineGrainSettlementValue = fineGrainSettlement.result.value;
     const soilPushValue = soilPush.result.value;
     const cuttingFlowPhysicsValue = cuttingFlowPhysics.result.value;
@@ -595,6 +601,15 @@ async function main() {
       [
         "bucket load surface fills after digging",
         soilAfterDigValue?.bucketVisualLoad > 0.05 && soilAfterDigValue?.bucketVisualLoad < 1,
+      ],
+      [
+        "playable bucket cuts soil through resistance",
+        playableDigValue?.removed > 0.015 &&
+          playableDigValue?.afterHeight < playableDigValue?.beforeHeight - 0.008 &&
+          (playableDigValue?.bucketLoad ?? 0) + (playableDigValue?.bucketTransitLoad ?? 0) > 0.01 &&
+          !playableDigValue?.blocked &&
+          Math.abs(playableDigValue?.velocityAfter ?? 0) > 0.05 &&
+          playableDigValue?.pressure > 0.2,
       ],
       [
         "truck dump falls as physical conserved soil",
@@ -808,6 +823,7 @@ async function main() {
           soilAfterDig: soilAfterDigValue,
           soilDump: soilDumpValue,
           soilAfterDump: soilAfterDumpValue,
+          playableDig: playableDigValue,
           fineGrainSettlement: fineGrainSettlementValue,
           soilPush: soilPushValue,
           cuttingFlowPhysics: cuttingFlowPhysicsValue,

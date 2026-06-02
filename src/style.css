@@ -509,36 +509,36 @@ meter {
 
 .mobile-drive-pad {
   display: grid;
-  grid-template-columns: repeat(2, 38px);
-  gap: 3px;
-  padding: 4px;
+  grid-template-columns: repeat(2, 28px);
+  gap: 2px;
+  padding: 3px;
   border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 8px;
+  border-radius: 7px;
   background: rgb(13 17 15 / 54%);
-  box-shadow: 0 10px 22px rgb(0 0 0 / 30%);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 26%);
   backdrop-filter: blur(10px);
 }
 
 .mobile-menu-bar {
   position: fixed;
-  top: max(10px, env(safe-area-inset-top));
-  left: max(10px, env(safe-area-inset-left));
+  top: max(6px, env(safe-area-inset-top));
+  left: max(6px, env(safe-area-inset-left));
   z-index: 8;
   grid-template-columns: repeat(3, max-content);
-  gap: 5px;
-  padding: 5px;
+  gap: 3px;
+  padding: 3px;
   border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 8px;
+  border-radius: 7px;
   background: rgb(13 17 15 / 58%);
-  box-shadow: 0 10px 22px rgb(0 0 0 / 30%);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 26%);
   backdrop-filter: blur(10px);
 }
 
 .mobile-menu-bar button {
-  height: 30px;
-  padding: 0 8px;
-  border-radius: 6px;
-  font-size: 10px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 9px;
   font-weight: 850;
 }
 
@@ -550,14 +550,14 @@ meter {
 
 .mobile-menu-panel {
   position: fixed;
-  top: max(44px, calc(env(safe-area-inset-top) + 44px));
-  left: max(8px, env(safe-area-inset-left));
+  top: max(34px, calc(env(safe-area-inset-top) + 34px));
+  left: max(6px, env(safe-area-inset-left));
   z-index: 8;
-  padding: 6px;
+  padding: 4px;
   border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 8px;
+  border-radius: 7px;
   background: rgb(13 17 15 / 66%);
-  box-shadow: 0 10px 22px rgb(0 0 0 / 30%);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 26%);
   backdrop-filter: blur(12px);
 }
 
@@ -566,11 +566,15 @@ meter {
 }
 
 .mobile-panel-title {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   color: #f1ad34;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 850;
   text-transform: uppercase;
+}
+
+.mobile-menu-section[data-mobile-panel="drive"] .mobile-panel-title {
+  display: none;
 }
 
 .mobile-camera-pad {
@@ -589,11 +593,11 @@ meter {
 }
 
 .mobile-drive-pad button {
-  width: 38px;
-  height: 24px;
+  width: 28px;
+  height: 18px;
   padding: 0;
-  border-radius: 6px;
-  font-size: 9px;
+  border-radius: 5px;
+  font-size: 7.5px;
   font-weight: 850;
   touch-action: none;
 }
@@ -737,14 +741,14 @@ meter {
   }
 
   .mobile-drive-pad {
-    grid-template-columns: repeat(2, 36px);
-    padding: 4px;
+    grid-template-columns: repeat(2, 26px);
+    padding: 3px;
   }
 
   .mobile-drive-pad button {
-    width: 36px;
-    height: 23px;
-    font-size: 9px;
+    width: 26px;
+    height: 18px;
+    font-size: 7.5px;
   }
 
 }

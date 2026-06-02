@@ -152,6 +152,16 @@ interface ExcavatorDebugApi {
     terrainVolumeDelta: number;
   };
   forceDigPass: () => { removed: number; beforeHeight: number; afterHeight: number; bucketLoad: number; airborneFines: number };
+  forcePlayableDigPass: () => {
+    removed: number;
+    beforeHeight: number;
+    afterHeight: number;
+    bucketLoad: number;
+    bucketTransitLoad: number;
+    blocked: boolean;
+    velocityAfter: number;
+    pressure: number;
+  };
   forceTruckDump: () => {
     dumped: number;
     emitted: number;
@@ -993,8 +1003,8 @@ class HeightfieldTerrain {
     const leftBerm = center.clone().addScaledVector(s, halfWidth + 0.2);
     const rightBerm = center.clone().addScaledVector(s, -halfWidth - 0.2);
     const beforeBerm = Math.max(this.getHeightAt(leftBerm.x, leftBerm.z), this.getHeightAt(rightBerm.x, rightBerm.z));
-    this.raiseAt(leftBerm, width * 0.48, compacted * 0.32);
-    this.raiseAt(rightBerm, width * 0.48, compacted * 0.32);
+    this.raiseAt(leftBerm, width * 0.48, compacted * 0.32, 1);
+    this.raiseAt(rightBerm, width * 0.48, compacted * 0.32, 1);
     const afterBerm = Math.max(this.getHeightAt(leftBerm.x, leftBerm.z), this.getHeightAt(rightBerm.x, rightBerm.z));
 
     return {
@@ -1008,7 +1018,7 @@ class HeightfieldTerrain {
     this.relaxSlopes(this.gridRange(center.x, center.z, radius), passes);
   }
 
-  raiseAt(center: THREE.Vector3, radius: number, volume: number): number {
+  raiseAt(center: THREE.Vector3, radius: number, volume: number, relaxPasses = 7): number {
     const range = this.gridRange(center.x, center.z, radius);
     const weights: Array<[number, number]> = [];
     let totalWeight = 0;
@@ -1037,7 +1047,11 @@ class HeightfieldTerrain {
       this.heights[idx] += addHeight;
       deposited += addHeight * this.spacing * this.spacing;
     }
-    this.relaxSlopes(range, 7);
+    if (relaxPasses > 0) {
+      this.relaxSlopes(range, relaxPasses);
+    } else {
+      this.commitRange(range);
+    }
     return deposited;
   }
 
@@ -2951,6 +2965,47 @@ class Simulator {
           airborneFines,
         };
       },
+      forcePlayableDigPass: () => {
+        this.bucketLoad = 0;
+        this.bucketTransitLoad = 0;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
+        const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.24, stick: -1.52, bucket: -1.72 };
+        const diggingAngles: ExcavatorAngles = { swing: 0, boom: 0.22, stick: -1.82, bucket: -2.32 };
+
+        Object.assign(this.angles, diggingAngles);
+        this.excavator.group.rotation.y = 0;
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.applyAngles(this.angles);
+        const tip = this.excavator.bucketTipWorld();
+        this.excavator.group.position.x += DIG_SITE.x - tip.x;
+        this.excavator.group.position.z += DIG_SITE.z - tip.z;
+        this.excavator.group.position.y += beforeHeight - 0.16 - tip.y;
+
+        this.excavator.applyAngles(previousAngles);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        Object.assign(this.angles, diggingAngles);
+        this.excavator.applyAngles(this.angles);
+        this.velocities.boom = -0.04;
+        this.velocities.stick = -0.34;
+        this.velocities.bucket = -0.82;
+        this.collisionCooldown = 0;
+        const beforeTotal = this.totalExcavated;
+        const resistance = this.resolveArmTerrainResistance(previousAngles);
+        this.updateSoil(0.14);
+        this.updateUi(0);
+
+        return {
+          removed: this.totalExcavated - beforeTotal,
+          beforeHeight,
+          afterHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
+          bucketLoad: this.bucketLoad,
+          bucketTransitLoad: this.bucketTransitLoad,
+          blocked: resistance.blockedActions.length > 0,
+          velocityAfter: this.velocities.bucket,
+          pressure: this.pressure,
+        };
+      },
       forceTruckDump: () => {
         const beforeTruck = this.truckLoad;
         const beforeTerrain = this.terrain.terrainVolumeDelta();
@@ -3581,7 +3636,7 @@ class Simulator {
         this.pressure = Math.max(this.pressure, clamp(0.1 + severity * 0.36 + collider.mass * 0.018, 0, 0.62));
         if (collider.crushable && severity > 0.32) {
           collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.04, 0.08));
-          this.terrain.raiseAt(collider.mesh.position, Math.max(0.16, collider.radius * 1.7), collider.radius * 0.012 * severity);
+          this.terrain.raiseAt(collider.mesh.position, Math.max(0.16, collider.radius * 1.7), collider.radius * 0.012 * severity, 0);
         }
       }
     }
@@ -3857,7 +3912,12 @@ class Simulator {
     let submergedMotion = 0;
     let materialLoad = 0;
     let contactCount = 0;
+    let structuralMaxSubmerged = 0;
+    let structuralIntrusion = 0;
+    let bucketMaxSubmerged = 0;
+    let bucketIntrusion = 0;
     const affected = new Set<"boom" | "stick" | "bucket">();
+    const bucketCuttingMotion = Math.max(0, -this.velocities.bucket) > 0.035 || Math.max(0, -this.velocities.stick) > 0.045;
 
     for (let i = 0; i < currentSamples.length; i += 1) {
       const sample = currentSamples[i];
@@ -3874,15 +3934,27 @@ class Simulator {
       const slope = this.terrain.getSlopeAt(sample.point.x, sample.point.z);
       const subsoil = this.terrain.getSubsoilResistanceAt(sample.point.x, sample.point.z);
       const localIntrusion = verticalIntrusion + horizontalMotion * clamp(slope, 0, 1.4) * 0.34;
-      const weighted = submerged * (1 + subsoil * 0.42);
+      const isBucket = sample.action === "bucket";
+      const cuttingBucketContact = isBucket && bucketCuttingMotion;
+      const yieldingScale = cuttingBucketContact ? 0.42 : 1;
+      const weighted = submerged * (1 + subsoil * 0.42) * yieldingScale;
+      const intrusionLoad = localIntrusion * yieldingScale;
+      const motionLoad = (verticalIntrusion + horizontalMotion) * (cuttingBucketContact ? 0.55 : 1);
 
       maxSubmerged = Math.max(maxSubmerged, submerged);
       weightedSubmerged += weighted;
-      pushingIntoSoil += localIntrusion;
-      submergedMotion += verticalIntrusion + horizontalMotion;
-      materialLoad += subsoil;
+      pushingIntoSoil += intrusionLoad;
+      submergedMotion += motionLoad;
+      materialLoad += subsoil * yieldingScale;
       contactCount += 1;
       affected.add(sample.action);
+      if (isBucket) {
+        bucketMaxSubmerged = Math.max(bucketMaxSubmerged, submerged);
+        bucketIntrusion += localIntrusion;
+      } else {
+        structuralMaxSubmerged = Math.max(structuralMaxSubmerged, submerged);
+        structuralIntrusion += localIntrusion;
+      }
     }
 
     if (contactCount === 0) {
@@ -3900,19 +3972,22 @@ class Simulator {
       0,
       1,
     );
-    const drag = clamp(1 - severity * 0.76, 0.1, 0.86);
-    const chain = new Set<ActionName>(["swing"]);
+    const drag = clamp(1 - severity * (bucketCuttingMotion ? 0.34 : 0.58), bucketCuttingMotion ? 0.56 : 0.32, 0.9);
+    const chain = new Set<ActionName>();
     if (affected.has("boom")) {
       chain.add("boom");
     }
     if (affected.has("stick")) {
-      chain.add("boom");
       chain.add("stick");
+      if (!bucketCuttingMotion || structuralMaxSubmerged > 0.34) {
+        chain.add("boom");
+      }
     }
     if (affected.has("bucket")) {
-      chain.add("boom");
-      chain.add("stick");
       chain.add("bucket");
+      if (!bucketCuttingMotion || structuralMaxSubmerged > 0.18) {
+        chain.add("stick");
+      }
     }
 
     const hasSubmergedMotion = submergedMotion > 0.004;
@@ -3925,9 +4000,28 @@ class Simulator {
     }
 
     const blockedActions: ActionName[] = [];
-    const shouldBlock = maxSubmerged > 0.28 && (pushingIntoSoil > 0.006 || (submergedMotion > 0.018 && severity > 0.72));
+    const shouldBlockStructure =
+      structuralMaxSubmerged > 0.58 && (structuralIntrusion > 0.012 || (submergedMotion > 0.024 && severity > 0.84));
+    const shouldBlockBucketJam =
+      !bucketCuttingMotion && bucketMaxSubmerged > 0.82 && bucketIntrusion > 0.018 && severity > 0.86;
+    const shouldBlock = shouldBlockStructure || shouldBlockBucketJam;
     if (shouldBlock) {
-      for (const action of chain) {
+      const blockChain = new Set<ActionName>();
+      if (shouldBlockStructure) {
+        if (affected.has("boom")) {
+          blockChain.add("boom");
+        }
+        if (affected.has("stick")) {
+          blockChain.add("boom");
+          blockChain.add("stick");
+        }
+      }
+      if (shouldBlockBucketJam) {
+        blockChain.add("stick");
+        blockChain.add("bucket");
+      }
+
+      for (const action of blockChain) {
         const delta = this.angles[action] - previousAngles[action];
         if (Math.abs(delta) < 0.00001) {
           continue;
@@ -4263,12 +4357,12 @@ class Simulator {
       const accepted = this.truck.depositSoilAt(pos, volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < volume) {
-        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.18, volume - accepted);
+        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.18, volume - accepted, 0);
       }
     } else {
       const ground = this.terrain.getHeightAt(pos.x, pos.z);
       const settleRadius = Math.max(this.terrain.spacing * 0.62, 0.14 + Math.cbrt(volume) * 0.08);
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, ground, pos.z), settleRadius, volume);
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, ground, pos.z), settleRadius, volume, 0);
     }
     this.fineGrainSettledVolume += volume;
     this.truck.updateLoad(this.truckLoad);
@@ -4362,10 +4456,10 @@ class Simulator {
           const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
           this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
           if (accepted < particle.volume) {
-            this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted);
+            this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted, 1);
           }
         } else {
-          this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume);
+          this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
         }
         this.scene.remove(particle.mesh);
         particle.mesh.geometry.dispose();
@@ -4389,7 +4483,7 @@ class Simulator {
     this.bucketLoad += accepted;
     if (accepted < volume) {
       const pos = particle.mesh.position;
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.34 + Math.cbrt(volume - accepted) * 0.1, volume - accepted);
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.34 + Math.cbrt(volume - accepted) * 0.1, volume - accepted, 1);
     }
     this.excavator.setBucketLoad(this.bucketLoad);
   }
@@ -4405,10 +4499,10 @@ class Simulator {
       const accepted = this.truck.depositSoilAt(pos, volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < volume) {
-        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.36, volume - accepted);
+        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.36, volume - accepted, 1);
       }
     } else {
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.32 + Math.cbrt(volume) * 0.1, volume);
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.32 + Math.cbrt(volume) * 0.1, volume, 1);
     }
     this.truck.updateLoad(this.truckLoad);
   }
@@ -4444,10 +4538,10 @@ class Simulator {
       const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < particle.volume) {
-        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted);
+        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted, 1);
       }
     } else {
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume);
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
     }
     this.scene.remove(particle.mesh);
     particle.mesh.geometry.dispose();
