@@ -393,7 +393,7 @@ meter {
   bottom: max(12px, env(safe-area-inset-bottom));
   z-index: 7;
   display: none;
-  grid-template-columns: 132px minmax(88px, 112px) 132px;
+  grid-template-columns: 132px 132px;
   align-items: end;
   justify-content: space-between;
   gap: 12px;
@@ -501,35 +501,28 @@ meter {
 }
 
 .mobile-drive-pad {
+  position: fixed;
+  top: max(64px, calc(env(safe-area-inset-top) + 64px));
+  left: max(10px, env(safe-area-inset-left));
   display: grid;
-  justify-items: center;
-  gap: 7px;
-  padding: 8px;
+  grid-template-columns: repeat(2, 46px);
+  gap: 4px;
+  padding: 5px;
   border: 1px solid rgb(255 255 255 / 14%);
   border-radius: 8px;
-  background: rgb(13 17 15 / 64%);
-  box-shadow: 0 16px 36px rgb(0 0 0 / 34%);
-  backdrop-filter: blur(14px);
-}
-
-.mobile-drive-row {
-  display: grid;
-  grid-template-columns: repeat(2, 42px);
-  gap: 7px;
+  background: rgb(13 17 15 / 54%);
+  box-shadow: 0 10px 22px rgb(0 0 0 / 30%);
+  backdrop-filter: blur(10px);
 }
 
 .mobile-drive-pad button {
-  width: 86px;
-  height: 42px;
+  width: 46px;
+  height: 30px;
   padding: 0;
-  border-radius: 7px;
-  font-size: 13px;
+  border-radius: 6px;
+  font-size: 10px;
   font-weight: 850;
   touch-action: none;
-}
-
-.mobile-drive-row button {
-  width: 42px;
 }
 
 .mobile-drive-pad button.active {
@@ -616,6 +609,10 @@ meter {
     display: none;
   }
 
+  .mobile-drive-pad {
+    top: max(10px, env(safe-area-inset-top));
+  }
+
   .topbar {
     align-items: flex-end;
   }
@@ -653,7 +650,7 @@ meter {
 
 @media (max-width: 620px) and (orientation: portrait) {
   .mobile-controls {
-    grid-template-columns: 118px 92px 118px;
+    grid-template-columns: 118px 118px;
     gap: 6px;
   }
 
@@ -672,21 +669,16 @@ meter {
   }
 
   .mobile-drive-pad {
-    padding: 6px;
+    top: max(96px, calc(env(safe-area-inset-top) + 96px));
+    left: max(8px, env(safe-area-inset-left));
+    grid-template-columns: repeat(2, 44px);
+    padding: 5px;
   }
 
   .mobile-drive-pad button {
-    width: 74px;
-    height: 38px;
-    font-size: 12px;
+    width: 44px;
+    height: 28px;
+    font-size: 10px;
   }
 
-  .mobile-drive-row {
-    grid-template-columns: repeat(2, 36px);
-    gap: 6px;
-  }
-
-  .mobile-drive-row button {
-    width: 36px;
-  }
 }

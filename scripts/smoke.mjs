@@ -324,16 +324,22 @@ async function main() {
         const controls = document.getElementById("mobile-controls");
         const left = document.getElementById("mobile-left-joystick");
         const right = document.getElementById("mobile-right-joystick");
+        const drive = document.querySelector(".mobile-drive-pad");
         const fwd = document.querySelector('[data-drive="forward"]');
         const styles = controls ? getComputedStyle(controls) : null;
         const rect = controls?.getBoundingClientRect();
+        const driveRect = drive?.getBoundingClientRect();
         return {
           visible: Boolean(controls && styles?.display !== "none" && rect && rect.width > 0 && rect.height > 0),
           leftReady: Boolean(left?.getBoundingClientRect().width),
           rightReady: Boolean(right?.getBoundingClientRect().width),
           driveReady: Boolean(fwd?.getBoundingClientRect().width),
           width: rect?.width ?? 0,
-          height: rect?.height ?? 0
+          height: rect?.height ?? 0,
+          driveLeft: driveRect?.left ?? 999,
+          driveTop: driveRect?.top ?? 999,
+          driveWidth: driveRect?.width ?? 0,
+          driveHeight: driveRect?.height ?? 0
         };
       })()`,
       returnByValue: true,
@@ -503,6 +509,13 @@ async function main() {
       [
         "mobile overlay visible",
         mobileUiValue?.visible && mobileUiValue?.leftReady && mobileUiValue?.rightReady && mobileUiValue?.driveReady,
+      ],
+      [
+        "mobile drive pad is compact top-left",
+        mobileUiValue?.driveLeft <= 16 &&
+          mobileUiValue?.driveTop <= 16 &&
+          mobileUiValue?.driveWidth <= 110 &&
+          mobileUiValue?.driveHeight <= 76,
       ],
       [
         "mobile left joystick drives WASD axes",
