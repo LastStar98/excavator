@@ -311,6 +311,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const bucketKinematics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceBucketKinematics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const trackPass = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceTrackPass()`,
       returnByValue: true,
@@ -450,6 +455,7 @@ async function main() {
     const soilAfterDumpValue = soilAfterDump.result.value;
     const fineGrainSettlementValue = fineGrainSettlement.result.value;
     const soilPushValue = soilPush.result.value;
+    const bucketKinematicsValue = bucketKinematics.result.value;
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
     const truckCollisionValue = truckCollision.result.value;
@@ -576,6 +582,15 @@ async function main() {
           soilPushValue?.bucketLoad > 1.5,
       ],
       [
+        "bucket linkage and scoop geometry are coherent",
+        bucketKinematicsValue?.edgeWidth > 0.86 &&
+          bucketKinematicsValue?.pocketBehindEdge > 0.32 &&
+          bucketKinematicsValue?.tipBelowPocket > 0.06 &&
+          bucketKinematicsValue?.sideOrthogonality < 0.02 &&
+          bucketKinematicsValue?.cylinderDelta > 0.08 &&
+          bucketKinematicsValue?.linkSymmetry < 0.025,
+      ],
+      [
         "crawler tracks compact soil and raise berms",
         trackPassValue?.compacted > 0.02 &&
           trackPassValue?.rutDrop > 0.01 &&
@@ -691,6 +706,7 @@ async function main() {
           soilAfterDump: soilAfterDumpValue,
           fineGrainSettlement: fineGrainSettlementValue,
           soilPush: soilPushValue,
+          bucketKinematics: bucketKinematicsValue,
           trackPass: trackPassValue,
           pitSink: pitSinkValue,
           truckCollision: truckCollisionValue,

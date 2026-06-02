@@ -116,6 +116,14 @@ interface ExcavatorDebugApi {
   forceDigPass: () => { removed: number; beforeHeight: number; afterHeight: number; bucketLoad: number; airborneFines: number };
   forceTruckDump: () => { dumped: number; truckLoad: number; bucketLoad: number };
   forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
+  forceBucketKinematics: () => {
+    edgeWidth: number;
+    pocketBehindEdge: number;
+    tipBelowPocket: number;
+    sideOrthogonality: number;
+    cylinderDelta: number;
+    linkSymmetry: number;
+  };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
   forceTruckCollision: () => { beforeX: number; afterX: number; blocked: boolean; collisionCount: number; pressure: number };
   forceRoughTrackSupport: () => { roll: number; pitch: number; sinkage: number; pressure: number; supportDrop: number };
@@ -1245,6 +1253,10 @@ class ExcavatorModel {
   readonly boomCylinder: THREE.Mesh;
   readonly stickCylinder: THREE.Mesh;
   readonly bucketCylinder: THREE.Mesh;
+  readonly bucketRockerLeft: THREE.Mesh;
+  readonly bucketRockerRight: THREE.Mesh;
+  readonly bucketLinkLeft: THREE.Mesh;
+  readonly bucketLinkRight: THREE.Mesh;
   private readonly bucketLoadGeometry: THREE.BufferGeometry;
   private readonly bucketLoadHeights: Float32Array;
   private readonly bucketLoadSegmentsX = 7;
@@ -1276,6 +1288,10 @@ class ExcavatorModel {
     this.boomCylinder = this.makeHydraulicCylinder(scene, 0.055, this.mats.hydraulic);
     this.stickCylinder = this.makeHydraulicCylinder(scene, 0.046, this.mats.hydraulic);
     this.bucketCylinder = this.makeHydraulicCylinder(scene, 0.038, this.mats.rod);
+    this.bucketRockerLeft = this.makeHydraulicCylinder(scene, 0.032, this.mats.dark);
+    this.bucketRockerRight = this.makeHydraulicCylinder(scene, 0.032, this.mats.dark);
+    this.bucketLinkLeft = this.makeHydraulicCylinder(scene, 0.028, this.mats.rod);
+    this.bucketLinkRight = this.makeHydraulicCylinder(scene, 0.028, this.mats.rod);
 
     this.bucketLoadGeometry = this.createBucketLoadGeometry();
     this.bucketLoadHeights = new Float32Array((this.bucketLoadSegmentsX + 1) * (this.bucketLoadSegmentsZ + 1));
@@ -1344,6 +1360,34 @@ class ExcavatorModel {
 
   bucketPinWorld(): THREE.Vector3 {
     return this.bucketGroup.localToWorld(new THREE.Vector3(0, 0, 0));
+  }
+
+  bucketLinkageDiagnostics(): {
+    edgeWidth: number;
+    pocketBehindEdge: number;
+    tipBelowPocket: number;
+    sideOrthogonality: number;
+    cylinderLength: number;
+    leftLinkLength: number;
+    rightLinkLength: number;
+  } {
+    const edge = this.bucketCuttingEdgeWorld();
+    const forward = this.bucketForwardWorld();
+    const side = this.bucketSidewaysWorld();
+    const tip = this.bucketTipWorld();
+    const pocket = this.bucketPocketWorld();
+    const left = this.bucketLinkageWorldPoints(-0.32);
+    const right = this.bucketLinkageWorldPoints(0.32);
+    const cylinder = this.bucketLinkageWorldPoints(-0.24);
+    return {
+      edgeWidth: edge[0].distanceTo(edge[edge.length - 1]),
+      pocketBehindEdge: -pocket.clone().sub(tip).dot(forward),
+      tipBelowPocket: pocket.y - tip.y,
+      sideOrthogonality: Math.abs(forward.dot(side)),
+      cylinderLength: cylinder.cylinderBase.distanceTo(cylinder.rockerInput),
+      leftLinkLength: left.rockerOutput.distanceTo(left.bucketEar),
+      rightLinkLength: right.rockerOutput.distanceTo(right.bucketEar),
+    };
   }
 
   stickPinWorld(): THREE.Vector3 {
@@ -1535,6 +1579,7 @@ class ExcavatorModel {
     this.stickGroup.add(stick);
     this.addPin(this.stickGroup, [0, 0, 0], 0.18);
     this.addPin(this.stickGroup, [STICK_LEN, 0, 0], 0.17);
+    this.addPin(this.stickGroup, [STICK_LEN - 0.36, 0.24, 0], 0.13);
 
     this.bucketGroup.position.set(STICK_LEN, 0, 0);
     this.stickGroup.add(this.bucketGroup);
@@ -1547,6 +1592,7 @@ class ExcavatorModel {
     const wearMat = makeMat(0x111412, 0.82, 0.32);
     const sideA = this.makeBucketSide(-0.54, bucketMat);
     const sideB = this.makeBucketSide(0.54, bucketMat);
+    const shell = this.makeBucketShell(bucketMat);
     const back = makeBox([0.18, 0.74, 1.08], bucketMat, [0.2, -0.18, 0]);
     back.rotation.z = -0.18;
     const floor = makeBox([1.1, 0.12, 1.02], bucketMat, [-0.56, -0.5, 0]);
@@ -1555,7 +1601,10 @@ class ExcavatorModel {
     lip.rotation.x = Math.PI / 2;
     lip.position.set(-1.17, -0.52, 0);
     lip.castShadow = true;
-    this.bucketGroup.add(back, floor, sideA, sideB, lip);
+    const cuttingBar = makeBox([0.18, 0.08, 1.12], wearMat, [-1.2, -0.5, 0]);
+    cuttingBar.rotation.z = 0.14;
+    this.bucketGroup.add(shell, back, floor, sideA, sideB, lip, cuttingBar);
+    this.addPin(this.bucketGroup, [-0.18, -0.18, 0], 0.11);
 
     for (const z of [-0.36, -0.12, 0.12, 0.36]) {
       const tooth = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.36, 4), wearMat);
@@ -1565,6 +1614,48 @@ class ExcavatorModel {
       tooth.castShadow = true;
       this.bucketGroup.add(tooth);
     }
+  }
+
+  private makeBucketShell(material: THREE.Material): THREE.Mesh {
+    const profile = [
+      [0.14, 0.04],
+      [0.0, -0.22],
+      [-0.32, -0.43],
+      [-0.74, -0.54],
+      [-1.1, -0.5],
+      [-1.24, -0.4],
+    ] as const;
+    const zValues = [-0.48, -0.3, -0.12, 0.12, 0.3, 0.48];
+    const positions: number[] = [];
+    const indices: number[] = [];
+
+    for (let iz = 0; iz < zValues.length; iz += 1) {
+      const z = zValues[iz];
+      const sideT = Math.abs(z) / 0.48;
+      for (const [x, y] of profile) {
+        positions.push(x, y + sideT * sideT * 0.035, z);
+      }
+    }
+
+    const row = profile.length;
+    for (let iz = 0; iz < zValues.length - 1; iz += 1) {
+      for (let ix = 0; ix < profile.length - 1; ix += 1) {
+        const a = iz * row + ix;
+        const b = a + 1;
+        const c = (iz + 1) * row + ix;
+        const d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setIndex(indices);
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    const shell = new THREE.Mesh(geometry, material);
+    shell.castShadow = true;
+    shell.receiveShadow = true;
+    return shell;
   }
 
   private makeBucketSide(z: number, material: THREE.Material): THREE.Mesh {
@@ -1601,16 +1692,40 @@ class ExcavatorModel {
     return cylinder;
   }
 
+  private bucketLinkageWorldPoints(z: number): {
+    cylinderBase: THREE.Vector3;
+    rockerInput: THREE.Vector3;
+    rockerOutput: THREE.Vector3;
+    bucketEar: THREE.Vector3;
+  } {
+    const bucketAngle = this.bucketGroup.rotation.z - Math.PI;
+    const rockerAngle = -0.62 - bucketAngle * 0.62;
+    const pivot = new THREE.Vector3(STICK_LEN - 0.36, 0.24, z);
+    const input = pivot.clone().add(new THREE.Vector3(Math.cos(rockerAngle) * 0.36, Math.sin(rockerAngle) * 0.36, 0));
+    const output = pivot.clone().add(new THREE.Vector3(Math.cos(rockerAngle + 2.32) * 0.36, Math.sin(rockerAngle + 2.32) * 0.36, 0));
+    return {
+      cylinderBase: this.stickGroup.localToWorld(new THREE.Vector3(STICK_LEN - 1.08, 0.58, z)),
+      rockerInput: this.stickGroup.localToWorld(input),
+      rockerOutput: this.stickGroup.localToWorld(output),
+      bucketEar: this.bucketGroup.localToWorld(new THREE.Vector3(-0.18, -0.18, z)),
+    };
+  }
+
   private updateCylinders(): void {
     const boomStart = this.upperGroup.localToWorld(new THREE.Vector3(0.26, 0.35, -0.28));
     const boomEnd = this.boomGroup.localToWorld(new THREE.Vector3(1.65, -0.14, -0.28));
     const stickStart = this.boomGroup.localToWorld(new THREE.Vector3(2.55, 0.12, 0.27));
     const stickEnd = this.stickGroup.localToWorld(new THREE.Vector3(1.55, -0.1, 0.27));
-    const bucketStart = this.stickGroup.localToWorld(new THREE.Vector3(2.08, 0.12, -0.24));
-    const bucketEnd = this.bucketGroup.localToWorld(new THREE.Vector3(0.44, 0.13, -0.24));
+    const bucketCenter = this.bucketLinkageWorldPoints(-0.24);
+    const bucketLeft = this.bucketLinkageWorldPoints(-0.32);
+    const bucketRight = this.bucketLinkageWorldPoints(0.32);
     setCylinderBetween(this.boomCylinder, boomStart, boomEnd);
     setCylinderBetween(this.stickCylinder, stickStart, stickEnd);
-    setCylinderBetween(this.bucketCylinder, bucketStart, bucketEnd);
+    setCylinderBetween(this.bucketCylinder, bucketCenter.cylinderBase, bucketCenter.rockerInput);
+    setCylinderBetween(this.bucketRockerLeft, bucketLeft.rockerInput, bucketLeft.rockerOutput);
+    setCylinderBetween(this.bucketRockerRight, bucketRight.rockerInput, bucketRight.rockerOutput);
+    setCylinderBetween(this.bucketLinkLeft, bucketLeft.rockerOutput, bucketLeft.bucketEar);
+    setCylinderBetween(this.bucketLinkRight, bucketRight.rockerOutput, bucketRight.bucketEar);
   }
 }
 
@@ -2364,6 +2479,28 @@ class Simulator {
           bucketLoad: this.bucketLoad,
           centerDrop: centerBefore - centerAfter,
           bermRise: bermAfter - bermBefore,
+        };
+      },
+      forceBucketKinematics: () => {
+        const saved = { ...this.angles };
+        this.angles.bucket = ANGLE_LIMITS.bucket.min;
+        this.excavator.applyAngles(this.angles);
+        const curled = this.excavator.bucketLinkageDiagnostics();
+        this.angles.bucket = ANGLE_LIMITS.bucket.max;
+        this.excavator.applyAngles(this.angles);
+        const dumped = this.excavator.bucketLinkageDiagnostics();
+        Object.assign(this.angles, saved);
+        this.excavator.applyAngles(this.angles);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.updateUi(0);
+        const current = this.excavator.bucketLinkageDiagnostics();
+        return {
+          edgeWidth: current.edgeWidth,
+          pocketBehindEdge: current.pocketBehindEdge,
+          tipBelowPocket: current.tipBelowPocket,
+          sideOrthogonality: current.sideOrthogonality,
+          cylinderDelta: Math.abs(dumped.cylinderLength - curled.cylinderLength),
+          linkSymmetry: Math.abs(current.leftLinkLength - current.rightLinkLength),
         };
       },
       forceTrackPass: () => {
