@@ -126,6 +126,19 @@ interface TruckCrawlerContactResult {
   rightBlocked: boolean;
 }
 
+interface TrackTractionState {
+  leftTraction: number;
+  rightTraction: number;
+  leftSlip: number;
+  rightSlip: number;
+  leftGroundSpeed: number;
+  rightGroundSpeed: number;
+  leftRoughness: number;
+  rightRoughness: number;
+  leftGrade: number;
+  rightGrade: number;
+}
+
 interface ArmCollisionSample {
   action: "boom" | "stick" | "bucket";
   point: THREE.Vector3;
@@ -162,6 +175,7 @@ interface ExcavatorDebugApi {
     truckPitch: number;
     truckRoll: number;
     truckTireRutDrop: number;
+    trackTraction: TrackTractionState;
     collisionCount: number;
     terrainVolumeDelta: number;
   };
@@ -208,6 +222,18 @@ interface ExcavatorDebugApi {
     linkSymmetry: number;
   };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
+  forceTrackTractionPhysics: () => {
+    mudTraction: number;
+    hardTraction: number;
+    mudSlip: number;
+    hardSlip: number;
+    mudGroundSpeed: number;
+    hardGroundSpeed: number;
+    mudRutDrop: number;
+    hardRutDrop: number;
+    mudDragMultiplier: number;
+    hardDragMultiplier: number;
+  };
   forceTruckCollision: () => {
     beforeX: number;
     afterX: number;
@@ -2425,6 +2451,18 @@ class Simulator {
   private chassisRoll = 0;
   private supportHeight = 0;
   private collisionCount = 0;
+  private trackTraction: TrackTractionState = {
+    leftTraction: 1,
+    rightTraction: 1,
+    leftSlip: 0,
+    rightSlip: 0,
+    leftGroundSpeed: 0,
+    rightGroundSpeed: 0,
+    leftRoughness: 0,
+    rightRoughness: 0,
+    leftGrade: 0,
+    rightGrade: 0,
+  };
   private fineGrainCursor = 0;
   private fineGrainSettledVolume = 0;
   private nextWorldColliderId = 1;
@@ -2511,6 +2549,7 @@ class Simulator {
     this.chassisRoll = 0;
     this.supportHeight = this.terrain.getHeightAt(0, 0);
     this.collisionCount = 0;
+    this.trackTraction = this.emptyTrackTraction();
     this.fineGrainSettledVolume = 0;
     this.resetWorldColliders();
     this.clearFineGrains();
@@ -3271,6 +3310,7 @@ class Simulator {
           truckPitch: truckPhysics.pitch,
           truckRoll: truckPhysics.roll,
           truckTireRutDrop: truckPhysics.tireRutDrop,
+          trackTraction: { ...this.trackTraction },
           collisionCount: this.collisionCount,
           terrainVolumeDelta: this.terrain.terrainVolumeDelta(),
         };
@@ -3582,6 +3622,64 @@ class Simulator {
           rutDrop: Math.max(result.rutDrop, rutBefore - rutAfter),
           bermRise: Math.max(result.bermRise, bermAfter - bermBefore),
           trackSoilWork: this.trackSoilWork,
+        };
+      },
+      forceTrackTractionPhysics: () => {
+        const savedPosition = this.excavator.group.position.clone();
+        const savedRotation = this.excavator.group.rotation.clone();
+        const savedLeftTrack = this.leftTrackVelocity;
+        const savedRightTrack = this.rightTrackVelocity;
+        const savedTraction = { ...this.trackTraction };
+        const forward = new THREE.Vector3(1, 0, 0);
+
+        const runAt = (point: THREE.Vector3) => {
+          this.excavator.group.position.set(point.x, this.terrain.getHeightAt(point.x, point.z), point.z);
+          this.excavator.group.rotation.set(0, 0, 0);
+          this.leftTrackVelocity = TRACK_MAX_SPEED;
+          this.rightTrackVelocity = TRACK_MAX_SPEED;
+          const surface = this.terrain.getSurfaceConditionAt(point.x, point.z);
+          const side = new THREE.Vector3(0, 0, 1);
+          const leftCenter = point.clone().addScaledVector(side, -0.72);
+          const rightCenter = point.clone().addScaledVector(side, 0.72);
+          const beforeHeight =
+            (this.terrain.getHeightAt(leftCenter.x, leftCenter.z) + this.terrain.getHeightAt(rightCenter.x, rightCenter.z)) * 0.5;
+          this.trackTraction = this.computeTrackTraction(forward);
+          const traction = (this.trackTraction.leftTraction + this.trackTraction.rightTraction) * 0.5;
+          const slip = (this.trackTraction.leftSlip + this.trackTraction.rightSlip) * 0.5;
+          const groundSpeed = (this.trackTraction.leftGroundSpeed + this.trackTraction.rightGroundSpeed) * 0.5;
+          this.updateTrackSoilInteraction(0.48, forward);
+          const afterHeight =
+            (this.terrain.getHeightAt(leftCenter.x, leftCenter.z) + this.terrain.getHeightAt(rightCenter.x, rightCenter.z)) * 0.5;
+          return {
+            traction,
+            slip,
+            groundSpeed,
+            rutDrop: Math.max(0, beforeHeight - afterHeight),
+            dragMultiplier: surface.trackDragMultiplier,
+          };
+        };
+
+        const mud = runAt(new THREE.Vector3(9.8, 0, -8.8));
+        const hard = runAt(new THREE.Vector3(-13.2, 0, -9.6));
+
+        this.excavator.group.position.copy(savedPosition);
+        this.excavator.group.rotation.copy(savedRotation);
+        this.leftTrackVelocity = savedLeftTrack;
+        this.rightTrackVelocity = savedRightTrack;
+        this.trackTraction = savedTraction;
+        this.updateUi(0);
+
+        return {
+          mudTraction: mud.traction,
+          hardTraction: hard.traction,
+          mudSlip: mud.slip,
+          hardSlip: hard.slip,
+          mudGroundSpeed: mud.groundSpeed,
+          hardGroundSpeed: hard.groundSpeed,
+          mudRutDrop: mud.rutDrop,
+          hardRutDrop: hard.rutDrop,
+          mudDragMultiplier: mud.dragMultiplier,
+          hardDragMultiplier: hard.dragMultiplier,
         };
       },
       forceTruckCollision: () => {
@@ -4549,6 +4647,65 @@ class Simulator {
     }
   }
 
+  private emptyTrackTraction(): TrackTractionState {
+    return {
+      leftTraction: 1,
+      rightTraction: 1,
+      leftSlip: 0,
+      rightSlip: 0,
+      leftGroundSpeed: this.leftTrackVelocity,
+      rightGroundSpeed: this.rightTrackVelocity,
+      leftRoughness: 0,
+      rightRoughness: 0,
+      leftGrade: 0,
+      rightGrade: 0,
+    };
+  }
+
+  private computeTrackTraction(forward: THREE.Vector3): TrackTractionState {
+    const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    const base = this.excavator.group.position;
+    const evaluate = (offset: number, motorVelocity: number) => {
+      const center = base.clone().addScaledVector(side, offset);
+      center.y = this.terrain.getHeightAt(center.x, center.z);
+      const support = this.terrain.sampleTrackSupport(center, forward, side, TRACK_LENGTH, TRACK_WIDTH);
+      const surface = this.terrain.getSurfaceConditionAt(center.x, center.z);
+      const front = center.clone().addScaledVector(forward, TRACK_LENGTH * 0.42);
+      const rear = center.clone().addScaledVector(forward, -TRACK_LENGTH * 0.42);
+      const frontHeight = this.terrain.getHeightAt(front.x, front.z);
+      const rearHeight = this.terrain.getHeightAt(rear.x, rear.z);
+      const grade = (frontHeight - rearHeight) / Math.max(TRACK_LENGTH * 0.84, 0.001);
+      const driveDirection = Math.sign(motorVelocity || 1);
+      const uphillGrade = Math.max(0, grade * driveDirection);
+      const roughness = clamp((support.highHeight - support.lowHeight) * 0.95 + support.disturbedDepth * 0.28, 0, 0.85);
+      const materialLoss =
+        surface.wetness * 0.18 +
+        roughness * 0.3 +
+        support.disturbedDepth * 0.16 +
+        uphillGrade * 0.34 +
+        Math.max(0, surface.trackDragMultiplier - 1) * 0.16;
+      const traction = clamp(1.04 + surface.compaction * 0.08 + surface.hardpack * 0.04 - materialLoss, 0.34, 1.08);
+      const groundSpeed = motorVelocity * traction;
+      const slip = clamp(Math.abs(motorVelocity - groundSpeed) / Math.max(TRACK_MAX_SPEED, 0.001), 0, 1);
+      return { traction, slip, groundSpeed, roughness, grade };
+    };
+
+    const left = evaluate(-0.72, this.leftTrackVelocity);
+    const right = evaluate(0.72, this.rightTrackVelocity);
+    return {
+      leftTraction: left.traction,
+      rightTraction: right.traction,
+      leftSlip: left.slip,
+      rightSlip: right.slip,
+      leftGroundSpeed: left.groundSpeed,
+      rightGroundSpeed: right.groundSpeed,
+      leftRoughness: left.roughness,
+      rightRoughness: right.roughness,
+      leftGrade: left.grade,
+      rightGrade: right.grade,
+    };
+  }
+
   private updateTravel(dt: number, axes: JoystickAxes): void {
     const gain = RESPONSE_GAIN[this.responseMode] * 0.65;
     const leftTarget = axes.leftTrack * TRACK_MAX_SPEED;
@@ -4565,11 +4722,13 @@ class Simulator {
       this.rightTrackVelocity = 0;
     }
 
-    const forwardSpeed = (this.leftTrackVelocity + this.rightTrackVelocity) * 0.5;
-    const turnRate = (this.rightTrackVelocity - this.leftTrackVelocity) / TRACK_GAUGE;
+    let forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
+    this.trackTraction = this.computeTrackTraction(forward);
+    const forwardSpeed = (this.trackTraction.leftGroundSpeed + this.trackTraction.rightGroundSpeed) * 0.5;
+    const turnRate = (this.trackTraction.rightGroundSpeed - this.trackTraction.leftGroundSpeed) / TRACK_GAUGE;
     this.excavator.group.rotation.y -= turnRate * dt;
 
-    const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
+    forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
     const move = forwardSpeed * dt;
     this.excavator.group.position.addScaledVector(forward, move);
     this.resolveWorldCollisions(forwardSpeed, turnRate, forward);
@@ -5204,9 +5363,10 @@ class Simulator {
   private updateTrackSoilInteraction(dt: number, forward: THREE.Vector3): void {
     const base = this.excavator.group.position;
     const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
-    for (const [offset, velocity] of [
-      [-0.72, this.leftTrackVelocity],
-      [0.72, this.rightTrackVelocity],
+    this.trackTraction = this.computeTrackTraction(forward);
+    for (const [offset, velocity, contactSlip] of [
+      [-0.72, this.leftTrackVelocity, this.trackTraction.leftSlip],
+      [0.72, this.rightTrackVelocity, this.trackTraction.rightSlip],
     ] as const) {
       const trackMotion = Math.abs(velocity);
       if (trackMotion < 0.035) {
@@ -5214,7 +5374,8 @@ class Simulator {
       }
       const center = base.clone().addScaledVector(side, offset);
       center.y = this.terrain.getHeightAt(center.x, center.z);
-      const slip = Math.abs(this.leftTrackVelocity - this.rightTrackVelocity) / Math.max(TRACK_MAX_SPEED * 2, 0.001);
+      const steeringSlip = Math.abs(this.leftTrackVelocity - this.rightTrackVelocity) / Math.max(TRACK_MAX_SPEED * 2, 0.001);
+      const slip = clamp(steeringSlip + contactSlip, 0, 1);
       const soilResistance = this.terrain.getSubsoilResistanceAt(center.x, center.z);
       const surface = this.terrain.getSurfaceConditionAt(center.x, center.z);
       const support = this.terrain.sampleTrackSupport(center, forward, side, TRACK_LENGTH, TRACK_WIDTH);

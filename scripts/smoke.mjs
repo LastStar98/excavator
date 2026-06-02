@@ -381,6 +381,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const trackTractionPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceTrackTractionPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const roughTrack = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceRoughTrackSupport()`,
       returnByValue: true,
@@ -633,6 +638,7 @@ async function main() {
     const lagFreeSoilCycleValue = lagFreeSoilCycle.result.value;
     const truckLoadPhysicsValue = truckLoadPhysics.result.value;
     const terrainMaterialPhysicsValue = terrainMaterialPhysics.result.value;
+    const trackTractionPhysicsValue = trackTractionPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
     const payloadSupportValue = payloadSupport.result.value;
     const worldObjectPhysicsValue = worldObjectPhysics.result.value;
@@ -922,6 +928,14 @@ async function main() {
           terrainMaterialPhysicsValue?.hardResistance > terrainMaterialPhysicsValue?.softResistance * 1.12,
       ],
       [
+        "crawler traction converts rough terrain into slip instead of input lag",
+        trackTractionPhysicsValue?.mudDragMultiplier > trackTractionPhysicsValue?.hardDragMultiplier &&
+          trackTractionPhysicsValue?.mudTraction < trackTractionPhysicsValue?.hardTraction &&
+          trackTractionPhysicsValue?.mudSlip > trackTractionPhysicsValue?.hardSlip + 0.08 &&
+          trackTractionPhysicsValue?.mudGroundSpeed < trackTractionPhysicsValue?.hardGroundSpeed * 0.92 &&
+          trackTractionPhysicsValue?.mudRutDrop > trackTractionPhysicsValue?.hardRutDrop * 1.08,
+      ],
+      [
         "rough ground tilts and loads crawler tracks",
         Math.abs(roughTrackValue?.roll ?? 0) > 0.015 &&
           Math.abs(roughTrackValue?.pitch ?? 0) > 0.004 &&
@@ -1092,6 +1106,7 @@ async function main() {
           lagFreeSoilCycle: lagFreeSoilCycleValue,
           truckLoadPhysics: truckLoadPhysicsValue,
           terrainMaterialPhysics: terrainMaterialPhysicsValue,
+          trackTractionPhysics: trackTractionPhysicsValue,
           roughTrack: roughTrackValue,
           payloadSupport: payloadSupportValue,
           worldObjectPhysics: worldObjectPhysicsValue,
