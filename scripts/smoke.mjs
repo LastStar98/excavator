@@ -657,6 +657,8 @@ async function main() {
         worldObjectPhysicsValue?.debrisTravel > 0.035 &&
           worldObjectPhysicsValue?.hardBlockDistance > 0.08 &&
           worldObjectPhysicsValue?.hardBlocked &&
+          worldObjectPhysicsValue?.railBlockDistance > 0.05 &&
+          worldObjectPhysicsValue?.railBlocked &&
           worldObjectPhysicsValue?.collisionCount > 0 &&
           worldObjectPhysicsValue?.pressure > 0.35,
       ],

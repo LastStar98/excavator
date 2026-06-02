@@ -181,6 +181,8 @@ interface ExcavatorDebugApi {
     debrisTravel: number;
     hardBlockDistance: number;
     hardBlocked: boolean;
+    railBlockDistance: number;
+    railBlocked: boolean;
     collisionCount: number;
     pressure: number;
   };
@@ -2262,8 +2264,11 @@ class Simulator {
       this.scene.add(post);
       this.registerWorldCollider(post, "fence", 0.22, { immovable: true, mass: 1000, restitution: 0.03, groundOffset: 0.46 });
     }
-    const rail = makeBox([21.2, 0.08, 0.08], yardMat, [0, 0.86, -8.4]);
-    this.scene.add(rail);
+    for (let i = 0; i < 21; i += 1) {
+      const rail = makeBox([0.92, 0.08, 0.08], yardMat, [-10 + i, 0.86, -8.4]);
+      this.scene.add(rail);
+      this.registerWorldCollider(rail, "fence", 0.48, { immovable: true, mass: 1000, restitution: 0.02, groundOffset: 0.86 });
+    }
   }
 
   private buildWorksiteMarkers(): void {
@@ -2900,10 +2905,13 @@ class Simulator {
       forceWorldObjectPhysics: () => {
         const debris = this.worldColliders.find((collider) => !collider.immovable && (collider.kind === "clod" || collider.kind === "cone" || collider.kind === "rock"));
         const hard = this.worldColliders.find((collider) => collider.immovable && collider.kind === "boulder");
+        const rail = this.worldColliders.find((collider) => collider.immovable && collider.kind === "fence" && collider.radius > 0.4);
         const forward = new THREE.Vector3(1, 0, 0);
         let debrisTravel = 0;
         let hardBlockDistance = 0;
         let hardBlocked = false;
+        let railBlockDistance = 0;
+        let railBlocked = false;
 
         this.excavator.group.rotation.set(0, 0, 0);
         if (debris) {
@@ -2935,12 +2943,28 @@ class Simulator {
           hardBlocked = hardBlockDistance > 0.08 && Math.abs(this.leftTrackVelocity) < TRACK_MAX_SPEED * 0.56;
         }
 
+        if (rail) {
+          const railForward = new THREE.Vector3(0, 0, -1);
+          const railStart = rail.mesh.position.clone().add(new THREE.Vector3(0, 0, 2.02));
+          this.excavator.group.position.set(railStart.x, this.terrain.getHeightAt(railStart.x, railStart.z), railStart.z);
+          this.excavator.group.rotation.set(0, Math.PI / 2, 0);
+          this.leftTrackVelocity = TRACK_MAX_SPEED;
+          this.rightTrackVelocity = TRACK_MAX_SPEED;
+          this.collisionCooldown = 0;
+          const beforeZ = this.excavator.group.position.z;
+          this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, railForward);
+          railBlockDistance = this.excavator.group.position.z - beforeZ;
+          railBlocked = railBlockDistance > 0.05 && Math.abs(this.leftTrackVelocity) < TRACK_MAX_SPEED * 0.56;
+        }
+
         this.updateExcavatorSupport(0.3, forward);
         this.updateUi(0);
         return {
           debrisTravel,
           hardBlockDistance,
           hardBlocked,
+          railBlockDistance,
+          railBlocked,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
         };
@@ -3651,7 +3675,8 @@ class Simulator {
       }
     } else {
       const ground = this.terrain.getHeightAt(pos.x, pos.z);
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, ground, pos.z), 0.14 + Math.cbrt(volume) * 0.08, volume);
+      const settleRadius = Math.max(this.terrain.spacing * 0.62, 0.14 + Math.cbrt(volume) * 0.08);
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, ground, pos.z), settleRadius, volume);
     }
     this.fineGrainSettledVolume += volume;
     this.truck.updateLoad(this.truckLoad);
