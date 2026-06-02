@@ -112,6 +112,12 @@ interface TruckPhysicsState {
   bodyY: number;
 }
 
+interface ArmCollisionSample {
+  action: "boom" | "stick" | "bucket";
+  point: THREE.Vector3;
+  radius: number;
+}
+
 interface ExcavatorDebugApi {
   snapshot: () => {
     bucketLoad: number;
@@ -169,6 +175,17 @@ interface ExcavatorDebugApi {
   };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
   forceTruckCollision: () => { beforeX: number; afterX: number; blocked: boolean; collisionCount: number; pressure: number };
+  forceArmTruckCollision: () => {
+    collided: boolean;
+    angleBlocked: boolean;
+    beforeStick: number;
+    afterStick: number;
+    velocityAfter: number;
+    pressure: number;
+    collisionCount: number;
+    penetration: number;
+    blockedActions: ActionName[];
+  };
   forceTruckLoadPhysics: () => {
     accepted: number;
     loadRatio: number;
@@ -1137,6 +1154,15 @@ class WorkTruck {
   private readonly bedWidth = 1.72;
   private readonly bedFloorY = 0.72;
   private readonly bedCenterX = 0.54;
+  private readonly solidBoxes = [
+    { center: new THREE.Vector3(0, 0.45, 0), half: new THREE.Vector3(2.2, 0.11, 0.98) },
+    { center: new THREE.Vector3(-2.12, 1.03, 0), half: new THREE.Vector3(0.53, 0.48, 0.86) },
+    { center: new THREE.Vector3(0.54, 0.72, 0), half: new THREE.Vector3(1.93, 0.08, 0.86) },
+    { center: new THREE.Vector3(0.54, 1.12, -0.86), half: new THREE.Vector3(1.93, 0.45, 0.06) },
+    { center: new THREE.Vector3(0.54, 1.12, 0.86), half: new THREE.Vector3(1.93, 0.45, 0.06) },
+    { center: new THREE.Vector3(-1.38, 1.12, 0), half: new THREE.Vector3(0.07, 0.45, 0.86) },
+    { center: new THREE.Vector3(2.46, 1.12, 0), half: new THREE.Vector3(0.07, 0.45, 0.86) },
+  ];
   private readonly loadSegmentsX = 10;
   private readonly loadSegmentsZ = 6;
   private readonly wheelLocals = [
@@ -1324,6 +1350,55 @@ class WorkTruck {
 
     const normal = localNormal.applyQuaternion(this.group.quaternion).normalize();
     return { normal, penetration };
+  }
+
+  resolveSolidCollision(worldPoint: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
+    const local = this.group.worldToLocal(worldPoint.clone());
+    let best: { normal: THREE.Vector3; penetration: number } | null = null;
+
+    for (const box of this.solidBoxes) {
+      const delta = local.clone().sub(box.center);
+      const closest = new THREE.Vector3(
+        clamp(delta.x, -box.half.x, box.half.x),
+        clamp(delta.y, -box.half.y, box.half.y),
+        clamp(delta.z, -box.half.z, box.half.z),
+      );
+      const separation = delta.clone().sub(closest);
+      const distanceSq = separation.lengthSq();
+      let localNormal: THREE.Vector3 | null = null;
+      let penetration = 0;
+
+      if (distanceSq > 0.000001) {
+        const distance = Math.sqrt(distanceSq);
+        if (distance >= radius) {
+          continue;
+        }
+        localNormal = separation.divideScalar(distance);
+        penetration = radius - distance;
+      } else if (
+        Math.abs(delta.x) <= box.half.x &&
+        Math.abs(delta.y) <= box.half.y &&
+        Math.abs(delta.z) <= box.half.z
+      ) {
+        const faceDistances = [
+          { value: box.half.x - Math.abs(delta.x), normal: new THREE.Vector3(Math.sign(delta.x || 1), 0, 0) },
+          { value: box.half.y - Math.abs(delta.y), normal: new THREE.Vector3(0, Math.sign(delta.y || 1), 0) },
+          { value: box.half.z - Math.abs(delta.z), normal: new THREE.Vector3(0, 0, Math.sign(delta.z || 1)) },
+        ].sort((a, b) => a.value - b.value);
+        localNormal = faceDistances[0].normal;
+        penetration = radius + faceDistances[0].value;
+      }
+
+      if (!localNormal || penetration <= 0) {
+        continue;
+      }
+      const normal = localNormal.applyQuaternion(this.group.quaternion).normalize();
+      if (!best || penetration > best.penetration) {
+        best = { normal, penetration };
+      }
+    }
+
+    return best;
   }
 
   updateLoad(load: number): void {
@@ -1657,6 +1732,30 @@ class ExcavatorModel {
       leftLinkLength: left.rockerOutput.distanceTo(left.bucketEar),
       rightLinkLength: right.rockerOutput.distanceTo(right.bucketEar),
     };
+  }
+
+  armCollisionSamples(): ArmCollisionSample[] {
+    const samples: ArmCollisionSample[] = [];
+    for (const t of [0.18, 0.38, 0.58, 0.78, 0.94]) {
+      samples.push({
+        action: "boom",
+        point: this.boomGroup.localToWorld(new THREE.Vector3(BOOM_LEN * t, 0, 0)),
+        radius: 0.24,
+      });
+    }
+    for (const t of [0.16, 0.36, 0.58, 0.8, 0.96]) {
+      samples.push({
+        action: "stick",
+        point: this.stickGroup.localToWorld(new THREE.Vector3(STICK_LEN * t, 0, 0)),
+        radius: 0.2,
+      });
+    }
+    samples.push(
+      { action: "bucket", point: this.bucketPinWorld(), radius: 0.24 },
+      { action: "bucket", point: this.bucketPocketWorld(), radius: 0.28 },
+      ...this.bucketCuttingEdgeWorld().map((point) => ({ action: "bucket" as const, point, radius: 0.16 })),
+    );
+    return samples;
   }
 
   stickPinWorld(): THREE.Vector3 {
@@ -2878,6 +2977,36 @@ class Simulator {
           pressure: this.pressure,
         };
       },
+      forceArmTruckCollision: () => {
+        const truckYaw = this.truck.group.rotation.y;
+        this.truck.group.position.copy(TRUCK_CENTER);
+        this.truck.group.rotation.set(0, truckYaw, 0);
+        this.truck.updateLoad(this.truckLoad);
+        const localBase = new THREE.Vector3(-7.4, 0, 0);
+        const base = this.truck.group.localToWorld(localBase.clone());
+        this.excavator.group.position.set(base.x, this.truck.group.position.y, base.z);
+        this.excavator.group.rotation.set(0, this.truck.group.rotation.y, 0);
+        const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.08, stick: -2.05, bucket: -2.2 };
+        Object.assign(this.angles, previousAngles, { stick: -1.5 });
+        this.velocities.stick = 0.48;
+        this.collisionCooldown = 0;
+        const beforeStick = this.angles.stick;
+        this.excavator.applyAngles(this.angles);
+        const result = this.resolveArmTruckCollisions(previousAngles);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.updateUi(0);
+        return {
+          collided: result.collided,
+          angleBlocked: this.angles.stick < beforeStick - 0.08 && result.blockedActions.includes("stick"),
+          beforeStick,
+          afterStick: this.angles.stick,
+          velocityAfter: this.velocities.stick,
+          pressure: this.pressure,
+          collisionCount: this.collisionCount,
+          penetration: result.penetration,
+          blockedActions: result.blockedActions,
+        };
+      },
       forceTruckLoadPhysics: () => {
         this.truck.reset(this.terrain);
         this.truckLoad = 0;
@@ -3095,8 +3224,9 @@ class Simulator {
     this.updateHydraulics(dt, axes);
     this.updateTravel(dt, axes);
     this.updateLooseWorldObjects(dt);
-    this.updateAngles(dt);
+    const anglesBeforeArmMotion = this.updateAngles(dt);
     this.excavator.applyAngles(this.angles);
+    this.resolveArmTruckCollisions(anglesBeforeArmMotion);
     this.updateSoil(dt);
     this.updateSoilParticles(dt);
     this.updateFineGrains(dt);
@@ -3423,7 +3553,8 @@ class Simulator {
     }
   }
 
-  private updateAngles(dt: number): void {
+  private updateAngles(dt: number): ExcavatorAngles {
+    const previousAngles = { ...this.angles };
     this.angles.swing += this.velocities.swing * dt;
 
     for (const action of ["boom", "stick", "bucket"] as ActionName[]) {
@@ -3440,6 +3571,67 @@ class Simulator {
         }
       }
     }
+    return previousAngles;
+  }
+
+  private resolveArmTruckCollisions(previousAngles: ExcavatorAngles): {
+    collided: boolean;
+    blockedActions: ActionName[];
+    penetration: number;
+  } {
+    const samples = this.excavator.armCollisionSamples();
+    let maxPenetration = 0;
+    const affected = new Set<"boom" | "stick" | "bucket">();
+
+    for (const sample of samples) {
+      const hit = this.truck.resolveSolidCollision(sample.point, sample.radius);
+      if (!hit) {
+        continue;
+      }
+      maxPenetration = Math.max(maxPenetration, hit.penetration);
+      affected.add(sample.action);
+    }
+
+    if (affected.size === 0) {
+      return { collided: false, blockedActions: [], penetration: 0 };
+    }
+
+    const chain = new Set<ActionName>(["swing"]);
+    if (affected.has("boom")) {
+      chain.add("boom");
+    }
+    if (affected.has("stick")) {
+      chain.add("boom");
+      chain.add("stick");
+    }
+    if (affected.has("bucket")) {
+      chain.add("boom");
+      chain.add("stick");
+      chain.add("bucket");
+    }
+
+    const blockedActions: ActionName[] = [];
+    for (const action of chain) {
+      const delta = this.angles[action] - previousAngles[action];
+      if (Math.abs(delta) < 0.00001) {
+        continue;
+      }
+      this.angles[action] = previousAngles[action];
+      this.velocities[action] = 0;
+      blockedActions.push(action);
+    }
+
+    const severity = clamp(maxPenetration * 2.4 + blockedActions.length * 0.12, 0, 1);
+    this.pressure = Math.max(this.pressure, clamp(0.44 + severity * 0.56, 0, 1));
+    if (this.collisionCooldown <= 0 && (blockedActions.length > 0 || maxPenetration > 0.025)) {
+      this.collisionCount += 1;
+      this.collisionCooldown = 0.34;
+    }
+    if (blockedActions.length > 0) {
+      this.excavator.applyAngles(this.angles);
+    }
+
+    return { collided: true, blockedActions, penetration: maxPenetration };
   }
 
   private updateSoil(dt: number): void {

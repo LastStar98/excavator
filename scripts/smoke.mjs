@@ -336,6 +336,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const armTruckCollision = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceArmTruckCollision()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const truckLoadPhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceTruckLoadPhysics()`,
       returnByValue: true,
@@ -475,6 +480,7 @@ async function main() {
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
     const truckCollisionValue = truckCollision.result.value;
+    const armTruckCollisionValue = armTruckCollision.result.value;
     const truckLoadPhysicsValue = truckLoadPhysics.result.value;
     const terrainMaterialPhysicsValue = terrainMaterialPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
@@ -642,6 +648,15 @@ async function main() {
           truckCollisionValue?.pressure > 0.4,
       ],
       [
+        "truck collision blocks arm and bucket joints",
+        armTruckCollisionValue?.collided &&
+          armTruckCollisionValue?.angleBlocked &&
+          Math.abs(armTruckCollisionValue?.velocityAfter ?? 1) < 0.001 &&
+          armTruckCollisionValue?.penetration > 0.02 &&
+          armTruckCollisionValue?.collisionCount > 0 &&
+          armTruckCollisionValue?.pressure > 0.4,
+      ],
+      [
         "loaded truck sags, tilts, and compacts tire ruts",
         truckLoadPhysicsValue?.accepted > 4.5 &&
           truckLoadPhysicsValue?.loadRatio > 0.6 &&
@@ -765,6 +780,7 @@ async function main() {
           trackPass: trackPassValue,
           pitSink: pitSinkValue,
           truckCollision: truckCollisionValue,
+          armTruckCollision: armTruckCollisionValue,
           truckLoadPhysics: truckLoadPhysicsValue,
           terrainMaterialPhysics: terrainMaterialPhysicsValue,
           roughTrack: roughTrackValue,
