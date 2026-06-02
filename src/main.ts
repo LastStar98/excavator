@@ -259,6 +259,10 @@ interface ExcavatorDebugApi {
     debrisTravel: number;
     hardTravel: number;
     railTravel: number;
+    truckPenetrationBefore: number;
+    truckPenetrationAfter: number;
+    pairDistanceBefore: number;
+    pairDistanceAfter: number;
     collisionCount: number;
     pressure: number;
   };
@@ -3456,6 +3460,10 @@ class Simulator {
         let debrisTravel = 0;
         let hardTravel = 0;
         let railTravel = 0;
+        let truckPenetrationBefore = 0;
+        let truckPenetrationAfter = 0;
+        let pairDistanceBefore = 0;
+        let pairDistanceAfter = 0;
 
         this.excavator.group.rotation.set(0, 0, 0);
         if (debris) {
@@ -3500,12 +3508,44 @@ class Simulator {
           railTravel = rail.mesh.position.distanceTo(railBefore);
         }
 
+        if (debris) {
+          const truckProbe = this.truck.group.localToWorld(new THREE.Vector3(-2.12, 1.03, 0));
+          debris.mesh.position.copy(truckProbe);
+          debris.velocity.set(-0.45, -0.2, 0.12);
+          debris.sleeping = false;
+          truckPenetrationBefore = this.truck.resolveSolidCollision(debris.mesh.position, debris.radius)?.penetration ?? 0;
+          for (let i = 0; i < 4; i += 1) {
+            this.updateLooseWorldObjects(0.06);
+          }
+          truckPenetrationAfter = this.truck.resolveSolidCollision(debris.mesh.position, debris.radius)?.penetration ?? 0;
+        }
+
+        if (debris && hard) {
+          const pairBase = new THREE.Vector3(1.15, 0, 2.85);
+          const ground = this.terrain.getHeightAt(pairBase.x, pairBase.z);
+          const sharedY = ground + Math.max(debris.groundOffset, hard.groundOffset) + 0.02;
+          const overlapDistance = Math.max(0.06, (debris.radius + hard.radius) * 0.42);
+          debris.mesh.position.set(pairBase.x, sharedY, pairBase.z);
+          hard.mesh.position.set(pairBase.x + overlapDistance, sharedY, pairBase.z);
+          debris.velocity.set(0.25, 0, 0);
+          hard.velocity.set(-0.12, 0, 0);
+          debris.sleeping = false;
+          hard.sleeping = false;
+          pairDistanceBefore = debris.mesh.position.distanceTo(hard.mesh.position);
+          this.resolveLooseObjectPairCollisions();
+          pairDistanceAfter = debris.mesh.position.distanceTo(hard.mesh.position);
+        }
+
         this.updateExcavatorSupport(0.3, forward);
         this.updateUi(0);
         return {
           debrisTravel,
           hardTravel,
           railTravel,
+          truckPenetrationBefore,
+          truckPenetrationAfter,
+          pairDistanceBefore,
+          pairDistanceAfter,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
         };
@@ -3971,6 +4011,8 @@ class Simulator {
         collider.velocity.z *= groundFriction;
       }
 
+      this.resolveLooseObjectTruckCollision(collider);
+
       const horizontalSpeed = Math.hypot(collider.velocity.x, collider.velocity.z);
       if (horizontalSpeed > 0.01) {
         collider.mesh.rotation.x += collider.velocity.z * dt * 1.7;
@@ -3979,6 +4021,98 @@ class Simulator {
       if (pos.y <= ground + 0.001 && horizontalSpeed < 0.008 && Math.abs(collider.velocity.y) < 0.008) {
         collider.velocity.set(0, 0, 0);
         collider.sleeping = true;
+      }
+    }
+    this.resolveLooseObjectPairCollisions();
+  }
+
+  private resolveLooseObjectTruckCollision(collider: WorldCollider): boolean {
+    const hit = this.truck.resolveSolidCollision(collider.mesh.position, collider.radius);
+    if (!hit) {
+      return false;
+    }
+
+    const normal = hit.normal.clone().normalize();
+    collider.mesh.position.addScaledVector(normal, Math.min(hit.penetration + 0.004, 0.5));
+
+    const normalSpeed = collider.velocity.dot(normal);
+    const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed);
+    const tangentDamping = 1 - clamp(0.12 + collider.friction * 0.24, 0.12, 0.42);
+    const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution, 0.04, 0.38) : normalSpeed;
+    collider.velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(normal, bounceSpeed);
+    collider.sleeping = false;
+    this.pressure = Math.max(this.pressure, clamp(0.34 + hit.penetration * 1.8 + collider.mass * 0.008, 0, 0.9));
+    if (this.collisionCooldown <= 0 && hit.penetration > 0.025) {
+      this.collisionCount += 1;
+      this.collisionCooldown = 0.34;
+    }
+    return true;
+  }
+
+  private resolveLooseObjectPairCollisions(): void {
+    const colliders = this.worldColliders;
+    for (let i = 0; i < colliders.length - 1; i += 1) {
+      const a = colliders[i];
+      if (this.carriedWorldColliders.has(a)) {
+        continue;
+      }
+
+      for (let j = i + 1; j < colliders.length; j += 1) {
+        const b = colliders[j];
+        if (this.carriedWorldColliders.has(b) || (a.sleeping && b.sleeping)) {
+          continue;
+        }
+
+        const ax = a.mesh.position.x;
+        const ay = a.mesh.position.y;
+        const az = a.mesh.position.z;
+        const bx = b.mesh.position.x;
+        const by = b.mesh.position.y;
+        const bz = b.mesh.position.z;
+        const dx = ax - bx;
+        const dy = ay - by;
+        const dz = az - bz;
+        const combined = a.radius + b.radius;
+        const distanceSq = dx * dx + dy * dy + dz * dz;
+        if (distanceSq >= combined * combined) {
+          continue;
+        }
+
+        const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+        const normal = new THREE.Vector3(dx / distance, dy / distance, dz / distance);
+        const penetration = combined - distance;
+        const invMassA = a.immovable ? 0 : 1 / Math.max(a.mass, 0.05);
+        const invMassB = b.immovable ? 0 : 1 / Math.max(b.mass, 0.05);
+        const totalInvMass = invMassA + invMassB;
+        if (totalInvMass <= 0) {
+          continue;
+        }
+
+        const correction = Math.min(penetration * 0.82, 0.28);
+        a.mesh.position.addScaledVector(normal, correction * (invMassA / totalInvMass));
+        b.mesh.position.addScaledVector(normal, -correction * (invMassB / totalInvMass));
+
+        const relVelocity = a.velocity.clone().sub(b.velocity);
+        const closingSpeed = relVelocity.dot(normal);
+        if (closingSpeed < 0) {
+          const restitution = Math.min(a.restitution, b.restitution);
+          const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
+          a.velocity.addScaledVector(normal, impulse * invMassA);
+          b.velocity.addScaledVector(normal, -impulse * invMassB);
+        }
+
+        const tangent = relVelocity.addScaledVector(normal, -closingSpeed);
+        const tangentLenSq = tangent.lengthSq();
+        if (tangentLenSq > 0.000001) {
+          const friction = clamp((a.friction + b.friction) * 0.08, 0.04, 0.18);
+          tangent.normalize().multiplyScalar(friction);
+          a.velocity.addScaledVector(tangent, -invMassA / totalInvMass);
+          b.velocity.addScaledVector(tangent, invMassB / totalInvMass);
+        }
+
+        a.sleeping = false;
+        b.sleeping = false;
+        this.pressure = Math.max(this.pressure, clamp(0.16 + penetration * 1.2, 0, 0.58));
       }
     }
   }
