@@ -263,6 +263,15 @@ interface ExcavatorDebugApi {
     softResistance: number;
   };
   forceRoughTrackSupport: () => { roll: number; pitch: number; sinkage: number; pressure: number; supportDrop: number };
+  forceExcavatorPayloadSupport: () => {
+    unloadedPitch: number;
+    loadedPitch: number;
+    sideRoll: number;
+    unloadedSinkage: number;
+    loadedSinkage: number;
+    carriedMass: number;
+    pressure: number;
+  };
   forceWorldObjectPhysics: () => {
     debrisTravel: number;
     hardTravel: number;
@@ -3558,6 +3567,59 @@ class Simulator {
           supportDrop: beforeSupport - this.supportHeight,
         };
       },
+      forceExcavatorPayloadSupport: () => {
+        this.carriedWorldColliders.clear();
+        this.carriedWorldPreviousPositions.clear();
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.group.rotation.set(0, 0, 0);
+        Object.assign(this.angles, { swing: 0, boom: 0.64, stick: -0.78, bucket: -1.46 });
+        this.bucketLoad = 0;
+        this.bucketTransitLoad = 0;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.excavator.applyAngles(this.angles);
+        const forward = new THREE.Vector3(1, 0, 0);
+        this.updateExcavatorSupport(1.2, forward);
+        const unloadedPitch = this.chassisPitch;
+        const unloadedSinkage = this.chassisSinkage;
+
+        const heavy = this.worldColliders.find((collider) => collider.kind === "boulder");
+        let carriedMass = 0;
+        this.bucketLoad = BUCKET_CAPACITY;
+        this.bucketTransitLoad = 0.34;
+        if (heavy) {
+          const local = new THREE.Vector3(-0.62, -0.28, 0);
+          heavy.mesh.position.copy(this.excavator.bucketGroup.localToWorld(local.clone()));
+          heavy.velocity.set(0, 0, 0);
+          this.carriedWorldColliders.set(heavy, local);
+          this.carriedWorldPreviousPositions.set(heavy, heavy.mesh.position.clone());
+          carriedMass = this.carriedWorldObjectMass();
+        }
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.updateExcavatorSupport(1.2, forward);
+        const loadedPitch = this.chassisPitch;
+        const loadedSinkage = this.chassisSinkage;
+
+        Object.assign(this.angles, { swing: Math.PI / 2, boom: 0.64, stick: -0.78, bucket: -1.46 });
+        this.excavator.applyAngles(this.angles);
+        if (heavy) {
+          const local = this.carriedWorldColliders.get(heavy) ?? new THREE.Vector3(-0.62, -0.28, 0);
+          heavy.mesh.position.copy(this.excavator.bucketGroup.localToWorld(local.clone()));
+          this.carriedWorldPreviousPositions.set(heavy, heavy.mesh.position.clone());
+        }
+        this.updateExcavatorSupport(1.2, forward);
+        const sideRoll = this.chassisRoll;
+        this.releaseCarriedWorldObjects();
+        this.updateUi(0);
+        return {
+          unloadedPitch,
+          loadedPitch,
+          sideRoll,
+          unloadedSinkage,
+          loadedSinkage,
+          carriedMass,
+          pressure: this.pressure,
+        };
+      },
       forceWorldObjectPhysics: () => {
         const debris = this.worldColliders.find((collider) => !collider.immovable && (collider.kind === "clod" || collider.kind === "cone" || collider.kind === "rock"));
         const hard = this.worldColliders.find((collider) => collider.kind === "boulder");
@@ -4323,15 +4385,30 @@ class Simulator {
     const rawSupportHeight = (left.supportHeight + right.supportHeight) * 0.5;
     const contactSpan = Math.max(left.highHeight, right.highHeight) - Math.min(left.lowHeight, right.lowHeight);
     const disturbedDepth = (left.disturbedDepth + right.disturbedDepth) * 0.5;
-    const loadFactor = this.bucketLoad / BUCKET_CAPACITY;
-    const targetSinkage = clamp(0.012 + disturbedDepth * 0.13 + contactSpan * 0.035 + loadFactor * 0.022, 0.012, 0.24);
-    const targetRoll = clamp(Math.atan2(left.supportHeight - right.supportHeight, TRACK_GAUGE), -0.22, 0.22);
-    const targetPitch = clamp(Math.atan2(frontHeight - rearHeight, TRACK_LENGTH * 0.84), -0.18, 0.18);
+    const bucketPocket = this.excavator.bucketPocketWorld();
+    const payloadMass = this.bucketLoad * 0.55 + this.bucketTransitLoad * 0.45 + this.carriedWorldObjectMass();
+    const reach = bucketPocket.clone().sub(base);
+    const forwardReach = reach.dot(forward);
+    const sideReach = reach.dot(side);
+    const normalizedPayload = clamp(payloadMass / 12, 0, 2.2);
+    const pitchMoment = clamp((forwardReach / Math.max(TRACK_LENGTH, 0.001)) * normalizedPayload, -0.9, 0.9);
+    const rollMoment = clamp((sideReach / Math.max(TRACK_GAUGE, 0.001)) * normalizedPayload, -1.0, 1.0);
+    const loadFactor = clamp(this.bucketLoad / BUCKET_CAPACITY + this.bucketTransitLoad / BUCKET_CAPACITY * 0.6 + this.carriedWorldObjectMass() / 18, 0, 2.4);
+    const targetSinkage = clamp(
+      0.012 + disturbedDepth * 0.13 + contactSpan * 0.035 + loadFactor * 0.026 + Math.abs(pitchMoment) * 0.026 + Math.abs(rollMoment) * 0.018,
+      0.012,
+      0.28,
+    );
+    const targetRoll = clamp(Math.atan2(left.supportHeight - right.supportHeight, TRACK_GAUGE) - rollMoment * 0.11, -0.28, 0.28);
+    const targetPitch = clamp(Math.atan2(frontHeight - rearHeight, TRACK_LENGTH * 0.84) - pitchMoment * 0.12, -0.24, 0.24);
 
     this.supportHeight = smoothTo(this.supportHeight, rawSupportHeight, 8.5, dt);
     this.chassisSinkage = smoothTo(this.chassisSinkage, targetSinkage, 3.2, dt);
     this.chassisRoll = smoothTo(this.chassisRoll, targetRoll, 4.8, dt);
     this.chassisPitch = smoothTo(this.chassisPitch, targetPitch, 4.8, dt);
+    if (loadFactor > 0.05 || Math.abs(pitchMoment) > 0.03 || Math.abs(rollMoment) > 0.03) {
+      this.pressure = Math.max(this.pressure, clamp(0.08 + loadFactor * 0.16 + Math.abs(pitchMoment) * 0.2 + Math.abs(rollMoment) * 0.16, 0, 0.72));
+    }
     this.excavator.group.position.y = smoothTo(this.excavator.group.position.y, this.supportHeight - this.chassisSinkage, 8.5, dt);
     this.excavator.group.rotation.x = this.chassisRoll;
     this.excavator.group.rotation.z = this.chassisPitch;

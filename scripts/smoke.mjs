@@ -371,6 +371,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const payloadSupport = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceExcavatorPayloadSupport()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const worldObjectPhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceWorldObjectPhysics()`,
       returnByValue: true,
@@ -507,6 +512,7 @@ async function main() {
     const truckLoadPhysicsValue = truckLoadPhysics.result.value;
     const terrainMaterialPhysicsValue = terrainMaterialPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
+    const payloadSupportValue = payloadSupport.result.value;
     const worldObjectPhysicsValue = worldObjectPhysics.result.value;
     const mapDiversityValue = mapDiversity.result.value;
     const mobileUiValue = mobileUi.result.value;
@@ -751,6 +757,14 @@ async function main() {
           roughTrackValue?.pressure > 0.1,
       ],
       [
+        "bucket payload shifts excavator chassis support",
+        payloadSupportValue?.loadedSinkage > payloadSupportValue?.unloadedSinkage + 0.012 &&
+          Math.abs((payloadSupportValue?.loadedPitch ?? 0) - (payloadSupportValue?.unloadedPitch ?? 0)) > 0.012 &&
+          Math.abs(payloadSupportValue?.sideRoll ?? 0) > 0.018 &&
+          payloadSupportValue?.carriedMass > 1 &&
+          payloadSupportValue?.pressure > 0.1,
+      ],
+      [
         "visible world objects use collision physics",
         worldObjectPhysicsValue?.debrisTravel > 0.035 &&
           worldObjectPhysicsValue?.hardTravel > 0.035 &&
@@ -866,6 +880,7 @@ async function main() {
           truckLoadPhysics: truckLoadPhysicsValue,
           terrainMaterialPhysics: terrainMaterialPhysicsValue,
           roughTrack: roughTrackValue,
+          payloadSupport: payloadSupportValue,
           worldObjectPhysics: worldObjectPhysicsValue,
           mapDiversity: mapDiversityValue,
           mobileUi: mobileUiValue,
