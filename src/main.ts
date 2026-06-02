@@ -63,6 +63,14 @@ interface SoilParticle {
   target?: THREE.Vector3;
 }
 
+interface TrackSupportSample {
+  supportHeight: number;
+  averageHeight: number;
+  lowHeight: number;
+  highHeight: number;
+  disturbedDepth: number;
+}
+
 interface ExcavatorDebugApi {
   snapshot: () => {
     bucketLoad: number;
@@ -77,11 +85,22 @@ interface ExcavatorDebugApi {
     particleCount: number;
     settlingParticleCount: number;
     flowParticleCount: number;
+    fineGrainCount: number;
+    chassisSinkage: number;
+    supportHeight: number;
   };
   forceDigPass: () => { removed: number; beforeHeight: number; afterHeight: number; bucketLoad: number };
   forceTruckDump: () => { dumped: number; truckLoad: number; bucketLoad: number };
   forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
+  forceExcavatorPitSink: () => {
+    lowered: number;
+    beforeY: number;
+    afterY: number;
+    beforeGround: number;
+    afterGround: number;
+    chassisSinkage: number;
+  };
 }
 
 declare global {
@@ -130,8 +149,11 @@ const BUCKET_LEN = 1.18;
 const BUCKET_CAPACITY = 1.55;
 const TRUCK_CAPACITY = 7.5;
 const TRACK_GAUGE = 1.48;
+const TRACK_LENGTH = 3.65;
+const TRACK_WIDTH = 0.5;
 const TRACK_MAX_SPEED = 1.25;
 const SOIL_REPOSE_TAN = Math.tan(THREE.MathUtils.degToRad(34));
+const SOIL_BEDROCK_FLOOR = -1.85;
 const DIG_SITE = new THREE.Vector3(-4.1, 0, 2.3);
 const TRUCK_CENTER = new THREE.Vector3(4.8, 0, -2.4);
 const WORKER_ZONE = new THREE.Vector3(2.0, 0, 2.15);
@@ -420,6 +442,26 @@ class HeightfieldTerrain {
     return THREE.MathUtils.lerp(hx0, hx1, tz);
   }
 
+  getReferenceHeightAt(x: number, z: number): number {
+    const fx = clamp((x + this.size / 2) / this.spacing, 0, this.segments - 0.001);
+    const fz = clamp((z + this.size / 2) / this.spacing, 0, this.segments - 0.001);
+    const ix = Math.floor(fx);
+    const iz = Math.floor(fz);
+    const tx = fx - ix;
+    const tz = fz - iz;
+    const x0 = -this.size / 2 + ix * this.spacing;
+    const x1 = x0 + this.spacing;
+    const z0 = -this.size / 2 + iz * this.spacing;
+    const z1 = z0 + this.spacing;
+    const h00 = this.initialHeight(x0, z0);
+    const h10 = this.initialHeight(x1, z0);
+    const h01 = this.initialHeight(x0, z1);
+    const h11 = this.initialHeight(x1, z1);
+    const hx0 = THREE.MathUtils.lerp(h00, h10, tx);
+    const hx1 = THREE.MathUtils.lerp(h01, h11, tx);
+    return THREE.MathUtils.lerp(hx0, hx1, tz);
+  }
+
   getSlopeAt(x: number, z: number): number {
     const hL = this.getHeightAt(x - this.spacing, z);
     const hR = this.getHeightAt(x + this.spacing, z);
@@ -428,6 +470,80 @@ class HeightfieldTerrain {
     const dx = (hR - hL) / (this.spacing * 2);
     const dz = (hU - hD) / (this.spacing * 2);
     return Math.hypot(dx, dz);
+  }
+
+  sampleTrackSupport(center: THREE.Vector3, forward: THREE.Vector3, sideways: THREE.Vector3, length: number, width: number): TrackSupportSample {
+    const f = forward.clone();
+    f.y = 0;
+    if (f.lengthSq() < 0.0001) {
+      f.set(1, 0, 0);
+    }
+    f.normalize();
+
+    const s = sideways.clone();
+    s.y = 0;
+    if (s.lengthSq() < 0.0001) {
+      s.set(-f.z, 0, f.x);
+    }
+    s.normalize();
+
+    const halfLength = length * 0.5;
+    const halfWidth = width * 0.5;
+    const rangeRadius = halfLength + halfWidth + this.spacing * 2;
+    const range = this.gridRange(center.x, center.z, rangeRadius);
+    const heights: number[] = [];
+    let heightSum = 0;
+    let referenceSum = 0;
+
+    for (let iz = range.minZ; iz <= range.maxZ; iz += 1) {
+      for (let ix = range.minX; ix <= range.maxX; ix += 1) {
+        const idx = this.index(ix, iz);
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        const relX = x - center.x;
+        const relZ = z - center.z;
+        const longitudinal = relX * f.x + relZ * f.z;
+        const lateral = relX * s.x + relZ * s.z;
+        if (Math.abs(longitudinal) > halfLength || Math.abs(lateral) > halfWidth) {
+          continue;
+        }
+
+        const h = this.heights[idx];
+        heights.push(h);
+        heightSum += h;
+        referenceSum += this.initialHeight(x, z);
+      }
+    }
+
+    if (heights.length === 0) {
+      const height = this.getHeightAt(center.x, center.z);
+      const reference = this.getReferenceHeightAt(center.x, center.z);
+      return {
+        supportHeight: height,
+        averageHeight: height,
+        lowHeight: height,
+        highHeight: height,
+        disturbedDepth: Math.max(0, reference - height),
+      };
+    }
+
+    heights.sort((a, b) => a - b);
+    const lowCount = clamp(Math.ceil(heights.length * 0.42), 1, heights.length);
+    let lowSum = 0;
+    for (let i = 0; i < lowCount; i += 1) {
+      lowSum += heights[i];
+    }
+    const lowAverage = lowSum / lowCount;
+    const averageHeight = heightSum / heights.length;
+    const referenceHeight = referenceSum / heights.length;
+
+    return {
+      supportHeight: averageHeight * 0.38 + lowAverage * 0.62,
+      averageHeight,
+      lowHeight: heights[0],
+      highHeight: heights[heights.length - 1],
+      disturbedDepth: Math.max(0, referenceHeight - averageHeight),
+    };
   }
 
   lowerAt(center: THREE.Vector3, radius: number, depth: number): number {
@@ -442,7 +558,7 @@ class HeightfieldTerrain {
         const dist = Math.hypot(x - center.x, z - center.z);
         if (dist <= radius) {
           const falloff = (1 - dist / radius) ** 2;
-          const maxLower = Math.max(0, this.heights[idx] + 0.72);
+          const maxLower = Math.max(0, this.heights[idx] - SOIL_BEDROCK_FLOOR);
           const delta = Math.min(depth * falloff, maxLower);
           this.heights[idx] -= delta;
           removed += delta * this.spacing * this.spacing;
@@ -509,7 +625,7 @@ class HeightfieldTerrain {
         const edgeFalloff = clamp(1 - effectiveDistance / (halfWidth + this.spacing * 0.8), 0, 1);
         const strokeFalloff = lengthSq > 0.0001 ? 0.7 + t * 0.3 : 1;
         const desiredDelta = depth * Math.pow(edgeFalloff, 1.35) * strokeFalloff;
-        const maxLower = Math.max(0, this.heights[idx] + 0.92);
+        const maxLower = Math.max(0, this.heights[idx] - SOIL_BEDROCK_FLOOR);
         const delta = Math.min(desiredDelta, maxLower);
         if (delta <= 0) {
           continue;
@@ -619,7 +735,7 @@ class HeightfieldTerrain {
         const endFalloff = 1 - Math.abs(longitudinal) / halfLength;
         const padNoise = 0.72 + hash2(ix * 13 + iz * 7, Math.round(center.x * 31 + center.z * 17)) * 0.28;
         const delta = depth * (0.42 + sideFalloff * 0.58) * (0.76 + endFalloff * 0.24) * padNoise;
-        const maxLower = Math.max(0, this.heights[idx] + 0.68);
+        const maxLower = Math.max(0, this.heights[idx] - SOIL_BEDROCK_FLOOR);
         const applied = Math.min(delta, maxLower);
         this.heights[idx] -= applied;
         compacted += applied * cellArea;
@@ -1403,6 +1519,22 @@ class Simulator {
     makeMat(0x855f36, 0.94, 0.02),
     makeMat(0x5a4734, 0.96, 0.02),
   ];
+  private readonly fineGrainMax = 420;
+  private readonly fineGrainPositions = new Float32Array(this.fineGrainMax * 3);
+  private readonly fineGrainVelocities = new Float32Array(this.fineGrainMax * 3);
+  private readonly fineGrainLife = new Float32Array(this.fineGrainMax);
+  private readonly fineGrainMaxLife = new Float32Array(this.fineGrainMax);
+  private readonly fineGrainSettles = new Uint8Array(this.fineGrainMax);
+  private readonly fineGrainGeometry = new THREE.BufferGeometry();
+  private readonly fineGrainMaterial = new THREE.PointsMaterial({
+    color: 0x9a7043,
+    size: 0.032,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: 0.78,
+    depthWrite: false,
+  });
+  private readonly fineGrainCloud = new THREE.Points(this.fineGrainGeometry, this.fineGrainMaterial);
   private readonly targetActions: Actions = { swing: 0, boom: 0, stick: 0, bucket: 0 };
   private readonly velocities: ExcavatorVelocities = { swing: 0, boom: 0, stick: 0, bucket: 0 };
   private readonly angles: ExcavatorAngles = { ...initialAngles };
@@ -1429,6 +1561,9 @@ class Simulator {
   private travelDistance = 0;
   private trackSoilWork = 0;
   private soilSettleAccumulator = 0;
+  private chassisSinkage = 0;
+  private supportHeight = 0;
+  private fineGrainCursor = 0;
   private fpsAccumulator = 0;
   private fpsFrames = 0;
   private fps = 0;
@@ -1448,11 +1583,14 @@ class Simulator {
     this.scene.background = new THREE.Color(0x9fb4b6);
     this.scene.fog = new THREE.Fog(0x9fb4b6, 24, 74);
 
+    this.buildFineGrainCloud();
     this.buildWorld();
     this.terrain = new HeightfieldTerrain(this.scene);
     this.truck = new WorkTruck(this.scene);
     this.excavator = new ExcavatorModel(this.scene);
     this.excavator.applyAngles(this.angles);
+    this.supportHeight = this.terrain.getHeightAt(0, 0);
+    this.excavator.group.position.y = this.supportHeight;
     this.previousBucketTip.copy(this.excavator.bucketTipWorld());
     this.buildWorksiteMarkers();
     this.scatterSoilDetails();
@@ -1463,6 +1601,18 @@ class Simulator {
     this.updateUi(0);
     this.installDebugApi();
     this.renderer.setAnimationLoop(() => this.tick());
+  }
+
+  private buildFineGrainCloud(): void {
+    for (let i = 0; i < this.fineGrainMax; i += 1) {
+      this.fineGrainPositions[i * 3] = 0;
+      this.fineGrainPositions[i * 3 + 1] = -999;
+      this.fineGrainPositions[i * 3 + 2] = 0;
+    }
+    this.fineGrainGeometry.setAttribute("position", new THREE.BufferAttribute(this.fineGrainPositions, 3));
+    (this.fineGrainGeometry.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    this.fineGrainCloud.frustumCulled = false;
+    this.scene.add(this.fineGrainCloud);
   }
 
   reset(): void {
@@ -1483,6 +1633,9 @@ class Simulator {
     this.travelDistance = 0;
     this.trackSoilWork = 0;
     this.soilSettleAccumulator = 0;
+    this.chassisSinkage = 0;
+    this.supportHeight = this.terrain.getHeightAt(0, 0);
+    this.clearFineGrains();
     this.clearMobileInput();
     this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
     this.excavator.group.rotation.y = 0;
@@ -1604,9 +1757,9 @@ class Simulator {
     const dryClodMat = makeMat(0x8a6238, 0.96, 0.02);
     const twigMat = makeMat(0x2f281f, 0.8, 0.06);
 
-    for (let i = 0; i < 95; i += 1) {
-      const aroundDig = i < 52;
-      const radius = aroundDig ? 1.2 + Math.random() * 3.7 : 4.0 + Math.random() * 10.0;
+    for (let i = 0; i < 155; i += 1) {
+      const aroundDig = i < 92;
+      const radius = aroundDig ? 0.85 + Math.random() * 4.25 : 4.0 + Math.random() * 10.0;
       const angle = Math.random() * Math.PI * 2;
       const x = (aroundDig ? DIG_SITE.x : 0) + Math.cos(angle) * radius;
       const z = (aroundDig ? DIG_SITE.z : 0) + Math.sin(angle) * radius;
@@ -1614,10 +1767,10 @@ class Simulator {
         continue;
       }
 
-      const isRock = Math.random() > 0.56;
+      const isRock = Math.random() > 0.72;
       const geometry = isRock
-        ? new THREE.IcosahedronGeometry(0.035 + Math.random() * 0.08, 0)
-        : new THREE.DodecahedronGeometry(0.045 + Math.random() * 0.1, 0);
+        ? new THREE.IcosahedronGeometry(0.025 + Math.random() * 0.065, 0)
+        : new THREE.DodecahedronGeometry(0.018 + Math.random() * 0.075, 0);
       const mesh = new THREE.Mesh(geometry, isRock ? rockMat : dryClodMat);
       mesh.position.set(x, this.terrain.getHeightAt(x, z) + 0.035, z);
       mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
@@ -1899,6 +2052,9 @@ class Simulator {
         particleCount: this.soilParticles.length,
         settlingParticleCount: this.soilParticles.filter((particle) => particle.settles).length,
         flowParticleCount: this.soilParticles.filter((particle) => !particle.settles).length,
+        fineGrainCount: this.fineGrainCount(),
+        chassisSinkage: this.chassisSinkage,
+        supportHeight: this.supportHeight,
       }),
       forceDigPass: () => {
         const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
@@ -1914,6 +2070,9 @@ class Simulator {
         );
         this.bucketLoad += removed;
         this.totalExcavated += removed;
+        if (removed > 0) {
+          this.spawnFineGrains(end, removed, new THREE.Vector3(1, 0.25, 0), false, 1.25);
+        }
         this.excavator.setBucketLoad(this.bucketLoad);
         this.updateUi(0);
         return {
@@ -1965,7 +2124,7 @@ class Simulator {
         const rutBefore = this.terrain.getHeightAt(center.x, center.z);
         const bermPoint = center.clone().addScaledVector(side, 0.46);
         const bermBefore = this.terrain.getHeightAt(bermPoint.x, bermPoint.z);
-        const result = this.terrain.compactTrackStrip(center, forward, side, 3.65, 0.5, 0.13);
+        const result = this.terrain.compactTrackStrip(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, 0.13);
         this.trackSoilWork += result.compacted;
         const rutAfter = this.terrain.getHeightAt(center.x, center.z);
         const bermAfter = this.terrain.getHeightAt(bermPoint.x, bermPoint.z);
@@ -1975,6 +2134,26 @@ class Simulator {
           rutDrop: rutBefore - rutAfter,
           bermRise: bermAfter - bermBefore,
           trackSoilWork: this.trackSoilWork,
+        };
+      },
+      forceExcavatorPitSink: () => {
+        const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
+        const base = this.excavator.group.position.clone();
+        const beforeY = this.excavator.group.position.y;
+        const beforeGround = this.terrain.getHeightAt(base.x, base.z);
+        const lowered = this.terrain.lowerAt(base, 2.25, 0.62);
+        const afterGround = this.terrain.getHeightAt(base.x, base.z);
+        this.updateExcavatorSupport(0.55, forward);
+        this.excavator.applyAngles(this.angles);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.updateUi(0);
+        return {
+          lowered,
+          beforeY,
+          afterY: this.excavator.group.position.y,
+          beforeGround,
+          afterGround,
+          chassisSinkage: this.chassisSinkage,
         };
       },
     };
@@ -1995,6 +2174,7 @@ class Simulator {
     this.excavator.applyAngles(this.angles);
     this.updateSoil(dt);
     this.updateSoilParticles(dt);
+    this.updateFineGrains(dt);
     this.updatePassiveSoil(dt);
     this.updateSafety(dt);
     this.updateCamera(dt);
@@ -2092,22 +2272,32 @@ class Simulator {
     const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
     const move = forwardSpeed * dt;
     this.excavator.group.position.addScaledVector(forward, move);
-    this.excavator.group.position.y = smoothTo(
-      this.excavator.group.position.y,
-      this.terrain.getHeightAt(this.excavator.group.position.x, this.excavator.group.position.z),
-      8,
-      dt,
-    );
     this.travelDistance += Math.abs(move);
     this.updateTrackSoilInteraction(dt, forward);
+    this.updateExcavatorSupport(dt, forward);
+  }
+
+  private updateExcavatorSupport(dt: number, forward: THREE.Vector3): void {
+    const base = this.excavator.group.position;
+    const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    const leftCenter = base.clone().addScaledVector(side, -0.72);
+    const rightCenter = base.clone().addScaledVector(side, 0.72);
+    const left = this.terrain.sampleTrackSupport(leftCenter, forward, side, TRACK_LENGTH, TRACK_WIDTH);
+    const right = this.terrain.sampleTrackSupport(rightCenter, forward, side, TRACK_LENGTH, TRACK_WIDTH);
+    const rawSupportHeight = (left.supportHeight + right.supportHeight) * 0.5;
+    const contactSpan = Math.max(left.highHeight, right.highHeight) - Math.min(left.lowHeight, right.lowHeight);
+    const disturbedDepth = (left.disturbedDepth + right.disturbedDepth) * 0.5;
+    const loadFactor = this.bucketLoad / BUCKET_CAPACITY;
+    const targetSinkage = clamp(0.012 + disturbedDepth * 0.13 + contactSpan * 0.035 + loadFactor * 0.022, 0.012, 0.24);
+
+    this.supportHeight = smoothTo(this.supportHeight, rawSupportHeight, 8.5, dt);
+    this.chassisSinkage = smoothTo(this.chassisSinkage, targetSinkage, 3.2, dt);
+    this.excavator.group.position.y = smoothTo(this.excavator.group.position.y, this.supportHeight - this.chassisSinkage, 8.5, dt);
   }
 
   private updateTrackSoilInteraction(dt: number, forward: THREE.Vector3): void {
     const base = this.excavator.group.position;
     const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
-    const trackLength = 3.65;
-    const trackWidth = 0.5;
-
     for (const [offset, velocity] of [
       [-0.72, this.leftTrackVelocity],
       [0.72, this.rightTrackVelocity],
@@ -2120,7 +2310,7 @@ class Simulator {
       center.y = this.terrain.getHeightAt(center.x, center.z);
       const slip = Math.abs(this.leftTrackVelocity - this.rightTrackVelocity) / Math.max(TRACK_MAX_SPEED * 2, 0.001);
       const depth = clamp((0.006 + trackMotion * dt * 0.055) * (1 + slip * 1.45), 0.002, 0.026);
-      const result = this.terrain.compactTrackStrip(center, forward, side, trackLength, trackWidth, depth);
+      const result = this.terrain.compactTrackStrip(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, depth);
       this.trackSoilWork += result.compacted;
       if (result.compacted > 0) {
         this.pressure = Math.max(this.pressure, clamp(0.08 + result.rutDrop * 4.8 + slip * 0.18, 0, 0.64));
@@ -2223,6 +2413,7 @@ class Simulator {
       if (removed > 0) {
         this.pressure = Math.max(this.pressure, clamp(0.42 + removed * 1.8 + contactRatio * 0.22, 0, 1));
         this.spawnCuttingFlow(edgePoints, pocket, removed);
+        this.spawnFineGrains(edgePoints[0], removed, forward.clone().multiplyScalar(-1).add(new THREE.Vector3(0, 0.35, 0)), false, 1.35);
       }
     }
 
@@ -2248,6 +2439,7 @@ class Simulator {
       const dumped = Math.min(this.bucketLoad, dumpRate);
       this.bucketLoad -= dumped;
       this.spawnSoilParticles(pocket, dumped, forward, openFactor);
+      this.spawnFineGrains(pocket, dumped, forward.clone().add(new THREE.Vector3(0, -0.35 - openFactor, 0)), true, 1.05 + openFactor);
     }
 
     this.excavator.setBucketLoad(this.bucketLoad);
@@ -2256,17 +2448,17 @@ class Simulator {
   }
 
   private spawnCuttingFlow(edgePoints: THREE.Vector3[], pocket: THREE.Vector3, volume: number): void {
-    const count = clamp(Math.ceil(volume * 22), 2, 9);
+    const count = clamp(Math.ceil(volume * 42), 4, 18);
     for (let i = 0; i < count; i += 1) {
-      if (this.soilParticles.length > 160) {
+      if (this.soilParticles.length > 220) {
         const oldest = this.soilParticles.shift();
         if (oldest) {
           this.depositParticle(oldest);
         }
       }
       const source = edgePoints[i % edgePoints.length].clone();
-      source.add(new THREE.Vector3((Math.random() - 0.5) * 0.1, 0.04 + Math.random() * 0.08, (Math.random() - 0.5) * 0.1));
-      const radius = 0.035 + Math.random() * 0.045;
+      source.add(new THREE.Vector3((Math.random() - 0.5) * 0.16, 0.025 + Math.random() * 0.08, (Math.random() - 0.5) * 0.16));
+      const radius = 0.02 + Math.random() * 0.04;
       const geometry = new THREE.DodecahedronGeometry(radius, 0);
       const mesh = new THREE.Mesh(geometry, this.looseSoilMats[(i + this.soilParticles.length) % this.looseSoilMats.length]);
       mesh.position.copy(source);
@@ -2283,17 +2475,17 @@ class Simulator {
     if (volume <= 0) {
       return;
     }
-    const count = clamp(Math.ceil(volume * 26), 1, 14);
+    const count = clamp(Math.ceil(volume * 42), 2, 24);
     const perParticle = volume / count;
 
     for (let i = 0; i < count; i += 1) {
-      if (this.soilParticles.length > 160) {
+      if (this.soilParticles.length > 220) {
         const oldest = this.soilParticles.shift();
         if (oldest) {
           this.depositParticle(oldest);
         }
       }
-      const radius = clamp(0.07 + Math.cbrt(perParticle) * 0.11, 0.07, 0.18);
+      const radius = clamp(0.04 + Math.cbrt(perParticle) * 0.08, 0.04, 0.13);
       const geometry = new THREE.DodecahedronGeometry(radius, 0);
       const position = geometry.attributes.position as THREE.BufferAttribute;
       for (let vertex = 0; vertex < position.count; vertex += 1) {
@@ -2319,6 +2511,102 @@ class Simulator {
         .add(new THREE.Vector3(0, -0.45 - openFactor * 1.15, 0));
       this.soilParticles.push({ mesh, velocity, volume: perParticle, life: 0, settles: true });
     }
+  }
+
+  private spawnFineGrains(origin: THREE.Vector3, volume: number, direction: THREE.Vector3, settles: boolean, burst = 1): void {
+    if (volume <= 0) {
+      return;
+    }
+
+    const count = clamp(Math.ceil(volume * 72 * burst), 4, 46);
+    const baseDirection = direction.clone();
+    if (baseDirection.lengthSq() < 0.0001) {
+      baseDirection.set(1, 0, 0);
+    }
+    baseDirection.normalize();
+    const side = new THREE.Vector3(-baseDirection.z, 0, baseDirection.x).normalize();
+
+    for (let i = 0; i < count; i += 1) {
+      const idx = this.fineGrainCursor;
+      this.fineGrainCursor = (this.fineGrainCursor + 1) % this.fineGrainMax;
+      const p = idx * 3;
+      const spray = 0.08 + Math.random() * 0.22;
+      this.fineGrainPositions[p] = origin.x + (Math.random() - 0.5) * 0.22;
+      this.fineGrainPositions[p + 1] = origin.y + (Math.random() - 0.5) * 0.1;
+      this.fineGrainPositions[p + 2] = origin.z + (Math.random() - 0.5) * 0.22;
+      this.fineGrainVelocities[p] = baseDirection.x * spray + side.x * (Math.random() - 0.5) * 0.9;
+      this.fineGrainVelocities[p + 1] = (settles ? -0.1 : 0.22) + (Math.random() - 0.5) * 0.42;
+      this.fineGrainVelocities[p + 2] = baseDirection.z * spray + side.z * (Math.random() - 0.5) * 0.9;
+      this.fineGrainLife[idx] = 0;
+      this.fineGrainMaxLife[idx] = settles ? 0.85 + Math.random() * 0.75 : 0.38 + Math.random() * 0.28;
+      this.fineGrainSettles[idx] = settles ? 1 : 0;
+    }
+
+    (this.fineGrainGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+  }
+
+  private updateFineGrains(dt: number): void {
+    let changed = false;
+
+    for (let i = 0; i < this.fineGrainMax; i += 1) {
+      if (this.fineGrainMaxLife[i] <= 0) {
+        continue;
+      }
+
+      const p = i * 3;
+      this.fineGrainLife[i] += dt;
+      const settles = this.fineGrainSettles[i] === 1;
+      const damping = 1 - Math.min(dt * (settles ? 0.34 : 1.45), 0.12);
+      this.fineGrainVelocities[p + 1] -= (settles ? 9.81 : 2.2) * dt;
+      this.fineGrainVelocities[p] *= damping;
+      this.fineGrainVelocities[p + 1] *= damping;
+      this.fineGrainVelocities[p + 2] *= damping;
+      this.fineGrainPositions[p] += this.fineGrainVelocities[p] * dt;
+      this.fineGrainPositions[p + 1] += this.fineGrainVelocities[p + 1] * dt;
+      this.fineGrainPositions[p + 2] += this.fineGrainVelocities[p + 2] * dt;
+      changed = true;
+
+      const ground = this.terrain.getHeightAt(this.fineGrainPositions[p], this.fineGrainPositions[p + 2]);
+      if (
+        this.fineGrainLife[i] > this.fineGrainMaxLife[i] ||
+        (settles && this.fineGrainPositions[p + 1] <= ground + 0.025)
+      ) {
+        this.deactivateFineGrain(i);
+      }
+    }
+
+    if (changed) {
+      (this.fineGrainGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    }
+  }
+
+  private deactivateFineGrain(i: number): void {
+    const p = i * 3;
+    this.fineGrainMaxLife[i] = 0;
+    this.fineGrainLife[i] = 0;
+    this.fineGrainPositions[p] = 0;
+    this.fineGrainPositions[p + 1] = -999;
+    this.fineGrainPositions[p + 2] = 0;
+    this.fineGrainVelocities[p] = 0;
+    this.fineGrainVelocities[p + 1] = 0;
+    this.fineGrainVelocities[p + 2] = 0;
+  }
+
+  private clearFineGrains(): void {
+    for (let i = 0; i < this.fineGrainMax; i += 1) {
+      this.deactivateFineGrain(i);
+    }
+    (this.fineGrainGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+  }
+
+  private fineGrainCount(): number {
+    let count = 0;
+    for (let i = 0; i < this.fineGrainMax; i += 1) {
+      if (this.fineGrainMaxLife[i] > 0) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   private updateSoilParticles(dt: number): void {

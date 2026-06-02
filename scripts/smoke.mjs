@@ -310,6 +310,11 @@ async function main() {
       expression: `window.__excavatorSim?.forceTrackPass()`,
       returnByValue: true,
     });
+    await resetSim();
+    const pitSink = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceExcavatorPitSink()`,
+      returnByValue: true,
+    });
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 844,
       height: 390,
@@ -397,6 +402,7 @@ async function main() {
     const soilAfterDumpValue = soilAfterDump.result.value;
     const soilPushValue = soilPush.result.value;
     const trackPassValue = trackPass.result.value;
+    const pitSinkValue = pitSink.result.value;
     const mobileUiValue = mobileUi.result.value;
     const mobileBeforeLeftStick = Number.parseInt(mobileBeforeLeft.stick, 10);
     const mobileLeftStick = Number.parseInt(mobileLeft.state.stick, 10);
@@ -478,6 +484,10 @@ async function main() {
         soilDigValue?.removed > 0.02 && soilDigValue.afterHeight < soilDigValue.beforeHeight - 0.015,
       ],
       [
+        "digging emits fine soil grains",
+        (soilAfterDigValue?.fineGrainCount ?? 0) >= 4,
+      ],
+      [
         "removed soil enters bucket exactly",
         Math.abs((soilAfterDigValue?.bucketLoad ?? 0) - (soilDigValue?.removed ?? -1)) < 0.002,
       ],
@@ -505,6 +515,13 @@ async function main() {
           trackPassValue?.rutDrop > 0.01 &&
           trackPassValue?.bermRise > 0.001 &&
           trackPassValue?.trackSoilWork > 0.02,
+      ],
+      [
+        "excavator sinks into dug pit",
+        pitSinkValue?.lowered > 0.4 &&
+          pitSinkValue?.afterGround < pitSinkValue?.beforeGround - 0.22 &&
+          pitSinkValue?.afterY < pitSinkValue?.beforeY - 0.16 &&
+          pitSinkValue?.chassisSinkage > 0.01,
       ],
       [
         "mobile overlay visible",
@@ -579,6 +596,7 @@ async function main() {
           soilAfterDump: soilAfterDumpValue,
           soilPush: soilPushValue,
           trackPass: trackPassValue,
+          pitSink: pitSinkValue,
           mobileUi: mobileUiValue,
           mobileBeforeLeft,
           mobileLeft,
