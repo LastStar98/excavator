@@ -474,6 +474,10 @@ interface ExcavatorDebugApi {
     pipeCapsuleFalsePenetration: number;
     pipeCapsuleHitBefore: number;
     pipeCapsuleHitAfter: number;
+    pipePairSphereFalsePenetration: number;
+    pipePairCapsuleFalsePenetration: number;
+    pipePairCapsuleHitBefore: number;
+    pipePairCapsuleHitAfter: number;
     trackContactCount: number;
     cornerContacts: number;
     movedMass: number;
@@ -5560,6 +5564,10 @@ class Simulator {
         let pipeCapsuleFalsePenetration = 0;
         let pipeCapsuleHitBefore = 0;
         let pipeCapsuleHitAfter = 0;
+        let pipePairSphereFalsePenetration = 0;
+        let pipePairCapsuleFalsePenetration = 0;
+        let pipePairCapsuleHitBefore = 0;
+        let pipePairCapsuleHitAfter = 0;
         let truckPenetrationBefore = 0;
         let truckPenetrationAfter = 0;
         let pairDistanceBefore = 0;
@@ -5613,10 +5621,14 @@ class Simulator {
         }
 
         if (rail) {
-          const railForward = new THREE.Vector3(0, 0, -1);
-          const railStart = rail.mesh.position.clone().add(new THREE.Vector3(0, 0, 2.02));
-          this.excavator.group.position.set(railStart.x, this.terrain.getHeightAt(railStart.x, railStart.z), railStart.z);
-          this.excavator.group.rotation.set(0, Math.PI / 2, 0);
+          const railForward = new THREE.Vector3(1, 0, 0);
+          const railStart = new THREE.Vector3(TRACK_LENGTH * 0.46, 0, TRACK_GAUGE * 0.5 + 0.26);
+          railStart.y = this.terrain.getHeightAt(railStart.x, railStart.z) + rail.groundOffset;
+          rail.mesh.position.copy(railStart);
+          rail.mesh.rotation.set(0, 0, 0);
+          rail.velocity.set(0, 0, 0);
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+          this.excavator.group.rotation.set(0, 0, 0);
           this.leftTrackVelocity = TRACK_MAX_SPEED;
           this.rightTrackVelocity = TRACK_MAX_SPEED;
           this.collisionCooldown = 0;
@@ -5685,6 +5697,28 @@ class Simulator {
               hitProbe.addScaledVector(hitBefore.normal, hitBefore.penetration + 0.004);
             }
             pipeCapsuleHitAfter = this.resolveWorldColliderSampleHit(pipe, hitProbe, probeRadius)?.penetration ?? 0;
+
+            if (debris) {
+              const falsePairProbe = midpoint.clone().addScaledVector(side, capsule.radius + debris.radius + 0.08);
+              debris.mesh.position.copy(falsePairProbe);
+              debris.velocity.set(0, 0, 0);
+              debris.sleeping = false;
+              pipe.sleeping = false;
+              this.worldColliderGridDirty = true;
+              pipePairSphereFalsePenetration = Math.max(0, pipe.radius + debris.radius - falsePairProbe.distanceTo(pipe.mesh.position));
+              pipePairCapsuleFalsePenetration = this.resolveWorldColliderPairHit(pipe, debris)?.penetration ?? 0;
+
+              const hitPairProbe = midpoint.clone().addScaledVector(side, capsule.radius + debris.radius - 0.055);
+              debris.mesh.position.copy(hitPairProbe);
+              debris.velocity.copy(side).multiplyScalar(-0.2);
+              pipe.velocity.set(0, 0, 0);
+              debris.sleeping = false;
+              pipe.sleeping = false;
+              this.worldColliderGridDirty = true;
+              pipePairCapsuleHitBefore = this.resolveWorldColliderPairHit(pipe, debris)?.penetration ?? 0;
+              this.resolveLooseObjectPairCollisions();
+              pipePairCapsuleHitAfter = this.resolveWorldColliderPairHit(pipe, debris)?.penetration ?? 0;
+            }
           }
         }
 
@@ -5719,6 +5753,10 @@ class Simulator {
           pipeCapsuleFalsePenetration,
           pipeCapsuleHitBefore,
           pipeCapsuleHitAfter,
+          pipePairSphereFalsePenetration,
+          pipePairCapsuleFalsePenetration,
+          pipePairCapsuleHitBefore,
+          pipePairCapsuleHitAfter,
           trackContactCount,
           cornerContacts,
           movedMass,
@@ -6761,6 +6799,107 @@ class Simulator {
     };
   }
 
+  private closestPointOnSegment(point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): THREE.Vector3 {
+    const axis = b.clone().sub(a);
+    const axisLenSq = axis.lengthSq();
+    const t = axisLenSq > 0.000001 ? clamp(point.clone().sub(a).dot(axis) / axisLenSq, 0, 1) : 0;
+    return a.clone().addScaledVector(axis, t);
+  }
+
+  private closestPointsBetweenSegments(
+    a0: THREE.Vector3,
+    a1: THREE.Vector3,
+    b0: THREE.Vector3,
+    b1: THREE.Vector3,
+  ): { a: THREE.Vector3; b: THREE.Vector3 } {
+    const d1 = a1.clone().sub(a0);
+    const d2 = b1.clone().sub(b0);
+    const r = a0.clone().sub(b0);
+    const aLen = d1.dot(d1);
+    const bLen = d2.dot(d2);
+    const epsilon = 0.000001;
+
+    if (aLen <= epsilon && bLen <= epsilon) {
+      return { a: a0.clone(), b: b0.clone() };
+    }
+    if (aLen <= epsilon) {
+      const t = clamp(d2.dot(r) / bLen, 0, 1);
+      return { a: a0.clone(), b: b0.clone().addScaledVector(d2, t) };
+    }
+    if (bLen <= epsilon) {
+      const s = clamp(-d1.dot(r) / aLen, 0, 1);
+      return { a: a0.clone().addScaledVector(d1, s), b: b0.clone() };
+    }
+
+    const c = d1.dot(r);
+    const f = d2.dot(r);
+    const denom = aLen * bLen - d1.dot(d2) * d1.dot(d2);
+    let s = denom !== 0 ? clamp((d1.dot(d2) * f - c * bLen) / denom, 0, 1) : 0;
+    let t = (d1.dot(d2) * s + f) / bLen;
+
+    if (t < 0) {
+      t = 0;
+      s = clamp(-c / aLen, 0, 1);
+    } else if (t > 1) {
+      t = 1;
+      s = clamp((d1.dot(d2) - c) / aLen, 0, 1);
+    }
+
+    return {
+      a: a0.clone().addScaledVector(d1, s),
+      b: b0.clone().addScaledVector(d2, t),
+    };
+  }
+
+  private resolveWorldColliderPairHit(a: WorldCollider, b: WorldCollider): { normal: THREE.Vector3; penetration: number } | null {
+    const capsuleA = this.worldColliderCapsuleWorld(a);
+    const capsuleB = this.worldColliderCapsuleWorld(b);
+    let pointA: THREE.Vector3;
+    let pointB: THREE.Vector3;
+    let combinedRadius: number;
+
+    if (capsuleA && capsuleB) {
+      const closest = this.closestPointsBetweenSegments(capsuleA.a, capsuleA.b, capsuleB.a, capsuleB.b);
+      pointA = closest.a;
+      pointB = closest.b;
+      combinedRadius = capsuleA.radius + capsuleB.radius;
+    } else if (capsuleA) {
+      pointA = this.closestPointOnSegment(b.mesh.position, capsuleA.a, capsuleA.b);
+      pointB = b.mesh.position;
+      combinedRadius = capsuleA.radius + b.radius;
+    } else if (capsuleB) {
+      pointA = a.mesh.position;
+      pointB = this.closestPointOnSegment(a.mesh.position, capsuleB.a, capsuleB.b);
+      combinedRadius = a.radius + capsuleB.radius;
+    } else {
+      pointA = a.mesh.position;
+      pointB = b.mesh.position;
+      combinedRadius = a.radius + b.radius;
+    }
+
+    const delta = pointA.clone().sub(pointB);
+    const distanceSq = delta.lengthSq();
+    if (distanceSq >= combinedRadius * combinedRadius) {
+      return null;
+    }
+
+    if (distanceSq < 0.000001) {
+      const fallback = a.mesh.position.clone().sub(b.mesh.position);
+      if (fallback.lengthSq() > 0.000001) {
+        fallback.normalize();
+      } else {
+        fallback.set(1, 0, 0);
+      }
+      return { normal: fallback, penetration: combinedRadius };
+    }
+
+    const distance = Math.sqrt(distanceSq);
+    return {
+      normal: delta.divideScalar(distance),
+      penetration: combinedRadius - distance,
+    };
+  }
+
   private resolveColliderHit(collider: WorldCollider, bodyPosition: THREE.Vector3, bodyRadius: number): { normal: THREE.Vector3; penetration: number } | null {
     const capsule = this.worldColliderCapsuleWorld(collider);
     if (capsule) {
@@ -6947,16 +7086,13 @@ class Simulator {
         continue;
       }
 
-      const delta = collider.mesh.position.clone().sub(other.mesh.position);
-      const combined = collider.radius + other.radius;
-      const distanceSq = delta.lengthSq();
-      if (distanceSq >= combined * combined) {
+      const hit = this.resolveWorldColliderPairHit(collider, other);
+      if (!hit) {
         continue;
       }
 
-      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-      const normal = delta.divideScalar(distance);
-      const penetration = combined - distance;
+      const normal = hit.normal;
+      const penetration = hit.penetration;
       const invMassA = 0;
       const invMassB = other.immovable ? 0 : 1 / Math.max(other.mass, 0.05);
       const totalInvMass = invMassA + invMassB;
@@ -7293,24 +7429,13 @@ class Simulator {
           continue;
         }
 
-        const ax = a.mesh.position.x;
-        const ay = a.mesh.position.y;
-        const az = a.mesh.position.z;
-        const bx = b.mesh.position.x;
-        const by = b.mesh.position.y;
-        const bz = b.mesh.position.z;
-        const dx = ax - bx;
-        const dy = ay - by;
-        const dz = az - bz;
-        const combined = a.radius + b.radius;
-        const distanceSq = dx * dx + dy * dy + dz * dz;
-        if (distanceSq >= combined * combined) {
+        const hit = this.resolveWorldColliderPairHit(a, b);
+        if (!hit) {
           continue;
         }
 
-        const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-        const normal = new THREE.Vector3(dx / distance, dy / distance, dz / distance);
-        const penetration = combined - distance;
+        const normal = hit.normal;
+        const penetration = hit.penetration;
         const invMassA = a.immovable ? 0 : 1 / Math.max(a.mass, 0.05);
         const invMassB = b.immovable ? 0 : 1 / Math.max(b.mass, 0.05);
         const totalInvMass = invMassA + invMassB;
