@@ -142,7 +142,15 @@ interface ExcavatorDebugApi {
     terrainVolumeDelta: number;
   };
   forceDigPass: () => { removed: number; beforeHeight: number; afterHeight: number; bucketLoad: number; airborneFines: number };
-  forceTruckDump: () => { dumped: number; truckLoad: number; bucketLoad: number };
+  forceTruckDump: () => {
+    dumped: number;
+    emitted: number;
+    truckLoad: number;
+    bucketLoad: number;
+    activeAfter: number;
+    gravityDelta: number;
+    terrainGain: number;
+  };
   forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
   forceCuttingFlowPhysics: () => {
     spawnedVolume: number;
@@ -2725,14 +2733,39 @@ class Simulator {
         };
       },
       forceTruckDump: () => {
-        const worldPoint = new THREE.Vector3(TRUCK_CENTER.x + 0.54, TRUCK_CENTER.y + 1.24, TRUCK_CENTER.z);
-        const dumped = this.truck.depositSoilAt(worldPoint, this.bucketLoad, TRUCK_CAPACITY - this.truckLoad);
-        this.bucketLoad -= dumped;
-        this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + dumped);
+        const beforeTruck = this.truckLoad;
+        const beforeTerrain = this.terrain.terrainVolumeDelta();
+        const emitted = this.bucketLoad;
+        const origin = this.truck.group.localToWorld(new THREE.Vector3(0.54, 1.86, 0));
+        const direction = new THREE.Vector3(0.18, -0.95, 0.08).normalize();
+        const fineVolume = emitted * 0.08;
+        const coarseVolume = Math.max(0, emitted - fineVolume);
+        this.bucketLoad = 0;
+        const particleStart = this.soilParticles.length;
+        this.spawnSoilParticles(origin, coarseVolume, direction, 0.82);
+        this.spawnFineGrains(origin, fineVolume, direction.clone().add(new THREE.Vector3(0, -0.55, 0)), true, 1.25);
+        const first = this.soilParticles.slice(particleStart).find((particle) => particle.settles);
+        const initialVy = first?.velocity.y ?? 0;
+        this.updateSoilParticles(1 / 45);
+        this.updateFineGrains(1 / 45);
+        const gravityDelta = first ? initialVy - first.velocity.y : 0;
+        for (let step = 0; step < 260; step += 1) {
+          this.updateSoilParticles(1 / 60);
+          this.updateFineGrains(1 / 60);
+        }
+        const dumped = this.truckLoad - beforeTruck;
         this.excavator.setBucketLoad(this.bucketLoad);
         this.truck.updateLoad(this.truckLoad);
         this.updateUi(0);
-        return { dumped, truckLoad: this.truckLoad, bucketLoad: this.bucketLoad };
+        return {
+          dumped,
+          emitted,
+          truckLoad: this.truckLoad,
+          bucketLoad: this.bucketLoad,
+          activeAfter: this.soilParticles.length + this.fineGrainCount(),
+          gravityDelta,
+          terrainGain: this.terrain.terrainVolumeDelta() - beforeTerrain,
+        };
       },
       forceFullBucketPush: () => {
         this.bucketLoad = BUCKET_CAPACITY;
@@ -3576,6 +3609,11 @@ class Simulator {
     }
     const count = clamp(Math.ceil(volume * 42), 2, 24);
     const perParticle = volume / count;
+    const flowDirection =
+      bucketForward.lengthSq() > 0.0001 ? bucketForward.clone().normalize() : new THREE.Vector3(0, -1, 0);
+    const horizontal = new THREE.Vector3(flowDirection.x, 0, flowDirection.z);
+    const sideways =
+      horizontal.lengthSq() > 0.0001 ? new THREE.Vector3(-horizontal.z, 0, horizontal.x).normalize() : new THREE.Vector3(1, 0, 0);
 
     for (let i = 0; i < count; i += 1) {
       if (this.soilParticles.length > 220) {
@@ -3602,8 +3640,7 @@ class Simulator {
       mesh.receiveShadow = true;
       this.scene.add(mesh);
 
-      const sideways = new THREE.Vector3(-bucketForward.z, 0, bucketForward.x).normalize();
-      const velocity = bucketForward
+      const velocity = flowDirection
         .clone()
         .multiplyScalar(0.24 + openFactor * 0.76)
         .addScaledVector(sideways, (Math.random() - 0.5) * 0.8)

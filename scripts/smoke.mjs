@@ -579,10 +579,14 @@ async function main() {
         soilAfterDigValue?.bucketVisualLoad > 0.05 && soilAfterDigValue?.bucketVisualLoad < 1,
       ],
       [
-        "truck dump receives bucket soil",
-        soilDumpValue?.dumped > 0.02 &&
+        "truck dump falls as physical conserved soil",
+        soilDumpValue?.emitted > 0.02 &&
+          soilDumpValue?.dumped > 0.02 &&
+          Math.abs((soilDumpValue?.dumped ?? 0) - (soilDumpValue?.emitted ?? -1)) < 0.006 &&
           Math.abs((soilAfterDumpValue?.truckLoad ?? 0) - (soilDumpValue?.dumped ?? -1)) < 0.002 &&
-          (soilAfterDumpValue?.bucketLoad ?? 1) < 0.002,
+          (soilAfterDumpValue?.bucketLoad ?? 1) < 0.002 &&
+          soilDumpValue?.activeAfter === 0 &&
+          soilDumpValue?.gravityDelta > 0.08,
       ],
       ["bucket load surface clears after dumping", (soilAfterDumpValue?.bucketVisualLoad ?? 1) < 0.01],
       [
