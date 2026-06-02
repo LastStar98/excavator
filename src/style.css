@@ -401,11 +401,18 @@ meter {
 }
 
 .mobile-joystick,
-.mobile-drive-pad {
+.mobile-drive-pad,
+.mobile-menu-bar,
+.mobile-menu-panel {
   pointer-events: auto;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
+}
+
+.mobile-menu-bar,
+.mobile-menu-panel {
+  display: none;
 }
 
 .mobile-joystick {
@@ -501,9 +508,6 @@ meter {
 }
 
 .mobile-drive-pad {
-  position: fixed;
-  top: max(64px, calc(env(safe-area-inset-top) + 64px));
-  left: max(10px, env(safe-area-inset-left));
   display: grid;
   grid-template-columns: repeat(2, 46px);
   gap: 4px;
@@ -513,6 +517,75 @@ meter {
   background: rgb(13 17 15 / 54%);
   box-shadow: 0 10px 22px rgb(0 0 0 / 30%);
   backdrop-filter: blur(10px);
+}
+
+.mobile-menu-bar {
+  position: fixed;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  z-index: 8;
+  grid-template-columns: repeat(3, max-content);
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 8px;
+  background: rgb(13 17 15 / 58%);
+  box-shadow: 0 10px 22px rgb(0 0 0 / 30%);
+  backdrop-filter: blur(10px);
+}
+
+.mobile-menu-bar button {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.mobile-menu-bar button.active {
+  color: #17130c;
+  border-color: #f1ad34;
+  background: #f1ad34;
+}
+
+.mobile-menu-panel {
+  position: fixed;
+  top: max(52px, calc(env(safe-area-inset-top) + 52px));
+  left: max(10px, env(safe-area-inset-left));
+  z-index: 8;
+  padding: 7px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 8px;
+  background: rgb(13 17 15 / 66%);
+  box-shadow: 0 10px 22px rgb(0 0 0 / 30%);
+  backdrop-filter: blur(12px);
+}
+
+.mobile-menu-panel:not(.hidden) {
+  display: block;
+}
+
+.mobile-panel-title {
+  margin-bottom: 6px;
+  color: #f1ad34;
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.mobile-camera-pad {
+  display: grid;
+  grid-template-columns: repeat(2, 64px);
+  gap: 4px;
+}
+
+.mobile-camera-pad button,
+.mobile-menu-section [data-mobile-reset] {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 850;
 }
 
 .mobile-drive-pad button {
@@ -565,21 +638,20 @@ meter {
     display: grid;
   }
 
+  .mobile-menu-bar {
+    display: grid;
+  }
+
   .left-panel {
     display: none;
   }
 
   .right-panel {
-    top: 72px;
-    right: max(8px, env(safe-area-inset-right));
-    width: min(210px, calc(100vw - 24px));
-    padding: 10px;
+    display: none;
   }
 
   .topbar {
-    top: max(8px, env(safe-area-inset-top));
-    left: max(8px, env(safe-area-inset-left));
-    right: max(8px, env(safe-area-inset-right));
+    display: none;
   }
 
   .brand {
@@ -607,10 +679,6 @@ meter {
   .brand,
   .right-panel {
     display: none;
-  }
-
-  .mobile-drive-pad {
-    top: max(10px, env(safe-area-inset-top));
   }
 
   .topbar {
@@ -669,8 +737,6 @@ meter {
   }
 
   .mobile-drive-pad {
-    top: max(96px, calc(env(safe-area-inset-top) + 96px));
-    left: max(8px, env(safe-area-inset-left));
     grid-template-columns: repeat(2, 44px);
     padding: 5px;
   }

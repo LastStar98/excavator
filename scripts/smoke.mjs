@@ -315,6 +315,16 @@ async function main() {
       expression: `window.__excavatorSim?.forceExcavatorPitSink()`,
       returnByValue: true,
     });
+    await resetSim();
+    const truckCollision = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceTruckCollision()`,
+      returnByValue: true,
+    });
+    await resetSim();
+    const roughTrack = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceRoughTrackSupport()`,
+      returnByValue: true,
+    });
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 844,
       height: 390,
@@ -330,14 +340,20 @@ async function main() {
         const left = document.getElementById("mobile-left-joystick");
         const right = document.getElementById("mobile-right-joystick");
         const drive = document.querySelector(".mobile-drive-pad");
+        const driveMenu = document.querySelector('[data-mobile-menu="drive"]');
+        const topbar = document.querySelector(".topbar");
         const fwd = document.querySelector('[data-drive="forward"]');
         const styles = controls ? getComputedStyle(controls) : null;
+        const topbarStyles = topbar ? getComputedStyle(topbar) : null;
         const rect = controls?.getBoundingClientRect();
         const driveRect = drive?.getBoundingClientRect();
         return {
           visible: Boolean(controls && styles?.display !== "none" && rect && rect.width > 0 && rect.height > 0),
           leftReady: Boolean(left?.getBoundingClientRect().width),
           rightReady: Boolean(right?.getBoundingClientRect().width),
+          driveHiddenInitially: Boolean(drive && driveRect && driveRect.width === 0 && driveRect.height === 0),
+          menuReady: Boolean(driveMenu?.getBoundingClientRect().width),
+          topbarHidden: Boolean(topbar && topbarStyles?.display === "none"),
           driveReady: Boolean(fwd?.getBoundingClientRect().width),
           width: rect?.width ?? 0,
           height: rect?.height ?? 0,
@@ -353,6 +369,28 @@ async function main() {
     const mobileLeft = await pointerDrag("#mobile-left-joystick", 0, -48, 650);
     const mobileBeforeRight = await resetSim();
     const mobileRight = await pointerDrag("#mobile-right-joystick", -48, 0, 650);
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-mobile-menu="drive"]')?.click()`,
+      returnByValue: true,
+    });
+    await delay(180);
+    const mobileMenuUi = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const panel = document.getElementById("mobile-menu-panel");
+        const drive = document.querySelector(".mobile-drive-pad");
+        const fwd = document.querySelector('[data-drive="forward"]');
+        const driveRect = drive?.getBoundingClientRect();
+        return {
+          panelOpen: Boolean(panel && !panel.classList.contains("hidden")),
+          driveReady: Boolean(fwd?.getBoundingClientRect().width),
+          driveLeft: driveRect?.left ?? 999,
+          driveTop: driveRect?.top ?? 999,
+          driveWidth: driveRect?.width ?? 0,
+          driveHeight: driveRect?.height ?? 0
+        };
+      })()`,
+      returnByValue: true,
+    });
     const mobileBeforeForward = await resetSim();
     const mobileForward = await pointerPress('[data-drive="forward"]', 760);
     const mobileBeforeReverse = await resetSim();
@@ -403,7 +441,10 @@ async function main() {
     const soilPushValue = soilPush.result.value;
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
+    const truckCollisionValue = truckCollision.result.value;
+    const roughTrackValue = roughTrack.result.value;
     const mobileUiValue = mobileUi.result.value;
+    const mobileMenuUiValue = mobileMenuUi.result.value;
     const mobileBeforeLeftStick = Number.parseInt(mobileBeforeLeft.stick, 10);
     const mobileLeftStick = Number.parseInt(mobileLeft.state.stick, 10);
     const mobileBeforeRightBucket = Number.parseInt(mobileBeforeRight.bucket, 10);
@@ -524,15 +565,36 @@ async function main() {
           pitSinkValue?.chassisSinkage > 0.01,
       ],
       [
-        "mobile overlay visible",
-        mobileUiValue?.visible && mobileUiValue?.leftReady && mobileUiValue?.rightReady && mobileUiValue?.driveReady,
+        "truck collision blocks crawler body",
+        truckCollisionValue?.blocked &&
+          truckCollisionValue?.afterX < truckCollisionValue?.beforeX - 0.08 &&
+          truckCollisionValue?.collisionCount > 0 &&
+          truckCollisionValue?.pressure > 0.4,
       ],
       [
-        "mobile drive pad is compact top-left",
-        mobileUiValue?.driveLeft <= 16 &&
-          mobileUiValue?.driveTop <= 16 &&
-          mobileUiValue?.driveWidth <= 110 &&
-          mobileUiValue?.driveHeight <= 76,
+        "rough ground tilts and loads crawler tracks",
+        Math.abs(roughTrackValue?.roll ?? 0) > 0.015 &&
+          Math.abs(roughTrackValue?.pitch ?? 0) > 0.004 &&
+          roughTrackValue?.sinkage > 0.012 &&
+          roughTrackValue?.pressure > 0.1,
+      ],
+      [
+        "mobile overlay visible",
+        mobileUiValue?.visible &&
+          mobileUiValue?.leftReady &&
+          mobileUiValue?.rightReady &&
+          mobileUiValue?.driveHiddenInitially &&
+          mobileUiValue?.menuReady &&
+          mobileUiValue?.topbarHidden,
+      ],
+      [
+        "mobile drive controls open from menu",
+        mobileMenuUiValue?.panelOpen &&
+          mobileMenuUiValue?.driveReady &&
+          mobileMenuUiValue?.driveLeft <= 18 &&
+          mobileMenuUiValue?.driveTop <= 92 &&
+          mobileMenuUiValue?.driveWidth <= 112 &&
+          mobileMenuUiValue?.driveHeight <= 80,
       ],
       [
         "mobile left joystick drives WASD axes",
@@ -597,7 +659,10 @@ async function main() {
           soilPush: soilPushValue,
           trackPass: trackPassValue,
           pitSink: pitSinkValue,
+          truckCollision: truckCollisionValue,
+          roughTrack: roughTrackValue,
           mobileUi: mobileUiValue,
+          mobileMenuUi: mobileMenuUiValue,
           mobileBeforeLeft,
           mobileLeft,
           mobileBeforeRight,
