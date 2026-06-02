@@ -326,6 +326,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const bucketLoadSurfacePhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceBucketLoadSurfacePhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const hydraulicLinkagePhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceHydraulicLinkagePhysics()`,
       returnByValue: true,
@@ -647,6 +652,7 @@ async function main() {
     const soilPushValue = soilPush.result.value;
     const cuttingFlowPhysicsValue = cuttingFlowPhysics.result.value;
     const bucketKinematicsValue = bucketKinematics.result.value;
+    const bucketLoadSurfacePhysicsValue = bucketLoadSurfacePhysics.result.value;
     const hydraulicLinkagePhysicsValue = hydraulicLinkagePhysics.result.value;
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
@@ -831,6 +837,19 @@ async function main() {
           bucketKinematicsValue?.sideOrthogonality < 0.02 &&
           bucketKinematicsValue?.cylinderDelta > 0.08 &&
           bucketKinematicsValue?.linkSymmetry < 0.025,
+      ],
+      [
+        "bucket load soil surface is physically solid",
+        bucketLoadSurfacePhysicsValue?.surfaceHeight > 0.08 &&
+          bucketLoadSurfacePhysicsValue?.surfaceNormalY > 0.28 &&
+          bucketLoadSurfacePhysicsValue?.soilPenetrationBefore > 0.03 &&
+          bucketLoadSurfacePhysicsValue?.soilPenetrationAfter < 0.02 &&
+          bucketLoadSurfacePhysicsValue?.capturedVolume > 0.03 &&
+          bucketLoadSurfacePhysicsValue?.objectPenetrationBefore > 0.04 &&
+          bucketLoadSurfacePhysicsValue?.objectPenetrationAfter < bucketLoadSurfacePhysicsValue?.objectPenetrationBefore - 0.015 &&
+          bucketLoadSurfacePhysicsValue?.objectTravel > 0.01 &&
+          bucketLoadSurfacePhysicsValue?.objectVelocity > 0.004 &&
+          bucketLoadSurfacePhysicsValue?.pressure > 0.1,
       ],
       [
         "hydraulic cylinders and bucket links participate in physics",
@@ -1189,6 +1208,7 @@ async function main() {
           soilPush: soilPushValue,
           cuttingFlowPhysics: cuttingFlowPhysicsValue,
           bucketKinematics: bucketKinematicsValue,
+          bucketLoadSurfacePhysics: bucketLoadSurfacePhysicsValue,
           hydraulicLinkagePhysics: hydraulicLinkagePhysicsValue,
           trackPass: trackPassValue,
           pitSink: pitSinkValue,

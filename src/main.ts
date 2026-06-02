@@ -173,6 +173,14 @@ interface ArmTerrainResistanceSample extends ArmCollisionSample {
   key: string;
 }
 
+interface BucketLoadSurfaceHit {
+  normal: THREE.Vector3;
+  penetration: number;
+  surfacePoint: THREE.Vector3;
+  surfaceY: number;
+  loadHeight: number;
+}
+
 interface ExcavatorDebugApi {
   snapshot: () => {
     bucketLoad: number;
@@ -247,6 +255,19 @@ interface ExcavatorDebugApi {
     sideOrthogonality: number;
     cylinderDelta: number;
     linkSymmetry: number;
+  };
+  forceBucketLoadSurfacePhysics: () => {
+    bucketLoad: number;
+    surfaceHeight: number;
+    surfaceNormalY: number;
+    soilPenetrationBefore: number;
+    soilPenetrationAfter: number;
+    capturedVolume: number;
+    objectPenetrationBefore: number;
+    objectPenetrationAfter: number;
+    objectTravel: number;
+    objectVelocity: number;
+    pressure: number;
   };
   forceHydraulicLinkagePhysics: () => {
     sampleCount: number;
@@ -2166,6 +2187,10 @@ class ExcavatorModel {
   private readonly bucketLoadHeights: Float32Array;
   private readonly bucketLoadSegmentsX = 7;
   private readonly bucketLoadSegmentsZ = 6;
+  private readonly bucketLoadMinX = -1.02;
+  private readonly bucketLoadMaxX = -0.18;
+  private readonly bucketLoadMinZ = -0.43;
+  private readonly bucketLoadMaxZ = 0.43;
   private bucketLoadRenderedRatio = -1;
 
   private readonly mats = {
@@ -2241,6 +2266,39 @@ class ExcavatorModel {
       total += height;
     }
     return clamp(total / this.bucketLoadHeights.length / 0.42, 0, 1);
+  }
+
+  resolveBucketLoadCollision(worldPoint: THREE.Vector3, radius: number): BucketLoadSurfaceHit | null {
+    const local = this.bucketGroup.worldToLocal(worldPoint.clone());
+    const hit = this.resolveBucketLoadSolidCollision(local, radius);
+    if (!hit) {
+      return null;
+    }
+
+    const surfacePoint = this.bucketGroup.localToWorld(new THREE.Vector3(local.x, hit.surfaceY, local.z));
+    return {
+      normal: hit.normal.applyQuaternion(this.bucketGroup.getWorldQuaternion(new THREE.Quaternion())).normalize(),
+      penetration: hit.penetration,
+      surfacePoint,
+      surfaceY: surfacePoint.y,
+      loadHeight: hit.loadHeight,
+    };
+  }
+
+  bucketLoadSurfaceAtWorld(worldPoint: THREE.Vector3): { point: THREE.Vector3; normal: THREE.Vector3; surfaceY: number; loadHeight: number } | null {
+    const local = this.bucketGroup.worldToLocal(worldPoint.clone());
+    const sample = this.sampleBucketLoadSurfaceLocal(local.x, local.z);
+    if (!sample) {
+      return null;
+    }
+
+    const point = this.bucketGroup.localToWorld(new THREE.Vector3(local.x, sample.surfaceY, local.z));
+    return {
+      point,
+      normal: sample.normal.applyQuaternion(this.bucketGroup.getWorldQuaternion(new THREE.Quaternion())).normalize(),
+      surfaceY: point.y,
+      loadHeight: sample.loadHeight,
+    };
   }
 
   bucketTipWorld(): THREE.Vector3 {
@@ -2432,14 +2490,91 @@ class ExcavatorModel {
     return this.upperGroup.localToWorld(new THREE.Vector3(5.5, 0.55, 0));
   }
 
+  private resolveBucketLoadSolidCollision(
+    local: THREE.Vector3,
+    radius: number,
+  ): { normal: THREE.Vector3; penetration: number; surfaceY: number; loadHeight: number } | null {
+    const sample = this.sampleBucketLoadSurfaceLocal(local.x, local.z);
+    if (!sample || sample.loadHeight <= 0.012) {
+      return null;
+    }
+
+    const lowerCatchLimit = sample.surfaceY - Math.max(radius * 1.35, 0.18);
+    if (local.y < lowerCatchLimit) {
+      return null;
+    }
+
+    const penetration = sample.surfaceY + radius - local.y;
+    if (penetration <= 0) {
+      return null;
+    }
+
+    return {
+      normal: sample.normal,
+      penetration,
+      surfaceY: sample.surfaceY,
+      loadHeight: sample.loadHeight,
+    };
+  }
+
+  private sampleBucketLoadSurfaceLocal(localX: number, localZ: number): { surfaceY: number; loadHeight: number; normal: THREE.Vector3 } | null {
+    if (!this.bucketLoadMesh.visible) {
+      return null;
+    }
+
+    const minX = this.bucketLoadMinX;
+    const maxX = this.bucketLoadMaxX;
+    const minZ = this.bucketLoadMinZ;
+    const maxZ = this.bucketLoadMaxZ;
+    const lengthX = maxX - minX;
+    const widthZ = maxZ - minZ;
+    if (localX < minX || localX > maxX || localZ < minZ || localZ > maxZ) {
+      return null;
+    }
+
+    const gx = clamp(((localX - minX) / lengthX) * this.bucketLoadSegmentsX, 0, this.bucketLoadSegmentsX - 0.000001);
+    const gz = clamp(((localZ - minZ) / widthZ) * this.bucketLoadSegmentsZ, 0, this.bucketLoadSegmentsZ - 0.000001);
+    const ix = Math.floor(gx);
+    const iz = Math.floor(gz);
+    const fx = gx - ix;
+    const fz = gz - iz;
+    const ix1 = Math.min(ix + 1, this.bucketLoadSegmentsX);
+    const iz1 = Math.min(iz + 1, this.bucketLoadSegmentsZ);
+
+    const x0 = THREE.MathUtils.lerp(minX, maxX, ix / this.bucketLoadSegmentsX);
+    const x1 = THREE.MathUtils.lerp(minX, maxX, ix1 / this.bucketLoadSegmentsX);
+    const z0 = THREE.MathUtils.lerp(minZ, maxZ, iz / this.bucketLoadSegmentsZ);
+    const z1 = THREE.MathUtils.lerp(minZ, maxZ, iz1 / this.bucketLoadSegmentsZ);
+    const h00 = this.bucketLoadHeights[this.bucketLoadIndex(ix, iz)];
+    const h10 = this.bucketLoadHeights[this.bucketLoadIndex(ix1, iz)];
+    const h01 = this.bucketLoadHeights[this.bucketLoadIndex(ix, iz1)];
+    const h11 = this.bucketLoadHeights[this.bucketLoadIndex(ix1, iz1)];
+    const y00 = this.bucketLoadBaseY(x0, z0) + h00;
+    const y10 = this.bucketLoadBaseY(x1, z0) + h10;
+    const y01 = this.bucketLoadBaseY(x0, z1) + h01;
+    const y11 = this.bucketLoadBaseY(x1, z1) + h11;
+    const y0 = THREE.MathUtils.lerp(y00, y10, fx);
+    const y1 = THREE.MathUtils.lerp(y01, y11, fx);
+    const surfaceY = THREE.MathUtils.lerp(y0, y1, fz);
+    const loadHeight0 = THREE.MathUtils.lerp(h00, h10, fx);
+    const loadHeight1 = THREE.MathUtils.lerp(h01, h11, fx);
+    const loadHeight = THREE.MathUtils.lerp(loadHeight0, loadHeight1, fz);
+    const stepX = lengthX / this.bucketLoadSegmentsX;
+    const stepZ = widthZ / this.bucketLoadSegmentsZ;
+    const dSurfaceDx = THREE.MathUtils.lerp(y10 - y00, y11 - y01, fz) / Math.max(stepX, 0.001);
+    const dSurfaceDz = THREE.MathUtils.lerp(y01 - y00, y11 - y10, fx) / Math.max(stepZ, 0.001);
+    const normal = new THREE.Vector3(-dSurfaceDx, 1, -dSurfaceDz).normalize();
+    return { surfaceY, loadHeight, normal };
+  }
+
   private createBucketLoadGeometry(): THREE.BufferGeometry {
     const positions: number[] = [];
     const uvs: number[] = [];
     const indices: number[] = [];
-    const minX = -1.02;
-    const maxX = -0.18;
-    const minZ = -0.43;
-    const maxZ = 0.43;
+    const minX = this.bucketLoadMinX;
+    const maxX = this.bucketLoadMaxX;
+    const minZ = this.bucketLoadMinZ;
+    const maxZ = this.bucketLoadMaxZ;
 
     for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
       for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
@@ -2471,10 +2606,10 @@ class ExcavatorModel {
   }
 
   private shapeBucketLoad(ratio: number): void {
-    const minX = -1.02;
-    const maxX = -0.18;
-    const minZ = -0.43;
-    const maxZ = 0.43;
+    const minX = this.bucketLoadMinX;
+    const maxX = this.bucketLoadMaxX;
+    const minZ = this.bucketLoadMinZ;
+    const maxZ = this.bucketLoadMaxZ;
     for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
       for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
         const x = THREE.MathUtils.lerp(minX, maxX, ix / this.bucketLoadSegmentsX);
@@ -2526,10 +2661,10 @@ class ExcavatorModel {
 
   private commitBucketLoadSurface(): void {
     const position = this.bucketLoadGeometry.attributes.position as THREE.BufferAttribute;
-    const minX = -1.02;
-    const maxX = -0.18;
-    const minZ = -0.43;
-    const maxZ = 0.43;
+    const minX = this.bucketLoadMinX;
+    const maxX = this.bucketLoadMaxX;
+    const minZ = this.bucketLoadMinZ;
+    const maxZ = this.bucketLoadMaxZ;
     for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
       for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
         const idx = this.bucketLoadIndex(ix, iz);
@@ -4012,6 +4147,95 @@ class Simulator {
           sideOrthogonality: current.sideOrthogonality,
           cylinderDelta: Math.abs(dumped.cylinderLength - curled.cylinderLength),
           linkSymmetry: Math.abs(current.leftLinkLength - current.rightLinkLength),
+        };
+      },
+      forceBucketLoadSurfacePhysics: () => {
+        this.bucketLoad = BUCKET_CAPACITY * 0.68;
+        this.bucketTransitLoad = 0;
+        this.pressure = 0;
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.group.rotation.set(0, 0, 0);
+        Object.assign(this.angles, { swing: 0, boom: 0.54, stick: -1.16, bucket: -2.16 });
+        this.excavator.applyAngles(this.angles);
+        this.excavator.setBucketLoad(this.bucketLoad);
+
+        const probe = this.excavator.bucketGroup.localToWorld(new THREE.Vector3(-0.56, -0.18, 0.02));
+        const surface = this.excavator.bucketLoadSurfaceAtWorld(probe);
+        let soilPenetrationBefore = 0;
+        let soilPenetrationAfter = 0;
+        let capturedVolume = 0;
+        let objectPenetrationBefore = 0;
+        let objectPenetrationAfter = 0;
+        let objectTravel = 0;
+        let objectVelocity = 0;
+
+        if (surface) {
+          const soilRadius = 0.06;
+          const soilMesh = this.acquireSoilParticleMesh(soilRadius, this.looseSoilMats[0], 6701);
+          const soilLocal = this.excavator.bucketGroup.worldToLocal(surface.point.clone());
+          soilLocal.y += soilRadius - 0.055;
+          soilMesh.position.copy(this.excavator.bucketGroup.localToWorld(soilLocal));
+          soilPenetrationBefore = this.excavator.resolveBucketLoadCollision(soilMesh.position, soilRadius)?.penetration ?? 0;
+          const beforeBucket = this.bucketLoad;
+          const soilParticle: SoilParticle = {
+            mesh: soilMesh,
+            velocity: surface.normal.clone().multiplyScalar(-0.42),
+            volume: 0.075,
+            radius: soilRadius,
+            life: 0,
+            settles: false,
+            toBucket: true,
+          };
+          if (this.captureParticleOnBucketLoad(soilParticle)) {
+            capturedVolume = this.bucketLoad - beforeBucket;
+          }
+          soilPenetrationAfter = this.excavator.resolveBucketLoadCollision(soilMesh.position, soilRadius)?.penetration ?? 0;
+          this.recycleSoilParticle(soilParticle);
+
+          const obstacle =
+            this.worldColliders.find((collider) => collider.kind === "boulder") ??
+            this.worldColliders.find((collider) => collider.kind === "rock");
+          if (obstacle) {
+            const savedPosition = obstacle.mesh.position.clone();
+            const savedQuaternion = obstacle.mesh.quaternion.clone();
+            const savedScale = obstacle.mesh.scale.clone();
+            const savedVelocity = obstacle.velocity.clone();
+            const savedSleeping = obstacle.sleeping;
+            const refreshedSurface = this.excavator.bucketLoadSurfaceAtWorld(probe) ?? surface;
+            const objectLocal = this.excavator.bucketGroup.worldToLocal(refreshedSurface.point.clone());
+            objectLocal.y += obstacle.radius - 0.075;
+            obstacle.mesh.position.copy(this.excavator.bucketGroup.localToWorld(objectLocal));
+            obstacle.velocity.copy(refreshedSurface.normal).multiplyScalar(-0.36);
+            obstacle.sleeping = false;
+            this.worldColliderGridDirty = true;
+            objectPenetrationBefore = this.excavator.resolveBucketLoadCollision(obstacle.mesh.position, obstacle.radius)?.penetration ?? 0;
+            const beforePosition = obstacle.mesh.position.clone();
+            this.resolveLooseObjectBucketLoadCollision(obstacle);
+            objectPenetrationAfter = this.excavator.resolveBucketLoadCollision(obstacle.mesh.position, obstacle.radius)?.penetration ?? 0;
+            objectTravel = obstacle.mesh.position.distanceTo(beforePosition);
+            objectVelocity = obstacle.velocity.length();
+            obstacle.mesh.position.copy(savedPosition);
+            obstacle.mesh.quaternion.copy(savedQuaternion);
+            obstacle.mesh.scale.copy(savedScale);
+            obstacle.velocity.copy(savedVelocity);
+            obstacle.sleeping = savedSleeping;
+            this.worldColliderGridDirty = true;
+          }
+        }
+
+        this.updateUi(0);
+        return {
+          bucketLoad: this.bucketLoad,
+          surfaceHeight: surface?.loadHeight ?? 0,
+          surfaceNormalY: surface?.normal.y ?? 0,
+          soilPenetrationBefore,
+          soilPenetrationAfter,
+          capturedVolume,
+          objectPenetrationBefore,
+          objectPenetrationAfter,
+          objectTravel,
+          objectVelocity,
+          pressure: this.pressure,
         };
       },
       forceHydraulicLinkagePhysics: () => {
@@ -6225,6 +6449,9 @@ class Simulator {
       if (this.resolveLooseObjectTruckCollision(collider)) {
         activeObjectMoved = true;
       }
+      if (this.resolveLooseObjectBucketLoadCollision(collider)) {
+        activeObjectMoved = true;
+      }
 
       const horizontalSpeed = Math.hypot(collider.velocity.x, collider.velocity.z);
       if (horizontalSpeed > 0.01) {
@@ -6243,6 +6470,24 @@ class Simulator {
       this.worldColliderGridDirty = true;
       this.resolveLooseObjectPairCollisions();
     }
+  }
+
+  private resolveLooseObjectBucketLoadCollision(collider: WorldCollider): boolean {
+    const hit = this.excavator.resolveBucketLoadCollision(collider.mesh.position, collider.radius);
+    if (!hit) {
+      return false;
+    }
+
+    const normal = hit.normal.clone().normalize();
+    collider.mesh.position.addScaledVector(normal, Math.min(hit.penetration + 0.003, 0.28));
+    const normalSpeed = collider.velocity.dot(normal);
+    const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed);
+    const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.02, 0.04, 0.24) : normalSpeed;
+    collider.velocity.copy(tangent.multiplyScalar(0.72)).addScaledVector(normal, bounceSpeed);
+    collider.sleeping = false;
+    this.worldColliderGridDirty = true;
+    this.pressure = Math.max(this.pressure, clamp(0.18 + hit.penetration * 0.9 + collider.mass * 0.006, 0, 0.62));
+    return true;
   }
 
   private resolveLooseObjectTruckCollision(collider: WorldCollider): boolean {
@@ -7403,6 +7648,11 @@ class Simulator {
         particle.mesh.position.addScaledVector(particle.velocity, dt);
         particle.mesh.rotation.x += particle.velocity.z * dt * 3.2;
         particle.mesh.rotation.z -= particle.velocity.x * dt * 3.2;
+        if (particle.toBucket && this.captureParticleOnBucketLoad(particle)) {
+          this.soilParticles.splice(i, 1);
+          this.recycleSoilParticle(particle);
+          continue;
+        }
         if (particle.toBucket && this.resolveSoilParticleCollisions(particle)) {
           particle.toBucket = false;
           particle.target = undefined;
@@ -7463,6 +7713,18 @@ class Simulator {
     }
   }
 
+  private captureParticleOnBucketLoad(particle: SoilParticle): boolean {
+    const hit = this.excavator.resolveBucketLoadCollision(particle.mesh.position, Math.max(0.018, particle.radius));
+    if (!hit) {
+      return false;
+    }
+
+    particle.mesh.position.addScaledVector(hit.normal, Math.min(hit.penetration + 0.002, 0.16));
+    this.captureParticleIntoBucket(particle);
+    this.pressure = Math.max(this.pressure, clamp(0.2 + hit.loadHeight * 0.5, 0, 0.55));
+    return true;
+  }
+
   private resolveFineGrainCollisions(i: number, radius: number): boolean {
     const p = i * 3;
     const pos = new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2]);
@@ -7486,6 +7748,27 @@ class Simulator {
         }
         collided = true;
       }
+    }
+
+    const bucketLoadHit = this.excavator.resolveBucketLoadCollision(pos, radius);
+    if (bucketLoadHit) {
+      pos.addScaledVector(bucketLoadHit.normal, Math.min(bucketLoadHit.penetration + 0.0015, 0.08));
+      const normalSpeed = velocity.dot(bucketLoadHit.normal);
+      const tangent = velocity.clone().addScaledVector(bucketLoadHit.normal, -normalSpeed);
+      if (normalSpeed < 0) {
+        velocity.copy(tangent.multiplyScalar(0.58)).addScaledVector(bucketLoadHit.normal, -normalSpeed * 0.14);
+      } else {
+        velocity.copy(tangent.multiplyScalar(0.64)).addScaledVector(bucketLoadHit.normal, normalSpeed);
+      }
+      this.pressure = Math.max(this.pressure, clamp(0.08 + bucketLoadHit.penetration * 0.35, 0, 0.28));
+      collided = true;
+      this.fineGrainPositions[p] = pos.x;
+      this.fineGrainPositions[p + 1] = pos.y;
+      this.fineGrainPositions[p + 2] = pos.z;
+      this.fineGrainVelocities[p] = velocity.x;
+      this.fineGrainVelocities[p + 1] = velocity.y;
+      this.fineGrainVelocities[p + 2] = velocity.z;
+      return true;
     }
 
     for (const collider of this.nearbyWorldColliders(pos, radius + FINE_GRAIN_COLLISION_QUERY_PADDING)) {
@@ -7571,6 +7854,22 @@ class Simulator {
           particle.velocity.copy(tangent.multiplyScalar(0.78)).addScaledVector(truckHit.normal, normalSpeed);
         }
         collided = true;
+      }
+    }
+
+    if (!particle.toBucket) {
+      const bucketLoadHit = this.excavator.resolveBucketLoadCollision(pos, radius);
+      if (bucketLoadHit) {
+        pos.addScaledVector(bucketLoadHit.normal, Math.min(bucketLoadHit.penetration + 0.003, 0.18));
+        const normalSpeed = particle.velocity.dot(bucketLoadHit.normal);
+        const tangent = particle.velocity.clone().addScaledVector(bucketLoadHit.normal, -normalSpeed);
+        if (normalSpeed < 0) {
+          particle.velocity.copy(tangent.multiplyScalar(0.66)).addScaledVector(bucketLoadHit.normal, -normalSpeed * 0.16);
+        } else {
+          particle.velocity.copy(tangent.multiplyScalar(0.72)).addScaledVector(bucketLoadHit.normal, normalSpeed);
+        }
+        this.pressure = Math.max(this.pressure, clamp(0.12 + bucketLoadHit.penetration * 0.55, 0, 0.38));
+        return true;
       }
     }
 
