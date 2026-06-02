@@ -118,6 +118,10 @@ interface ArmCollisionSample {
   radius: number;
 }
 
+interface ArmTerrainResistanceSample extends ArmCollisionSample {
+  key: string;
+}
+
 interface ExcavatorDebugApi {
   snapshot: () => {
     bucketLoad: number;
@@ -184,6 +188,17 @@ interface ExcavatorDebugApi {
     pressure: number;
     collisionCount: number;
     penetration: number;
+    blockedActions: ActionName[];
+  };
+  forceArmSubsoilResistance: () => {
+    resisted: boolean;
+    blocked: boolean;
+    beforeStick: number;
+    afterStick: number;
+    velocityAfter: number;
+    maxSubmerged: number;
+    averageSubmerged: number;
+    pressure: number;
     blockedActions: ActionName[];
   };
   forceTruckLoadPhysics: () => {
@@ -1758,6 +1773,39 @@ class ExcavatorModel {
     return samples;
   }
 
+  armSubsoilSamples(): ArmTerrainResistanceSample[] {
+    const samples: ArmTerrainResistanceSample[] = [];
+    for (const t of [0.18, 0.38, 0.58, 0.78, 0.94]) {
+      samples.push({
+        key: `boom-${t}`,
+        action: "boom",
+        point: this.boomGroup.localToWorld(new THREE.Vector3(BOOM_LEN * t, 0, 0)),
+        radius: 0.22,
+      });
+    }
+    for (const t of [0.16, 0.36, 0.58, 0.8, 0.96]) {
+      samples.push({
+        key: `stick-${t}`,
+        action: "stick",
+        point: this.stickGroup.localToWorld(new THREE.Vector3(STICK_LEN * t, 0, 0)),
+        radius: 0.18,
+      });
+    }
+    for (const z of [-0.28, 0, 0.28]) {
+      samples.push({
+        key: `bucket-shell-${z}`,
+        action: "bucket",
+        point: this.bucketGroup.localToWorld(new THREE.Vector3(-0.58, -0.2, z)),
+        radius: 0.24,
+      });
+    }
+    samples.push(
+      { key: "bucket-pin", action: "bucket", point: this.bucketPinWorld(), radius: 0.2 },
+      { key: "bucket-pocket", action: "bucket", point: this.bucketPocketWorld(), radius: 0.3 },
+    );
+    return samples;
+  }
+
   stickPinWorld(): THREE.Vector3 {
     return this.stickGroup.localToWorld(new THREE.Vector3(0, 0, 0));
   }
@@ -3007,6 +3055,38 @@ class Simulator {
           blockedActions: result.blockedActions,
         };
       },
+      forceArmSubsoilResistance: () => {
+        const baseGround = this.terrain.getHeightAt(DIG_SITE.x - 2.8, DIG_SITE.z);
+        this.excavator.group.position.set(DIG_SITE.x - 2.8, baseGround, DIG_SITE.z);
+        this.excavator.group.rotation.set(0, 0, 0);
+        const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.2, stick: -1.42, bucket: -2.18 };
+        Object.assign(this.angles, previousAngles, { stick: -1.88 });
+        this.velocities.stick = -0.58;
+        this.velocities.boom = -0.22;
+        this.velocities.bucket = -0.24;
+        this.excavator.applyAngles(this.angles);
+        const stickSample = this.excavator
+          .armSubsoilSamples()
+          .find((sample) => sample.action === "stick" && sample.key === "stick-0.8");
+        const buryPoint = stickSample?.point ?? this.excavator.bucketPocketWorld();
+        this.terrain.raiseAt(buryPoint, 0.58, 0.86);
+        this.collisionCooldown = 0;
+        const beforeStick = this.angles.stick;
+        const result = this.resolveArmTerrainResistance(previousAngles);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.updateUi(0);
+        return {
+          resisted: result.resisted,
+          blocked: result.blockedActions.includes("stick") && this.angles.stick > beforeStick + 0.12,
+          beforeStick,
+          afterStick: this.angles.stick,
+          velocityAfter: this.velocities.stick,
+          maxSubmerged: result.maxSubmerged,
+          averageSubmerged: result.averageSubmerged,
+          pressure: this.pressure,
+          blockedActions: result.blockedActions,
+        };
+      },
       forceTruckLoadPhysics: () => {
         this.truck.reset(this.terrain);
         this.truckLoad = 0;
@@ -3227,6 +3307,7 @@ class Simulator {
     const anglesBeforeArmMotion = this.updateAngles(dt);
     this.excavator.applyAngles(this.angles);
     this.resolveArmTruckCollisions(anglesBeforeArmMotion);
+    this.resolveArmTerrainResistance(anglesBeforeArmMotion);
     this.updateSoil(dt);
     this.updateSoilParticles(dt);
     this.updateFineGrains(dt);
@@ -3632,6 +3713,118 @@ class Simulator {
     }
 
     return { collided: true, blockedActions, penetration: maxPenetration };
+  }
+
+  private resolveArmTerrainResistance(previousAngles: ExcavatorAngles): {
+    resisted: boolean;
+    blockedActions: ActionName[];
+    maxSubmerged: number;
+    averageSubmerged: number;
+    drag: number;
+  } {
+    const currentAngles = { ...this.angles };
+    const currentSamples = this.excavator.armSubsoilSamples();
+    this.excavator.applyAngles(previousAngles);
+    const previousSamples = this.excavator.armSubsoilSamples();
+    this.excavator.applyAngles(currentAngles);
+
+    let maxSubmerged = 0;
+    let weightedSubmerged = 0;
+    let pushingIntoSoil = 0;
+    let submergedMotion = 0;
+    let materialLoad = 0;
+    let contactCount = 0;
+    const affected = new Set<"boom" | "stick" | "bucket">();
+
+    for (let i = 0; i < currentSamples.length; i += 1) {
+      const sample = currentSamples[i];
+      const previous = previousSamples[i] ?? sample;
+      const ground = this.terrain.getHeightAt(sample.point.x, sample.point.z);
+      const submerged = clamp(ground - (sample.point.y - sample.radius * 0.62), 0, 1.35);
+      if (submerged <= 0.001) {
+        continue;
+      }
+
+      const motion = sample.point.clone().sub(previous.point);
+      const verticalIntrusion = Math.max(0, -motion.y);
+      const horizontalMotion = Math.hypot(motion.x, motion.z);
+      const slope = this.terrain.getSlopeAt(sample.point.x, sample.point.z);
+      const subsoil = this.terrain.getSubsoilResistanceAt(sample.point.x, sample.point.z);
+      const localIntrusion = verticalIntrusion + horizontalMotion * clamp(slope, 0, 1.4) * 0.34;
+      const weighted = submerged * (1 + subsoil * 0.42);
+
+      maxSubmerged = Math.max(maxSubmerged, submerged);
+      weightedSubmerged += weighted;
+      pushingIntoSoil += localIntrusion;
+      submergedMotion += verticalIntrusion + horizontalMotion;
+      materialLoad += subsoil;
+      contactCount += 1;
+      affected.add(sample.action);
+    }
+
+    if (contactCount === 0) {
+      return { resisted: false, blockedActions: [], maxSubmerged: 0, averageSubmerged: 0, drag: 1 };
+    }
+
+    const averageSubmerged = weightedSubmerged / contactCount;
+    const averageMaterialLoad = materialLoad / contactCount;
+    const severity = clamp(
+      maxSubmerged * 1.18 +
+        averageSubmerged * 0.58 +
+        pushingIntoSoil * 5.4 +
+        submergedMotion * 1.2 +
+        averageMaterialLoad * 0.08,
+      0,
+      1,
+    );
+    const drag = clamp(1 - severity * 0.76, 0.1, 0.86);
+    const chain = new Set<ActionName>(["swing"]);
+    if (affected.has("boom")) {
+      chain.add("boom");
+    }
+    if (affected.has("stick")) {
+      chain.add("boom");
+      chain.add("stick");
+    }
+    if (affected.has("bucket")) {
+      chain.add("boom");
+      chain.add("stick");
+      chain.add("bucket");
+    }
+
+    const hasSubmergedMotion = submergedMotion > 0.004;
+    if (!hasSubmergedMotion) {
+      return { resisted: false, blockedActions: [], maxSubmerged, averageSubmerged, drag: 1 };
+    }
+
+    for (const action of chain) {
+      this.velocities[action] *= drag;
+    }
+
+    const blockedActions: ActionName[] = [];
+    const shouldBlock = maxSubmerged > 0.28 && (pushingIntoSoil > 0.006 || (submergedMotion > 0.018 && severity > 0.72));
+    if (shouldBlock) {
+      for (const action of chain) {
+        const delta = this.angles[action] - previousAngles[action];
+        if (Math.abs(delta) < 0.00001) {
+          continue;
+        }
+        this.angles[action] = previousAngles[action];
+        this.velocities[action] = 0;
+        blockedActions.push(action);
+      }
+    }
+
+    this.pressure = Math.max(this.pressure, clamp(0.22 + severity * 0.74, 0, 1));
+    if (this.collisionCooldown <= 0 && (blockedActions.length > 0 || severity > 0.82)) {
+      this.collisionCount += 1;
+      this.collisionCooldown = 0.34;
+    }
+    if (blockedActions.length > 0) {
+      this.excavator.applyAngles(this.angles);
+    }
+
+    return { resisted: true, blockedActions, maxSubmerged, averageSubmerged, drag };
   }
 
   private updateSoil(dt: number): void {

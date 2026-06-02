@@ -341,6 +341,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const armSubsoilResistance = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceArmSubsoilResistance()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const truckLoadPhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceTruckLoadPhysics()`,
       returnByValue: true,
@@ -481,6 +486,7 @@ async function main() {
     const pitSinkValue = pitSink.result.value;
     const truckCollisionValue = truckCollision.result.value;
     const armTruckCollisionValue = armTruckCollision.result.value;
+    const armSubsoilResistanceValue = armSubsoilResistance.result.value;
     const truckLoadPhysicsValue = truckLoadPhysics.result.value;
     const terrainMaterialPhysicsValue = terrainMaterialPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
@@ -657,6 +663,15 @@ async function main() {
           armTruckCollisionValue?.pressure > 0.4,
       ],
       [
+        "buried arm links resist and block deeper motion",
+        armSubsoilResistanceValue?.resisted &&
+          armSubsoilResistanceValue?.blocked &&
+          Math.abs(armSubsoilResistanceValue?.velocityAfter ?? 1) < 0.001 &&
+          armSubsoilResistanceValue?.maxSubmerged > 0.22 &&
+          armSubsoilResistanceValue?.averageSubmerged > 0.08 &&
+          armSubsoilResistanceValue?.pressure > 0.45,
+      ],
+      [
         "loaded truck sags, tilts, and compacts tire ruts",
         truckLoadPhysicsValue?.accepted > 4.5 &&
           truckLoadPhysicsValue?.loadRatio > 0.6 &&
@@ -781,6 +796,7 @@ async function main() {
           pitSink: pitSinkValue,
           truckCollision: truckCollisionValue,
           armTruckCollision: armTruckCollisionValue,
+          armSubsoilResistance: armSubsoilResistanceValue,
           truckLoadPhysics: truckLoadPhysicsValue,
           terrainMaterialPhysics: terrainMaterialPhysicsValue,
           roughTrack: roughTrackValue,
