@@ -336,6 +336,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const terrainMaterialPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceTerrainMaterialPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const roughTrack = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceRoughTrackSupport()`,
       returnByValue: true,
@@ -465,6 +470,7 @@ async function main() {
     const pitSinkValue = pitSink.result.value;
     const truckCollisionValue = truckCollision.result.value;
     const truckLoadPhysicsValue = truckLoadPhysics.result.value;
+    const terrainMaterialPhysicsValue = terrainMaterialPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
     const worldObjectPhysicsValue = worldObjectPhysics.result.value;
     const mobileUiValue = mobileUi.result.value;
@@ -629,6 +635,17 @@ async function main() {
           truckLoadPhysicsValue?.bodyYDrop > 0.07,
       ],
       [
+        "terrain material zones alter track and bucket physics",
+        terrainMaterialPhysicsValue?.mudWetness > 0.65 &&
+          terrainMaterialPhysicsValue?.mudSinkMultiplier > 1.45 &&
+          terrainMaterialPhysicsValue?.mudDragMultiplier > 1.4 &&
+          terrainMaterialPhysicsValue?.gravelHardpack > 0.4 &&
+          terrainMaterialPhysicsValue?.gravelBucketMultiplier > 1.2 &&
+          terrainMaterialPhysicsValue?.mudCompacted > terrainMaterialPhysicsValue?.dryCompacted * 1.15 &&
+          terrainMaterialPhysicsValue?.mudRutDrop > terrainMaterialPhysicsValue?.dryRutDrop * 1.15 &&
+          terrainMaterialPhysicsValue?.hardResistance > terrainMaterialPhysicsValue?.softResistance * 1.12,
+      ],
+      [
         "rough ground tilts and loads crawler tracks",
         Math.abs(roughTrackValue?.roll ?? 0) > 0.015 &&
           Math.abs(roughTrackValue?.pitch ?? 0) > 0.004 &&
@@ -728,6 +745,7 @@ async function main() {
           pitSink: pitSinkValue,
           truckCollision: truckCollisionValue,
           truckLoadPhysics: truckLoadPhysicsValue,
+          terrainMaterialPhysics: terrainMaterialPhysicsValue,
           roughTrack: roughTrackValue,
           worldObjectPhysics: worldObjectPhysicsValue,
           mobileUi: mobileUiValue,

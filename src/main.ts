@@ -89,6 +89,17 @@ interface TrackSupportSample {
   disturbedDepth: number;
 }
 
+interface TerrainSurfaceCondition {
+  wetness: number;
+  gravel: number;
+  hardpack: number;
+  compaction: number;
+  trackSinkMultiplier: number;
+  trackDragMultiplier: number;
+  bucketResistanceMultiplier: number;
+  reposeTan: number;
+}
+
 interface TruckPhysicsState {
   loadRatio: number;
   suspensionSag: number;
@@ -151,6 +162,19 @@ interface ExcavatorDebugApi {
     rutDrop: number;
     bodyYDrop: number;
     supportSpread: number;
+  };
+  forceTerrainMaterialPhysics: () => {
+    mudWetness: number;
+    mudSinkMultiplier: number;
+    mudDragMultiplier: number;
+    gravelHardpack: number;
+    gravelBucketMultiplier: number;
+    mudCompacted: number;
+    dryCompacted: number;
+    mudRutDrop: number;
+    dryRutDrop: number;
+    hardResistance: number;
+    softResistance: number;
   };
   forceRoughTrackSupport: () => { roll: number; pitch: number; sinkage: number; pressure: number; supportDrop: number };
   forceWorldObjectPhysics: () => {
@@ -432,8 +456,8 @@ function setCylinderBetween(
 }
 
 class HeightfieldTerrain {
-  readonly size = 54;
-  readonly segments = 156;
+  readonly size = 68;
+  readonly segments = 176;
   readonly spacing = this.size / this.segments;
   readonly mesh: THREE.Mesh;
   readonly heights: Float32Array;
@@ -559,7 +583,45 @@ class HeightfieldTerrain {
     const disturbedDepth = this.getDisturbedDepthAt(x, z);
     const bedrockPressure = clamp((height - SOIL_BEDROCK_FLOOR) / 0.75, 0, 1);
     const hardLayer = 1 - bedrockPressure;
-    return clamp(0.18 + disturbedDepth * 0.36 + hardLayer * 0.72 + this.getSlopeAt(x, z) * 0.16, 0.05, 1.45);
+    const surface = this.getSurfaceConditionAt(x, z);
+    return clamp(
+      (0.18 + disturbedDepth * 0.36 + hardLayer * 0.72 + this.getSlopeAt(x, z) * 0.16) *
+        surface.bucketResistanceMultiplier,
+      0.05,
+      1.85,
+    );
+  }
+
+  getSurfaceConditionAt(x: number, z: number): TerrainSurfaceCondition {
+    const mudFlat =
+      0.95 *
+      Math.exp(-((x - 9.8) ** 2 / 15.5 + (z + 8.8) ** 2 / 7.5));
+    const drainageMud =
+      0.7 *
+      Math.exp(-((x - 11.0) ** 2 / 22.0 + (z - 7.2) ** 2 / 35.0));
+    const gravelRidge =
+      0.9 *
+      Math.exp(-((x + 13.2) ** 2 / 16.0 + (z + 9.6) ** 2 / 6.8));
+    const haulRoad =
+      Math.exp(-((z + 6.2) ** 2 / 1.15)) *
+      clamp(1 - Math.abs(x - 0.5) / 20.0, 0, 1);
+    const hardBench =
+      0.72 *
+      Math.exp(-((x + 15.0) ** 2 / 18.0 + (z - 8.0) ** 2 / 12.0));
+    const wetness = clamp(mudFlat + drainageMud + 0.18 * (1 - haulRoad), 0, 1);
+    const gravel = clamp(gravelRidge + hardBench * 0.45, 0, 1);
+    const hardpack = clamp(haulRoad * 0.82 + gravel * 0.55 + hardBench, 0, 1);
+    const compaction = clamp(haulRoad * 0.9 + hardpack * 0.5 - wetness * 0.22, 0, 1);
+    return {
+      wetness,
+      gravel,
+      hardpack,
+      compaction,
+      trackSinkMultiplier: clamp(1 + wetness * 1.1 - hardpack * 0.42, 0.52, 2.15),
+      trackDragMultiplier: clamp(1 + wetness * 0.9 + gravel * 0.22 - compaction * 0.28, 0.72, 2.05),
+      bucketResistanceMultiplier: clamp(1 + gravel * 0.55 + hardpack * 0.38 + wetness * 0.18, 0.82, 1.9),
+      reposeTan: SOIL_REPOSE_TAN * clamp(1 - wetness * 0.22 + gravel * 0.18 + hardpack * 0.08, 0.64, 1.28),
+    };
   }
 
   terrainVolumeDelta(): number {
@@ -935,9 +997,18 @@ class HeightfieldTerrain {
       -0.055 *
       Math.exp(-((z + 6.2) ** 2 / 1.4)) *
       (0.5 + 0.5 * Math.sin(x * 0.48 + 0.7));
+    const wetBasin =
+      -0.16 *
+      Math.exp(-((x - 9.8) ** 2 / 15.5 + (z + 8.8) ** 2 / 7.5));
+    const gravelPad =
+      0.12 *
+      Math.exp(-((x + 13.2) ** 2 / 16.0 + (z + 9.6) ** 2 / 6.8));
+    const hardBench =
+      0.18 *
+      Math.exp(-((x + 15.0) ** 2 / 18.0 + (z - 8.0) ** 2 / 12.0));
     const undulation = 0.06 * (fbm(x * 0.13 + 4.2, z * 0.13 - 2.8) - 0.5);
     const ripple = 0.035 * Math.sin(x * 0.72) * Math.cos(z * 0.48);
-    return digMound + lowCut + farRidge + drainage + oldTrack + undulation + ripple;
+    return digMound + lowCut + farRidge + drainage + oldTrack + wetBasin + gravelPad + hardBench + undulation + ripple;
   }
 
   private colorForHeight(height: number, x: number, z: number): [number, number, number] {
@@ -945,12 +1016,19 @@ class HeightfieldTerrain {
     const high = new THREE.Color(0xb1844d);
     const low = new THREE.Color(0x453e32);
     const damp = new THREE.Color(0x5d4a37);
+    const wetMud = new THREE.Color(0x3d4037);
+    const gravelColor = new THREE.Color(0x7a7568);
+    const roadColor = new THREE.Color(0x5f5748);
     const noise = fbm(x * 0.55 + 20, z * 0.55 - 11);
     const grit = fbm(x * 3.4, z * 3.4);
+    const surface = this.getSurfaceConditionAt(x, z);
     const color = height > 0.15 ? base.clone().lerp(high, clamp(height / 1.0, 0, 1)) : base.clone().lerp(low, 0.22);
     if (height < -0.18) {
       color.lerp(damp, clamp((-height - 0.18) * 1.8, 0, 0.45));
     }
+    color.lerp(wetMud, surface.wetness * 0.52);
+    color.lerp(gravelColor, surface.gravel * 0.48);
+    color.lerp(roadColor, surface.compaction * 0.28);
     color.offsetHSL(0.012 * (noise - 0.5), 0.08 * (grit - 0.5), (noise - 0.5) * 0.12);
     return [color.r, color.g, color.b];
   }
@@ -1158,8 +1236,9 @@ class WorkTruck {
       const depth = clamp((0.0018 + loadRatio * 0.0115 + supportSpread * 0.007) * clamp(dt * 2.4, 0.12, 1), 0.0005, 0.014);
       for (const sample of samples) {
         const before = terrain.getHeightAt(sample.world.x, sample.world.z);
+        const surface = terrain.getSurfaceConditionAt(sample.world.x, sample.world.z);
         const axleBias = sample.local.x > 0 ? 0.96 : 1.04;
-        const result = terrain.compactTrackStrip(sample.world, forward, side, 0.56, 0.38, depth * axleBias);
+        const result = terrain.compactTrackStrip(sample.world, forward, side, 0.56, 0.38, depth * axleBias * surface.trackSinkMultiplier);
         const after = terrain.getHeightAt(sample.world.x, sample.world.z);
         tireCompacted += result.compacted;
         tireRutDrop += Math.max(result.rutDrop, before - after);
@@ -2220,9 +2299,10 @@ class Simulator {
     const dryClodMat = makeMat(0x8a6238, 0.96, 0.02);
     const twigMat = makeMat(0x2f281f, 0.8, 0.06);
 
-    for (let i = 0; i < 155; i += 1) {
+    for (let i = 0; i < 230; i += 1) {
       const aroundDig = i < 92;
-      const radius = aroundDig ? 0.85 + Math.random() * 4.25 : 4.0 + Math.random() * 10.0;
+      const farField = i > 170;
+      const radius = aroundDig ? 0.85 + Math.random() * 4.25 : farField ? 12.0 + Math.random() * 17.5 : 4.0 + Math.random() * 15.0;
       const angle = Math.random() * Math.PI * 2;
       const x = (aroundDig ? DIG_SITE.x : 0) + Math.cos(angle) * radius;
       const z = (aroundDig ? DIG_SITE.z : 0) + Math.sin(angle) * radius;
@@ -2259,6 +2339,10 @@ class Simulator {
       [11.4, -5.4, 0.28],
       [-13.3, 11.1, 0.32],
       [13.1, 8.6, 0.24],
+      [-21.5, -12.6, 0.36],
+      [22.4, -14.8, 0.31],
+      [-19.2, 18.6, 0.29],
+      [18.6, 17.2, 0.34],
     ] as const;
     for (const [x, z, radius] of boulders) {
       const boulder = new THREE.Mesh(new THREE.IcosahedronGeometry(radius, 1), boulderMat);
@@ -2748,6 +2832,51 @@ class Simulator {
           supportSpread: state.supportSpread,
         };
       },
+      forceTerrainMaterialPhysics: () => {
+        const mud = new THREE.Vector3(9.8, 0, -8.8);
+        const dry = new THREE.Vector3(0.0, 0, 13.5);
+        const hard = new THREE.Vector3(-13.2, 0, -9.6);
+        const soft = new THREE.Vector3(DIG_SITE.x + 1.4, 0, DIG_SITE.z + 2.7);
+        const forward = new THREE.Vector3(1, 0, 0);
+        const side = new THREE.Vector3(0, 0, 1);
+        const mudSurface = this.terrain.getSurfaceConditionAt(mud.x, mud.z);
+        const drySurface = this.terrain.getSurfaceConditionAt(dry.x, dry.z);
+        const hardSurface = this.terrain.getSurfaceConditionAt(hard.x, hard.z);
+        const beforeMud = this.terrain.getHeightAt(mud.x, mud.z);
+        const beforeDry = this.terrain.getHeightAt(dry.x, dry.z);
+        const mudResult = this.terrain.compactTrackStrip(
+          mud,
+          forward,
+          side,
+          TRACK_LENGTH,
+          TRACK_WIDTH,
+          0.035 * mudSurface.trackSinkMultiplier,
+        );
+        const dryResult = this.terrain.compactTrackStrip(
+          dry,
+          forward,
+          side,
+          TRACK_LENGTH,
+          TRACK_WIDTH,
+          0.035 * drySurface.trackSinkMultiplier,
+        );
+        const afterMud = this.terrain.getHeightAt(mud.x, mud.z);
+        const afterDry = this.terrain.getHeightAt(dry.x, dry.z);
+        this.updateUi(0);
+        return {
+          mudWetness: mudSurface.wetness,
+          mudSinkMultiplier: mudSurface.trackSinkMultiplier,
+          mudDragMultiplier: mudSurface.trackDragMultiplier,
+          gravelHardpack: hardSurface.hardpack,
+          gravelBucketMultiplier: hardSurface.bucketResistanceMultiplier,
+          mudCompacted: mudResult.compacted,
+          dryCompacted: dryResult.compacted,
+          mudRutDrop: Math.max(mudResult.rutDrop, beforeMud - afterMud),
+          dryRutDrop: Math.max(dryResult.rutDrop, beforeDry - afterDry),
+          hardResistance: this.terrain.getSubsoilResistanceAt(hard.x, hard.z),
+          softResistance: this.terrain.getSubsoilResistanceAt(soft.x, soft.z),
+        };
+      },
       forceRoughTrackSupport: () => {
         const base = this.excavator.group.position.clone();
         const beforeSupport = this.supportHeight;
@@ -3165,14 +3294,33 @@ class Simulator {
       center.y = this.terrain.getHeightAt(center.x, center.z);
       const slip = Math.abs(this.leftTrackVelocity - this.rightTrackVelocity) / Math.max(TRACK_MAX_SPEED * 2, 0.001);
       const soilResistance = this.terrain.getSubsoilResistanceAt(center.x, center.z);
+      const surface = this.terrain.getSurfaceConditionAt(center.x, center.z);
       const support = this.terrain.sampleTrackSupport(center, forward, side, TRACK_LENGTH, TRACK_WIDTH);
       const roughness = clamp((support.highHeight - support.lowHeight) * 0.9 + support.disturbedDepth * 0.24, 0, 0.72);
-      const depth = clamp((0.006 + trackMotion * dt * 0.055) * (1 + slip * 1.45 + roughness * 0.85), 0.002, 0.038);
+      const depth = clamp(
+        (0.006 + trackMotion * dt * 0.055) *
+          (1 + slip * 1.45 + roughness * 0.85) *
+          surface.trackSinkMultiplier,
+        0.002,
+        0.052,
+      );
       const result = this.terrain.compactTrackStrip(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, depth);
       this.trackSoilWork += result.compacted;
       if (result.compacted > 0) {
-        this.pressure = Math.max(this.pressure, clamp(0.08 + result.rutDrop * 4.8 + slip * 0.18 + soilResistance * 0.12, 0, 0.82));
-        const terrainDrag = clamp(1 - (result.rutDrop * 2.8 + slip * 0.024 + roughness * 0.035 + soilResistance * 0.018), 0.76, 0.995);
+        this.pressure = Math.max(
+          this.pressure,
+          clamp(0.08 + result.rutDrop * 4.8 + slip * 0.18 + soilResistance * 0.12 + surface.wetness * 0.12, 0, 0.88),
+        );
+        const terrainDrag = clamp(
+          1 -
+            (result.rutDrop * 2.8 +
+              slip * 0.024 +
+              roughness * 0.035 +
+              soilResistance * 0.018) *
+              surface.trackDragMultiplier,
+          0.68,
+          0.995,
+        );
         if (offset < 0) {
           this.leftTrackVelocity *= terrainDrag;
         } else {
