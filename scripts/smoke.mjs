@@ -161,7 +161,7 @@ async function main() {
           nativeVirtualKeyCode: keyCode,
         });
       }
-      await delay(800);
+      await delay(1200);
       const state = await readState();
       for (const [key, code, keyCode] of keys.toReversed()) {
         await cdp.send("Input.dispatchKeyEvent", {
@@ -365,6 +365,11 @@ async function main() {
       expression: `window.__excavatorSim?.forceWorldObjectPhysics()`,
       returnByValue: true,
     });
+    await resetSim();
+    const mapDiversity = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceMapDiversity()`,
+      returnByValue: true,
+    });
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 844,
       height: 390,
@@ -491,6 +496,7 @@ async function main() {
     const terrainMaterialPhysicsValue = terrainMaterialPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
     const worldObjectPhysicsValue = worldObjectPhysics.result.value;
+    const mapDiversityValue = mapDiversity.result.value;
     const mobileUiValue = mobileUi.result.value;
     const mobileMenuUiValue = mobileMenuUi.result.value;
     const mobileBeforeLeftStick = Number.parseInt(mobileBeforeLeft.stick, 10);
@@ -711,6 +717,20 @@ async function main() {
           worldObjectPhysicsValue?.pressure > 0.35,
       ],
       [
+        "expanded map has diverse physical terrain zones",
+        mapDiversityValue?.terrainSize >= 92 &&
+          mapDiversityValue?.spacing < 0.46 &&
+          mapDiversityValue?.heightRange > 0.35 &&
+          mapDiversityValue?.materialZones >= 4 &&
+          mapDiversityValue?.wetlandWetness > 0.6 &&
+          mapDiversityValue?.gravelFan > 0.55 &&
+          mapDiversityValue?.hardBench > 0.58 &&
+          mapDiversityValue?.haulRoadCompaction > 0.62 &&
+          mapDiversityValue?.roughSlope > 0.025 &&
+          mapDiversityValue?.farColliderCount >= 12 &&
+          mapDiversityValue?.colliderKinds >= 6,
+      ],
+      [
         "mobile overlay visible",
         mobileUiValue?.visible &&
           mobileUiValue?.leftReady &&
@@ -801,6 +821,7 @@ async function main() {
           terrainMaterialPhysics: terrainMaterialPhysicsValue,
           roughTrack: roughTrackValue,
           worldObjectPhysics: worldObjectPhysicsValue,
+          mapDiversity: mapDiversityValue,
           mobileUi: mobileUiValue,
           mobileMenuUi: mobileMenuUiValue,
           mobileBeforeLeft,

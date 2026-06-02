@@ -235,6 +235,19 @@ interface ExcavatorDebugApi {
     collisionCount: number;
     pressure: number;
   };
+  forceMapDiversity: () => {
+    terrainSize: number;
+    spacing: number;
+    heightRange: number;
+    wetlandWetness: number;
+    gravelFan: number;
+    hardBench: number;
+    haulRoadCompaction: number;
+    materialZones: number;
+    roughSlope: number;
+    farColliderCount: number;
+    colliderKinds: number;
+  };
   forceFineGrainSettlement: () => {
     spawnedVolume: number;
     settledVolume: number;
@@ -507,8 +520,8 @@ function setCylinderBetween(
 }
 
 class HeightfieldTerrain {
-  readonly size = 68;
-  readonly segments = 176;
+  readonly size = 96;
+  readonly segments = 224;
   readonly spacing = this.size / this.segments;
   readonly mesh: THREE.Mesh;
   readonly heights: Float32Array;
@@ -572,7 +585,7 @@ class HeightfieldTerrain {
     this.mesh.receiveShadow = true;
     scene.add(this.mesh);
 
-    const grid = new THREE.GridHelper(this.size, 34, 0x6e796c, 0x495045);
+    const grid = new THREE.GridHelper(this.size, 48, 0x6e796c, 0x495045);
     grid.position.y = 0.018;
     grid.material.transparent = true;
     grid.material.opacity = 0.28;
@@ -659,10 +672,22 @@ class HeightfieldTerrain {
     const hardBench =
       0.72 *
       Math.exp(-((x + 15.0) ** 2 / 18.0 + (z - 8.0) ** 2 / 12.0));
-    const wetness = clamp(mudFlat + drainageMud + 0.18 * (1 - haulRoad), 0, 1);
-    const gravel = clamp(gravelRidge + hardBench * 0.45, 0, 1);
-    const hardpack = clamp(haulRoad * 0.82 + gravel * 0.55 + hardBench, 0, 1);
-    const compaction = clamp(haulRoad * 0.9 + hardpack * 0.5 - wetness * 0.22, 0, 1);
+    const outerWetland =
+      0.88 *
+      Math.exp(-((x - 28.0) ** 2 / 62.0 + (z + 24.0) ** 2 / 32.0));
+    const gravelFan =
+      0.82 *
+      Math.exp(-((x + 30.0) ** 2 / 58.0 + (z - 25.0) ** 2 / 34.0));
+    const limestoneBench =
+      0.78 *
+      Math.exp(-((x - 27.0) ** 2 / 48.0 + (z - 26.0) ** 2 / 42.0));
+    const farHaulRoad =
+      Math.exp(-((z - 20.5) ** 2 / 1.85)) *
+      clamp(1 - Math.abs(x + 8.0) / 34.0, 0, 1);
+    const wetness = clamp(mudFlat + drainageMud + outerWetland + 0.16 * (1 - Math.max(haulRoad, farHaulRoad)), 0, 1);
+    const gravel = clamp(gravelRidge + gravelFan + hardBench * 0.45 + limestoneBench * 0.36, 0, 1);
+    const hardpack = clamp(haulRoad * 0.82 + farHaulRoad * 0.78 + gravel * 0.5 + hardBench + limestoneBench, 0, 1);
+    const compaction = clamp(Math.max(haulRoad, farHaulRoad) * 0.9 + hardpack * 0.5 - wetness * 0.22, 0, 1);
     return {
       wetness,
       gravel,
@@ -968,8 +993,8 @@ class HeightfieldTerrain {
     const leftBerm = center.clone().addScaledVector(s, halfWidth + 0.2);
     const rightBerm = center.clone().addScaledVector(s, -halfWidth - 0.2);
     const beforeBerm = Math.max(this.getHeightAt(leftBerm.x, leftBerm.z), this.getHeightAt(rightBerm.x, rightBerm.z));
-    this.raiseAt(leftBerm, width * 0.34, compacted * 0.24);
-    this.raiseAt(rightBerm, width * 0.34, compacted * 0.24);
+    this.raiseAt(leftBerm, width * 0.48, compacted * 0.32);
+    this.raiseAt(rightBerm, width * 0.48, compacted * 0.32);
     const afterBerm = Math.max(this.getHeightAt(leftBerm.x, leftBerm.z), this.getHeightAt(rightBerm.x, rightBerm.z));
 
     return {
@@ -1057,9 +1082,48 @@ class HeightfieldTerrain {
     const hardBench =
       0.18 *
       Math.exp(-((x + 15.0) ** 2 / 18.0 + (z - 8.0) ** 2 / 12.0));
-    const undulation = 0.06 * (fbm(x * 0.13 + 4.2, z * 0.13 - 2.8) - 0.5);
+    const outerWetland =
+      -0.2 *
+      Math.exp(-((x - 28.0) ** 2 / 62.0 + (z + 24.0) ** 2 / 32.0));
+    const gravelFan =
+      0.18 *
+      Math.exp(-((x + 30.0) ** 2 / 58.0 + (z - 25.0) ** 2 / 34.0));
+    const limestoneBench =
+      0.24 *
+      Math.exp(-((x - 27.0) ** 2 / 48.0 + (z - 26.0) ** 2 / 42.0));
+    const farHaulRoad =
+      -0.075 *
+      Math.exp(-((z - 20.5) ** 2 / 1.85)) *
+      clamp(1 - Math.abs(x + 8.0) / 34.0, 0, 1);
+    const outerRidge =
+      0.28 *
+      Math.exp(-((x + 36.0) ** 2 / 70.0 + (z + 27.0) ** 2 / 38.0));
+    const spoilWindrow =
+      0.16 *
+      Math.exp(-((x - 33.5) ** 2 / 18.0 + (z - 4.0) ** 2 / 95.0)) *
+      (0.72 + 0.28 * Math.sin(z * 0.42));
+    const undulation = 0.075 * (fbm(x * 0.11 + 4.2, z * 0.11 - 2.8) - 0.5);
+    const broadRoughness = 0.052 * (fbm(x * 0.23 - 8.4, z * 0.19 + 5.8) - 0.5);
     const ripple = 0.035 * Math.sin(x * 0.72) * Math.cos(z * 0.48);
-    return digMound + lowCut + farRidge + drainage + oldTrack + wetBasin + gravelPad + hardBench + undulation + ripple;
+    return (
+      digMound +
+      lowCut +
+      farRidge +
+      drainage +
+      oldTrack +
+      wetBasin +
+      gravelPad +
+      hardBench +
+      outerWetland +
+      gravelFan +
+      limestoneBench +
+      farHaulRoad +
+      outerRidge +
+      spoilWindrow +
+      undulation +
+      broadRoughness +
+      ripple
+    );
   }
 
   private colorForHeight(height: number, x: number, z: number): [number, number, number] {
@@ -2238,7 +2302,7 @@ class Simulator {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.scene.background = new THREE.Color(0x9fb4b6);
-    this.scene.fog = new THREE.Fog(0x9fb4b6, 24, 74);
+    this.scene.fog = new THREE.Fog(0x9fb4b6, 34, 118);
 
     this.buildFineGrainCloud();
     this.buildWorld();
@@ -2417,11 +2481,11 @@ class Simulator {
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 42;
-    sun.shadow.camera.left = -18;
-    sun.shadow.camera.right = 18;
-    sun.shadow.camera.top = 18;
-    sun.shadow.camera.bottom = -18;
+    sun.shadow.camera.far = 72;
+    sun.shadow.camera.left = -30;
+    sun.shadow.camera.right = 30;
+    sun.shadow.camera.top = 30;
+    sun.shadow.camera.bottom = -30;
     this.scene.add(sun);
 
     const yardMat = makeMat(0x3d453d, 0.86, 0.03);
@@ -2470,10 +2534,10 @@ class Simulator {
     const dryClodMat = makeMat(0x8a6238, 0.96, 0.02);
     const twigMat = makeMat(0x2f281f, 0.8, 0.06);
 
-    for (let i = 0; i < 230; i += 1) {
+    for (let i = 0; i < 330; i += 1) {
       const aroundDig = i < 92;
-      const farField = i > 170;
-      const radius = aroundDig ? 0.85 + Math.random() * 4.25 : farField ? 12.0 + Math.random() * 17.5 : 4.0 + Math.random() * 15.0;
+      const farField = i > 210;
+      const radius = aroundDig ? 0.85 + Math.random() * 4.25 : farField ? 18.0 + Math.random() * 25.0 : 4.0 + Math.random() * 21.0;
       const angle = Math.random() * Math.PI * 2;
       const x = (aroundDig ? DIG_SITE.x : 0) + Math.cos(angle) * radius;
       const z = (aroundDig ? DIG_SITE.z : 0) + Math.sin(angle) * radius;
@@ -2514,6 +2578,12 @@ class Simulator {
       [22.4, -14.8, 0.31],
       [-19.2, 18.6, 0.29],
       [18.6, 17.2, 0.34],
+      [-35.5, -27.4, 0.42],
+      [35.8, -25.2, 0.36],
+      [-32.6, 29.5, 0.38],
+      [30.4, 28.8, 0.33],
+      [39.2, 4.8, 0.3],
+      [-41.0, 7.4, 0.28],
     ] as const;
     for (const [x, z, radius] of boulders) {
       const boulder = new THREE.Mesh(new THREE.IcosahedronGeometry(radius, 1), boulderMat);
@@ -2586,7 +2656,7 @@ class Simulator {
           return;
         }
         event.preventDefault();
-        this.orbit.distance = clamp(this.orbit.distance + event.deltaY * 0.01, 5.0, 16.5);
+        this.orbit.distance = clamp(this.orbit.distance + event.deltaY * 0.01, 5.0, 26.5);
       },
       { passive: false },
     );
@@ -2667,7 +2737,7 @@ class Simulator {
     if (this.canvasPointers.size >= 2) {
       const nextPinchDistance = this.currentPinchDistance();
       if (this.pinchDistance > 0 && nextPinchDistance > 0) {
-        this.orbit.distance = clamp(this.orbit.distance + (this.pinchDistance - nextPinchDistance) * 0.018, 5.0, 16.5);
+        this.orbit.distance = clamp(this.orbit.distance + (this.pinchDistance - nextPinchDistance) * 0.018, 5.0, 26.5);
       }
       this.pinchDistance = nextPinchDistance;
       return;
@@ -2864,7 +2934,9 @@ class Simulator {
         this.bucketLoad += bucketAccepted;
         this.totalExcavated += removed;
         if (airborneFines > 0.001) {
-          this.spawnFineGrains(end, airborneFines, new THREE.Vector3(1, 0.25, 0), true, 1.25);
+          const finesOrigin = end.clone();
+          finesOrigin.y = Math.max(finesOrigin.y, this.terrain.getHeightAt(end.x, end.z) + 0.18);
+          this.spawnFineGrains(finesOrigin, airborneFines, new THREE.Vector3(1, 0.25, 0), true, 1.25);
         }
         if (spill > 0.001) {
           this.spawnSoilParticles(end, spill, new THREE.Vector3(1, -0.25, 0), 0.35);
@@ -2990,17 +3062,24 @@ class Simulator {
         const forward = new THREE.Vector3(1, 0, 0);
         const side = new THREE.Vector3(0, 0, 1);
         const rutBefore = this.terrain.getHeightAt(center.x, center.z);
-        const bermPoint = center.clone().addScaledVector(side, 0.46);
-        const bermBefore = this.terrain.getHeightAt(bermPoint.x, bermPoint.z);
+        const leftBermPoint = center.clone().addScaledVector(side, TRACK_WIDTH * 0.5 + 0.22);
+        const rightBermPoint = center.clone().addScaledVector(side, -(TRACK_WIDTH * 0.5 + 0.22));
+        const bermBefore = Math.max(
+          this.terrain.getHeightAt(leftBermPoint.x, leftBermPoint.z),
+          this.terrain.getHeightAt(rightBermPoint.x, rightBermPoint.z),
+        );
         const result = this.terrain.compactTrackStrip(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, 0.2);
         this.trackSoilWork += result.compacted;
         const rutAfter = this.terrain.getHeightAt(center.x, center.z);
-        const bermAfter = this.terrain.getHeightAt(bermPoint.x, bermPoint.z);
+        const bermAfter = Math.max(
+          this.terrain.getHeightAt(leftBermPoint.x, leftBermPoint.z),
+          this.terrain.getHeightAt(rightBermPoint.x, rightBermPoint.z),
+        );
         this.updateUi(0);
         return {
           compacted: result.compacted,
           rutDrop: Math.max(result.rutDrop, rutBefore - rutAfter),
-          bermRise: bermAfter - bermBefore,
+          bermRise: Math.max(result.bermRise, bermAfter - bermBefore),
           trackSoilWork: this.trackSoilWork,
         };
       },
@@ -3245,6 +3324,50 @@ class Simulator {
           railBlocked,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
+        };
+      },
+      forceMapDiversity: () => {
+        const surfacePoints = {
+          wetland: new THREE.Vector3(28.0, 0, -24.0),
+          gravelFan: new THREE.Vector3(-30.0, 0, 25.0),
+          hardBench: new THREE.Vector3(27.0, 0, 26.0),
+          haulRoad: new THREE.Vector3(-8.0, 0, 20.5),
+          ridge: new THREE.Vector3(-36.0, 0, -27.0),
+          windrow: new THREE.Vector3(33.5, 0, -4.0),
+        };
+        const wetland = this.terrain.getSurfaceConditionAt(surfacePoints.wetland.x, surfacePoints.wetland.z);
+        const gravelFan = this.terrain.getSurfaceConditionAt(surfacePoints.gravelFan.x, surfacePoints.gravelFan.z);
+        const hardBench = this.terrain.getSurfaceConditionAt(surfacePoints.hardBench.x, surfacePoints.hardBench.z);
+        const haulRoad = this.terrain.getSurfaceConditionAt(surfacePoints.haulRoad.x, surfacePoints.haulRoad.z);
+        const heights = Object.values(surfacePoints).map((point) => this.terrain.getHeightAt(point.x, point.z));
+        const materialZones = [
+          wetland.wetness > 0.6,
+          gravelFan.gravel > 0.55,
+          hardBench.hardpack > 0.58,
+          haulRoad.compaction > 0.62,
+        ].filter(Boolean).length;
+        const farColliderCount = this.worldColliders.filter(
+          (collider) => Math.hypot(collider.mesh.position.x, collider.mesh.position.z) > 30,
+        ).length;
+        return {
+          terrainSize: this.terrain.size,
+          spacing: this.terrain.spacing,
+          heightRange: Math.max(...heights) - Math.min(...heights),
+          wetlandWetness: wetland.wetness,
+          gravelFan: gravelFan.gravel,
+          hardBench: hardBench.hardpack,
+          haulRoadCompaction: haulRoad.compaction,
+          materialZones,
+          roughSlope: Math.max(
+            this.terrain.getSlopeAt(-32.5, -27.0),
+            this.terrain.getSlopeAt(-39.5, -27.0),
+            this.terrain.getSlopeAt(33.5, -9.5),
+            this.terrain.getSlopeAt(33.5, 1.5),
+            this.terrain.getSlopeAt(24.5, 26.0),
+            this.terrain.getSlopeAt(30.5, 26.0),
+          ),
+          farColliderCount,
+          colliderKinds: new Set(this.worldColliders.map((collider) => collider.kind)).size,
         };
       },
       forceFineGrainSettlement: () => {
@@ -3858,7 +3981,7 @@ class Simulator {
       stickPullSpeed > 0.06 ||
       tipSpeed > 0.18;
 
-    if (contactRatio > 0) {
+    if (contactRatio > 0 && isDiggingMotion) {
       const penetration = clamp(maxPenetration, 0.01, 0.72);
       const loadRatio = this.bucketLoad / BUCKET_CAPACITY;
       const resistance = clamp(
