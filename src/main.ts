@@ -63,6 +63,24 @@ interface SoilParticle {
   target?: THREE.Vector3;
 }
 
+type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone";
+
+interface WorldCollider {
+  mesh: THREE.Object3D;
+  kind: WorldColliderKind;
+  radius: number;
+  mass: number;
+  immovable: boolean;
+  crushable: boolean;
+  restitution: number;
+  friction: number;
+  groundOffset: number;
+  velocity: THREE.Vector3;
+  initialPosition: THREE.Vector3;
+  initialQuaternion: THREE.Quaternion;
+  initialScale: THREE.Vector3;
+}
+
 interface TrackSupportSample {
   supportHeight: number;
   averageHeight: number;
@@ -99,6 +117,13 @@ interface ExcavatorDebugApi {
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
   forceTruckCollision: () => { beforeX: number; afterX: number; blocked: boolean; collisionCount: number; pressure: number };
   forceRoughTrackSupport: () => { roll: number; pitch: number; sinkage: number; pressure: number; supportDrop: number };
+  forceWorldObjectPhysics: () => {
+    debrisTravel: number;
+    hardBlockDistance: number;
+    hardBlocked: boolean;
+    collisionCount: number;
+    pressure: number;
+  };
   forceExcavatorPitSink: () => {
     lowered: number;
     beforeY: number;
@@ -1597,6 +1622,7 @@ class Simulator {
   private readonly activeDrivePointers = new Map<number, MobileDriveMode>();
   private readonly canvasPointers = new Map<number, { x: number; y: number }>();
   private readonly soilParticles: SoilParticle[] = [];
+  private readonly worldColliders: WorldCollider[] = [];
   private readonly looseSoilMats = [
     makeMat(0x6d4c2c, 0.95, 0.02),
     makeMat(0x855f36, 0.94, 0.02),
@@ -1728,6 +1754,7 @@ class Simulator {
     this.chassisRoll = 0;
     this.supportHeight = this.terrain.getHeightAt(0, 0);
     this.collisionCount = 0;
+    this.resetWorldColliders();
     this.clearFineGrains();
     this.clearMobileInput();
     this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
@@ -1742,6 +1769,44 @@ class Simulator {
     this.excavator.setBucketLoad(0);
     this.excavator.applyAngles(this.angles);
     this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+  }
+
+  private registerWorldCollider(
+    mesh: THREE.Object3D,
+    kind: WorldColliderKind,
+    radius: number,
+    options: Partial<Pick<WorldCollider, "mass" | "immovable" | "crushable" | "restitution" | "friction" | "groundOffset">> = {},
+  ): WorldCollider {
+    const collider: WorldCollider = {
+      mesh,
+      kind,
+      radius,
+      mass: options.mass ?? 1,
+      immovable: options.immovable ?? false,
+      crushable: options.crushable ?? false,
+      restitution: options.restitution ?? 0.08,
+      friction: options.friction ?? 0.82,
+      groundOffset: options.groundOffset ?? radius * 0.45,
+      velocity: new THREE.Vector3(),
+      initialPosition: mesh.position.clone(),
+      initialQuaternion: mesh.quaternion.clone(),
+      initialScale: mesh.scale.clone(),
+    };
+    this.worldColliders.push(collider);
+    return collider;
+  }
+
+  private resetWorldColliders(): void {
+    for (const collider of this.worldColliders) {
+      collider.mesh.position.copy(collider.initialPosition);
+      collider.mesh.quaternion.copy(collider.initialQuaternion);
+      collider.mesh.scale.copy(collider.initialScale);
+      collider.velocity.set(0, 0, 0);
+      if (!collider.immovable) {
+        const ground = this.terrain.getHeightAt(collider.mesh.position.x, collider.mesh.position.z);
+        collider.mesh.position.y = ground + collider.groundOffset;
+      }
+    }
   }
 
   private clearMobileInput(): void {
@@ -1818,6 +1883,7 @@ class Simulator {
     for (let i = 0; i < 22; i += 1) {
       const post = makeBox([0.08, 0.92, 0.08], yardMat, [-10.5 + i, 0.46, -8.4]);
       this.scene.add(post);
+      this.registerWorldCollider(post, "fence", 0.22, { immovable: true, mass: 1000, restitution: 0.03, groundOffset: 0.46 });
     }
     const rail = makeBox([21.2, 0.08, 0.08], yardMat, [0, 0.86, -8.4]);
     this.scene.add(rail);
@@ -1847,6 +1913,7 @@ class Simulator {
       cone.position.set(WORKER_ZONE.x + offset[0], 0.24, WORKER_ZONE.z + offset[1]);
       cone.castShadow = true;
       this.scene.add(cone);
+      this.registerWorldCollider(cone, "cone", 0.18, { mass: 0.35, restitution: 0.18, friction: 0.9, groundOffset: 0.23 });
     }
   }
 
@@ -1861,14 +1928,15 @@ class Simulator {
       const angle = Math.random() * Math.PI * 2;
       const x = (aroundDig ? DIG_SITE.x : 0) + Math.cos(angle) * radius;
       const z = (aroundDig ? DIG_SITE.z : 0) + Math.sin(angle) * radius;
-      if (Math.hypot(x - TRUCK_CENTER.x, z - TRUCK_CENTER.z) < 2.6) {
+      if (Math.hypot(x - TRUCK_CENTER.x, z - TRUCK_CENTER.z) < 2.6 || Math.hypot(x, z) < 2.35) {
         continue;
       }
 
       const isRock = Math.random() > 0.72;
+      const detailRadius = isRock ? 0.025 + Math.random() * 0.065 : 0.018 + Math.random() * 0.075;
       const geometry = isRock
-        ? new THREE.IcosahedronGeometry(0.025 + Math.random() * 0.065, 0)
-        : new THREE.DodecahedronGeometry(0.018 + Math.random() * 0.075, 0);
+        ? new THREE.IcosahedronGeometry(detailRadius, 0)
+        : new THREE.DodecahedronGeometry(detailRadius, 0);
       const mesh = new THREE.Mesh(geometry, isRock ? rockMat : dryClodMat);
       mesh.position.set(x, this.terrain.getHeightAt(x, z) + 0.035, z);
       mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
@@ -1876,6 +1944,39 @@ class Simulator {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.scene.add(mesh);
+      this.registerWorldCollider(mesh, isRock ? "rock" : "clod", Math.max(0.055, detailRadius * 1.2), {
+        mass: isRock ? 2.6 + detailRadius * 18 : 0.25 + detailRadius * 4.5,
+        crushable: !isRock,
+        restitution: isRock ? 0.14 : 0.04,
+        friction: isRock ? 0.7 : 0.94,
+        groundOffset: 0.035,
+      });
+    }
+
+    const boulderMat = makeMat(0x5b5348, 0.9, 0.06);
+    const boulders = [
+      [-11.2, -2.8, 0.34],
+      [-7.8, 7.2, 0.25],
+      [5.8, 5.7, 0.3],
+      [11.4, -5.4, 0.28],
+      [-13.3, 11.1, 0.32],
+      [13.1, 8.6, 0.24],
+    ] as const;
+    for (const [x, z, radius] of boulders) {
+      const boulder = new THREE.Mesh(new THREE.IcosahedronGeometry(radius, 1), boulderMat);
+      boulder.position.set(x, this.terrain.getHeightAt(x, z) + radius * 0.58, z);
+      boulder.scale.set(1.12, 0.68 + Math.random() * 0.2, 0.86 + Math.random() * 0.24);
+      boulder.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      boulder.castShadow = true;
+      boulder.receiveShadow = true;
+      this.scene.add(boulder);
+      this.registerWorldCollider(boulder, "boulder", radius * 1.05, {
+        immovable: true,
+        mass: 1200,
+        restitution: 0.02,
+        friction: 0.96,
+        groundOffset: radius * 0.58,
+      });
     }
 
     for (let i = 0; i < 16; i += 1) {
@@ -1886,6 +1987,7 @@ class Simulator {
       twig.rotation.set(Math.PI / 2 + (Math.random() - 0.5) * 0.35, Math.random() * Math.PI, Math.random() * Math.PI);
       twig.castShadow = true;
       this.scene.add(twig);
+      this.registerWorldCollider(twig, "twig", 0.06, { mass: 0.12, crushable: true, restitution: 0.02, friction: 0.96, groundOffset: 0.035 });
     }
   }
 
@@ -2302,6 +2404,54 @@ class Simulator {
           supportDrop: beforeSupport - this.supportHeight,
         };
       },
+      forceWorldObjectPhysics: () => {
+        const debris = this.worldColliders.find((collider) => !collider.immovable && (collider.kind === "clod" || collider.kind === "cone" || collider.kind === "rock"));
+        const hard = this.worldColliders.find((collider) => collider.immovable && collider.kind === "boulder");
+        const forward = new THREE.Vector3(1, 0, 0);
+        let debrisTravel = 0;
+        let hardBlockDistance = 0;
+        let hardBlocked = false;
+
+        this.excavator.group.rotation.set(0, 0, 0);
+        if (debris) {
+          const debrisStart = new THREE.Vector3(1.54, 0, 1.55);
+          debrisStart.y = this.terrain.getHeightAt(debrisStart.x, debrisStart.z) + debris.groundOffset;
+          debris.mesh.position.copy(debrisStart);
+          debris.velocity.set(0, 0, 0);
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 1.55), 1.55);
+          this.leftTrackVelocity = TRACK_MAX_SPEED;
+          this.rightTrackVelocity = TRACK_MAX_SPEED;
+          this.collisionCooldown = 0;
+          this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward);
+          this.updateLooseWorldObjects(0.28);
+          debrisTravel = debris.mesh.position.distanceTo(debrisStart);
+        }
+
+        if (hard) {
+          const hardStart = new THREE.Vector3(2.05, 0, -1.45);
+          hardStart.y = this.terrain.getHeightAt(hardStart.x, hardStart.z) + hard.groundOffset;
+          hard.mesh.position.copy(hardStart);
+          hard.velocity.set(0, 0, 0);
+          this.excavator.group.position.set(0.42, this.terrain.getHeightAt(0.42, -1.45), -1.45);
+          this.leftTrackVelocity = TRACK_MAX_SPEED;
+          this.rightTrackVelocity = TRACK_MAX_SPEED;
+          this.collisionCooldown = 0;
+          const beforeX = this.excavator.group.position.x;
+          this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward);
+          hardBlockDistance = beforeX - this.excavator.group.position.x;
+          hardBlocked = hardBlockDistance > 0.08 && Math.abs(this.leftTrackVelocity) < TRACK_MAX_SPEED * 0.56;
+        }
+
+        this.updateExcavatorSupport(0.3, forward);
+        this.updateUi(0);
+        return {
+          debrisTravel,
+          hardBlockDistance,
+          hardBlocked,
+          collisionCount: this.collisionCount,
+          pressure: this.pressure,
+        };
+      },
       forceExcavatorPitSink: () => {
         const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
         const base = this.excavator.group.position.clone();
@@ -2337,6 +2487,7 @@ class Simulator {
     Object.assign(this.targetActions, actions);
     this.updateHydraulics(dt, axes);
     this.updateTravel(dt, axes);
+    this.updateLooseWorldObjects(dt);
     this.updateAngles(dt);
     this.excavator.applyAngles(this.angles);
     this.updateSoil(dt);
@@ -2446,28 +2597,135 @@ class Simulator {
   }
 
   private resolveWorldCollisions(forwardSpeed: number, turnRate: number, forward: THREE.Vector3): void {
+    const hasDriveIntent = Math.abs(forwardSpeed) > 0.02 || Math.abs(turnRate) > 0.05;
     const hit = this.truck.resolveBodyCollision(this.excavator.group.position, 1.62);
-    if (!hit) {
-      return;
+    if (hit) {
+      this.applyCollisionResponse(hit.normal, hit.penetration, forwardSpeed, turnRate, forward, 1.0);
     }
 
-    const correction = Math.min(hit.penetration + 0.018, 0.42);
-    this.excavator.group.position.addScaledVector(hit.normal, correction);
-    const approachSpeed = forward.clone().multiplyScalar(forwardSpeed).dot(hit.normal);
-    const collisionSeverity = clamp(hit.penetration * 1.8 + Math.abs(approachSpeed) * 0.55 + Math.abs(turnRate) * 0.08, 0, 1);
+    for (const collider of this.worldColliders) {
+      const obstacleHit = this.resolveColliderHit(collider, this.excavator.group.position, 1.62);
+      if (!obstacleHit) {
+        continue;
+      }
+
+      const approachSpeed = forward.clone().multiplyScalar(forwardSpeed).dot(obstacleHit.normal);
+      const severity = clamp(
+        obstacleHit.penetration * 2.1 + Math.abs(approachSpeed) * 0.48 + Math.abs(turnRate) * 0.08,
+        0,
+        1,
+      );
+      if (collider.immovable) {
+        this.applyCollisionResponse(obstacleHit.normal, obstacleHit.penetration, forwardSpeed, turnRate, forward, 0.92);
+      } else {
+        if (!hasDriveIntent && obstacleHit.penetration < 0.22) {
+          continue;
+        }
+        const movableNormal = obstacleHit.normal.clone();
+        const impulse = clamp((severity * 1.4 + Math.max(0, -approachSpeed) * 0.45) / Math.max(collider.mass, 0.1), 0.05, 1.7);
+        collider.mesh.position.addScaledVector(movableNormal, -Math.min(obstacleHit.penetration * 0.7, 0.16));
+        collider.velocity.addScaledVector(movableNormal, -impulse);
+        collider.velocity.y = Math.max(collider.velocity.y, 0.18 * severity);
+        const trackDrag = clamp(1 - severity * clamp(collider.mass * 0.08, 0.03, 0.36), 0.58, 0.98);
+        this.leftTrackVelocity *= trackDrag;
+        this.rightTrackVelocity *= trackDrag;
+        this.pressure = Math.max(this.pressure, clamp(0.1 + severity * 0.36 + collider.mass * 0.018, 0, 0.62));
+        if (collider.crushable && severity > 0.32) {
+          collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.04, 0.08));
+          this.terrain.raiseAt(collider.mesh.position, Math.max(0.16, collider.radius * 1.7), collider.radius * 0.012 * severity);
+        }
+      }
+    }
+  }
+
+  private applyCollisionResponse(
+    normal: THREE.Vector3,
+    penetration: number,
+    forwardSpeed: number,
+    turnRate: number,
+    forward: THREE.Vector3,
+    hardness: number,
+  ): void {
+    const correction = Math.min((penetration + 0.018) * hardness, 0.44);
+    this.excavator.group.position.addScaledVector(normal, correction);
+    const approachSpeed = forward.clone().multiplyScalar(forwardSpeed).dot(normal);
+    const collisionSeverity = clamp(penetration * 1.8 + Math.abs(approachSpeed) * 0.55 + Math.abs(turnRate) * 0.08, 0, 1);
 
     if (approachSpeed < 0 || Math.abs(turnRate) > 0.1) {
-      const block = clamp(1 - collisionSeverity * 1.8, 0, 0.42);
+      const block = clamp(1 - collisionSeverity * (1.35 + hardness * 0.55), 0, 0.46);
       this.leftTrackVelocity *= block;
       this.rightTrackVelocity *= block;
-      if (Math.abs(approachSpeed) > 0.04 || hit.penetration > 0.035) {
-        this.pressure = Math.max(this.pressure, clamp(0.52 + collisionSeverity * 0.48, 0, 1));
+      if (Math.abs(approachSpeed) > 0.04 || penetration > 0.035) {
+        this.pressure = Math.max(this.pressure, clamp(0.48 + collisionSeverity * 0.52, 0, 1));
       }
     }
 
     if (this.collisionCooldown <= 0 && collisionSeverity > 0.08) {
       this.collisionCount += 1;
       this.collisionCooldown = 0.34;
+    }
+  }
+
+  private resolveColliderHit(collider: WorldCollider, bodyPosition: THREE.Vector3, bodyRadius: number): { normal: THREE.Vector3; penetration: number } | null {
+    const obstacle = collider.mesh.position;
+    const dx = bodyPosition.x - obstacle.x;
+    const dz = bodyPosition.z - obstacle.z;
+    const distanceSq = dx * dx + dz * dz;
+    const combinedRadius = bodyRadius + collider.radius;
+    if (distanceSq >= combinedRadius * combinedRadius) {
+      return null;
+    }
+
+    if (distanceSq < 0.000001) {
+      return { normal: new THREE.Vector3(-1, 0, 0), penetration: combinedRadius };
+    }
+
+    const distance = Math.sqrt(distanceSq);
+    return {
+      normal: new THREE.Vector3(dx / distance, 0, dz / distance),
+      penetration: combinedRadius - distance,
+    };
+  }
+
+  private updateLooseWorldObjects(dt: number): void {
+    for (const collider of this.worldColliders) {
+      if (collider.immovable) {
+        continue;
+      }
+
+      const pos = collider.mesh.position;
+      const sample = Math.max(0.24, collider.radius * 2.2);
+      const hx = this.terrain.getHeightAt(pos.x + sample, pos.z) - this.terrain.getHeightAt(pos.x - sample, pos.z);
+      const hz = this.terrain.getHeightAt(pos.x, pos.z + sample) - this.terrain.getHeightAt(pos.x, pos.z - sample);
+      const slopeAccel = clamp(Math.hypot(hx, hz) / Math.max(sample * 2, 0.001), 0, 0.9) * 3.4;
+      if (slopeAccel > 0.02) {
+        collider.velocity.x += (-hx / Math.max(sample * 2, 0.001)) * slopeAccel * dt;
+        collider.velocity.z += (-hz / Math.max(sample * 2, 0.001)) * slopeAccel * dt;
+      }
+
+      collider.velocity.y -= 9.81 * dt;
+      const airDrag = 1 - Math.min(dt * 0.18, 0.05);
+      collider.velocity.multiplyScalar(airDrag);
+      pos.addScaledVector(collider.velocity, dt);
+
+      const ground = this.terrain.getHeightAt(pos.x, pos.z) + collider.groundOffset;
+      if (pos.y <= ground) {
+        pos.y = ground;
+        if (collider.velocity.y < -0.05) {
+          collider.velocity.y = -collider.velocity.y * collider.restitution;
+        } else {
+          collider.velocity.y = 0;
+        }
+        const groundFriction = 1 - Math.min(dt * (1.2 + collider.friction * 3.4), 0.32);
+        collider.velocity.x *= groundFriction;
+        collider.velocity.z *= groundFriction;
+      }
+
+      const horizontalSpeed = Math.hypot(collider.velocity.x, collider.velocity.z);
+      if (horizontalSpeed > 0.01) {
+        collider.mesh.rotation.x += collider.velocity.z * dt * 1.7;
+        collider.mesh.rotation.z -= collider.velocity.x * dt * 1.7;
+      }
     }
   }
 
@@ -2969,8 +3227,20 @@ class Simulator {
     const loadRatio = clamp(this.truckLoad / TRUCK_CAPACITY, 0, 1);
     this.ui.truckLoadText.textContent = `${Math.round(loadRatio * 100)}%`;
     this.ui.truckLoadBar.style.width = `${loadRatio * 100}%`;
+    const activeMotion =
+      Math.abs(this.leftTrackVelocity) > 0.04 ||
+      Math.abs(this.rightTrackVelocity) > 0.04 ||
+      Math.max(Math.abs(this.velocities.swing), Math.abs(this.velocities.boom), Math.abs(this.velocities.stick), Math.abs(this.velocities.bucket)) > 0.025;
     this.ui.missionState.textContent =
-      loadRatio >= 1 ? "작업 완료" : this.bucketLoad > 0.2 ? "운반 중" : this.pressure > 0.12 ? "굴착 중" : "굴착 대기";
+      loadRatio >= 1
+        ? "작업 완료"
+        : this.bucketLoad > 0.2
+          ? "운반 중"
+          : this.pressure > 0.12 && activeMotion
+            ? "굴착 중"
+            : this.pressure > 0.12
+              ? "접지 저항"
+              : "굴착 대기";
 
     this.ui.pressureMeter.value = this.pressure;
     this.ui.bucketMeter.value = clamp(this.bucketLoad / BUCKET_CAPACITY, 0, 1);

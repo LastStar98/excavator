@@ -325,6 +325,11 @@ async function main() {
       expression: `window.__excavatorSim?.forceRoughTrackSupport()`,
       returnByValue: true,
     });
+    await resetSim();
+    const worldObjectPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceWorldObjectPhysics()`,
+      returnByValue: true,
+    });
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 844,
       height: 390,
@@ -443,6 +448,7 @@ async function main() {
     const pitSinkValue = pitSink.result.value;
     const truckCollisionValue = truckCollision.result.value;
     const roughTrackValue = roughTrack.result.value;
+    const worldObjectPhysicsValue = worldObjectPhysics.result.value;
     const mobileUiValue = mobileUi.result.value;
     const mobileMenuUiValue = mobileMenuUi.result.value;
     const mobileBeforeLeftStick = Number.parseInt(mobileBeforeLeft.stick, 10);
@@ -579,6 +585,14 @@ async function main() {
           roughTrackValue?.pressure > 0.1,
       ],
       [
+        "visible world objects use collision physics",
+        worldObjectPhysicsValue?.debrisTravel > 0.035 &&
+          worldObjectPhysicsValue?.hardBlockDistance > 0.08 &&
+          worldObjectPhysicsValue?.hardBlocked &&
+          worldObjectPhysicsValue?.collisionCount > 0 &&
+          worldObjectPhysicsValue?.pressure > 0.35,
+      ],
+      [
         "mobile overlay visible",
         mobileUiValue?.visible &&
           mobileUiValue?.leftReady &&
@@ -661,6 +675,7 @@ async function main() {
           pitSink: pitSinkValue,
           truckCollision: truckCollisionValue,
           roughTrack: roughTrackValue,
+          worldObjectPhysics: worldObjectPhysicsValue,
           mobileUi: mobileUiValue,
           mobileMenuUi: mobileMenuUiValue,
           mobileBeforeLeft,
