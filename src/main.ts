@@ -478,6 +478,10 @@ interface ExcavatorDebugApi {
     pipePairCapsuleFalsePenetration: number;
     pipePairCapsuleHitBefore: number;
     pipePairCapsuleHitAfter: number;
+    pipeTruckCapsuleHitBefore: number;
+    pipeTruckCapsuleHitAfter: number;
+    pipeExcavatorCapsuleHitBefore: number;
+    pipeExcavatorCapsuleHitAfter: number;
     trackContactCount: number;
     cornerContacts: number;
     movedMass: number;
@@ -5568,6 +5572,10 @@ class Simulator {
         let pipePairCapsuleFalsePenetration = 0;
         let pipePairCapsuleHitBefore = 0;
         let pipePairCapsuleHitAfter = 0;
+        let pipeTruckCapsuleHitBefore = 0;
+        let pipeTruckCapsuleHitAfter = 0;
+        let pipeExcavatorCapsuleHitBefore = 0;
+        let pipeExcavatorCapsuleHitAfter = 0;
         let truckPenetrationBefore = 0;
         let truckPenetrationAfter = 0;
         let pairDistanceBefore = 0;
@@ -5719,6 +5727,43 @@ class Simulator {
               this.resolveLooseObjectPairCollisions();
               pipePairCapsuleHitAfter = this.resolveWorldColliderPairHit(pipe, debris)?.penetration ?? 0;
             }
+
+            const pipeHalfLength = capsule.a.distanceTo(capsule.b) * 0.5;
+            const placePipeEndpoint = (endpoint: THREE.Vector3, axisWorld: THREE.Vector3): void => {
+              const pipeAxis = axisWorld.clone().normalize();
+              pipe.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pipeAxis);
+              pipe.mesh.position.copy(endpoint).addScaledVector(pipeAxis, -pipeHalfLength);
+              pipe.velocity.set(0, 0, 0);
+              pipe.sleeping = false;
+              this.worldColliderGridDirty = true;
+            };
+
+            const truckTarget = this.truck.group.localToWorld(new THREE.Vector3(-2.12, 1.03, 0.86 + capsule.radius - 0.055));
+            placePipeEndpoint(truckTarget, new THREE.Vector3(1, 0, 0));
+            const truckPipeHitBefore = this.resolveWorldColliderShapeHit(pipe, (point, radius) => this.truck.resolveSolidCollision(point, radius));
+            pipeTruckCapsuleHitBefore = truckPipeHitBefore?.penetration ?? 0;
+            if (truckPipeHitBefore) {
+              pipe.velocity.copy(truckPipeHitBefore.normal).multiplyScalar(-0.22);
+              this.resolveLooseObjectTruckCollision(pipe);
+            }
+            pipeTruckCapsuleHitAfter = this.resolveWorldColliderShapeHit(pipe, (point, radius) => this.truck.resolveSolidCollision(point, radius))?.penetration ?? 0;
+
+            this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+            this.excavator.group.rotation.set(0, 0, 0);
+            const excavatorSide = new THREE.Vector3(0, 0, 1);
+            const excavatorTarget = this.excavator.group.position
+              .clone()
+              .add(new THREE.Vector3(TRACK_LENGTH * 0.46, 0, TRACK_GAUGE * 0.5))
+              .addScaledVector(excavatorSide, TRACK_WIDTH * 0.66 + capsule.radius - 0.055);
+            excavatorTarget.y = this.excavator.group.position.y + 0.34;
+            placePipeEndpoint(excavatorTarget, new THREE.Vector3(1, 0, 0));
+            const excavatorPipeHitBefore = this.resolveLooseObjectExcavatorHit(pipe);
+            pipeExcavatorCapsuleHitBefore = excavatorPipeHitBefore?.penetration ?? 0;
+            if (excavatorPipeHitBefore) {
+              pipe.velocity.copy(excavatorPipeHitBefore.normal).multiplyScalar(-0.22);
+              this.resolveLooseObjectExcavatorCollision(pipe);
+            }
+            pipeExcavatorCapsuleHitAfter = this.resolveLooseObjectExcavatorHit(pipe)?.penetration ?? 0;
           }
         }
 
@@ -5757,6 +5802,10 @@ class Simulator {
           pipePairCapsuleFalsePenetration,
           pipePairCapsuleHitBefore,
           pipePairCapsuleHitAfter,
+          pipeTruckCapsuleHitBefore,
+          pipeTruckCapsuleHitAfter,
+          pipeExcavatorCapsuleHitBefore,
+          pipeExcavatorCapsuleHitAfter,
           trackContactCount,
           cornerContacts,
           movedMass,
@@ -6799,6 +6848,43 @@ class Simulator {
     };
   }
 
+  private worldColliderShapeSamples(collider: WorldCollider): { point: THREE.Vector3; radius: number }[] {
+    const capsule = this.worldColliderCapsuleWorld(collider);
+    if (!capsule) {
+      return [{ point: collider.mesh.position.clone(), radius: collider.radius }];
+    }
+
+    const samples: { point: THREE.Vector3; radius: number }[] = [];
+    for (const t of [0, 0.25, 0.5, 0.75, 1] as const) {
+      samples.push({
+        point: capsule.a.clone().lerp(capsule.b, t),
+        radius: capsule.radius,
+      });
+    }
+    return samples;
+  }
+
+  private resolveWorldColliderShapeHit(
+    collider: WorldCollider,
+    resolver: (point: THREE.Vector3, radius: number) => { normal: THREE.Vector3; penetration: number } | null,
+  ): { normal: THREE.Vector3; penetration: number; point: THREE.Vector3 } | null {
+    let best: { normal: THREE.Vector3; penetration: number; point: THREE.Vector3 } | null = null;
+    for (const sample of this.worldColliderShapeSamples(collider)) {
+      const hit = resolver(sample.point, sample.radius);
+      if (!hit) {
+        continue;
+      }
+      if (!best || hit.penetration > best.penetration) {
+        best = {
+          normal: hit.normal.clone().normalize(),
+          penetration: hit.penetration,
+          point: sample.point.clone(),
+        };
+      }
+    }
+    return best;
+  }
+
   private closestPointOnSegment(point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): THREE.Vector3 {
     const axis = b.clone().sub(a);
     const axisLenSq = axis.lengthSq();
@@ -7050,12 +7136,12 @@ class Simulator {
   }
 
   private resolveCarriedWorldObjectImpact(collider: WorldCollider): boolean {
-    const truckHit = this.truck.resolveSolidCollision(collider.mesh.position, collider.radius);
+    const truckHit = this.resolveWorldColliderShapeHit(collider, (point, radius) => this.truck.resolveSolidCollision(point, radius));
     if (truckHit) {
       const normal = truckHit.normal.clone().normalize();
       let maxPenetration = truckHit.penetration;
       for (let pass = 0; pass < 4; pass += 1) {
-        const passHit = this.truck.resolveSolidCollision(collider.mesh.position, collider.radius);
+        const passHit = this.resolveWorldColliderShapeHit(collider, (point, radius) => this.truck.resolveSolidCollision(point, radius));
         if (!passHit) {
           break;
         }
@@ -7066,7 +7152,7 @@ class Simulator {
       const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed).multiplyScalar(0.72);
       const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.08, 0.08, 0.42) : normalSpeed;
       this.truck.applyImpact(
-        collider.mesh.position,
+        truckHit.point,
         normal,
         clamp(0.12 + maxPenetration * 2.2 + Math.max(0, -normalSpeed) * collider.mass * 0.045 + collider.mass * 0.015, 0.05, 3.2),
       );
@@ -7237,7 +7323,7 @@ class Simulator {
   }
 
   private resolveLooseObjectBucketLoadCollision(collider: WorldCollider): boolean {
-    const hit = this.excavator.resolveBucketLoadCollision(collider.mesh.position, collider.radius);
+    const hit = this.resolveWorldColliderShapeHit(collider, (point, radius) => this.excavator.resolveBucketLoadCollision(point, radius));
     if (!hit) {
       return false;
     }
@@ -7255,7 +7341,7 @@ class Simulator {
   }
 
   private resolveLooseObjectTruckCollision(collider: WorldCollider): boolean {
-    const hit = this.truck.resolveSolidCollision(collider.mesh.position, collider.radius);
+    const hit = this.resolveWorldColliderShapeHit(collider, (point, radius) => this.truck.resolveSolidCollision(point, radius));
     if (!hit) {
       return false;
     }
@@ -7269,7 +7355,7 @@ class Simulator {
     const tangentDamping = 1 - clamp(0.12 + collider.friction * 0.24, 0.12, 0.42);
     const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution, 0.04, 0.38) : normalSpeed;
     this.truck.applyImpact(
-      collider.mesh.position,
+      hit.point,
       normal,
       clamp(0.08 + hit.penetration * 2.0 + Math.max(0, -normalSpeed) * collider.mass * 0.04 + collider.mass * 0.012, 0.035, 2.8),
     );
@@ -7284,7 +7370,7 @@ class Simulator {
   }
 
   private resolveLooseObjectExcavatorHit(collider: WorldCollider): { normal: THREE.Vector3; penetration: number } | null {
-    return this.resolveExcavatorSolidHit(collider.mesh.position, collider.radius);
+    return this.resolveWorldColliderShapeHit(collider, (point, radius) => this.resolveExcavatorSolidHit(point, radius));
   }
 
   private resolveExcavatorSolidHit(pos: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
