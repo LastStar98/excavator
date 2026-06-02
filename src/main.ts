@@ -157,6 +157,7 @@ interface TrackTractionState {
 }
 
 interface ArmCollisionSample {
+  key?: string;
   action: "boom" | "stick" | "bucket";
   point: THREE.Vector3;
   radius: number;
@@ -246,6 +247,20 @@ interface ExcavatorDebugApi {
     sideOrthogonality: number;
     cylinderDelta: number;
     linkSymmetry: number;
+  };
+  forceHydraulicLinkagePhysics: () => {
+    sampleCount: number;
+    subsoilSampleCount: number;
+    movableHit: boolean;
+    objectPenetrationBefore: number;
+    objectPenetrationAfter: number;
+    objectTravel: number;
+    objectVelocity: number;
+    pressure: number;
+    collisionCount: number;
+    subsoilResisted: boolean;
+    subsoilMaxSubmerged: number;
+    subsoilAverageSubmerged: number;
   };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
   forceTrackTractionPhysics: () => {
@@ -2306,6 +2321,38 @@ class ExcavatorModel {
       { action: "bucket", point: this.bucketPocketWorld(), radius: 0.28 },
       ...this.bucketCuttingEdgeWorld().map((point) => ({ action: "bucket" as const, point, radius: 0.16 })),
     );
+    samples.push(...this.hydraulicCollisionSamples());
+    return samples;
+  }
+
+  hydraulicCollisionSamples(): ArmCollisionSample[] {
+    const samples: ArmCollisionSample[] = [];
+    const addLine = (key: string, action: "boom" | "stick" | "bucket", start: THREE.Vector3, end: THREE.Vector3, radius: number): void => {
+      for (const t of [0.24, 0.5, 0.76]) {
+        samples.push({
+          key: `${key}-${t.toFixed(2)}`,
+          action,
+          point: start.clone().lerp(end, t),
+          radius,
+        });
+      }
+    };
+
+    const boomStart = this.upperGroup.localToWorld(new THREE.Vector3(0.26, 0.35, -0.28));
+    const boomEnd = this.boomGroup.localToWorld(new THREE.Vector3(1.65, -0.14, -0.28));
+    const stickStart = this.boomGroup.localToWorld(new THREE.Vector3(2.55, 0.12, 0.27));
+    const stickEnd = this.stickGroup.localToWorld(new THREE.Vector3(1.55, -0.1, 0.27));
+    const bucketCenter = this.bucketLinkageWorldPoints(-0.24);
+    const bucketLeft = this.bucketLinkageWorldPoints(-0.32);
+    const bucketRight = this.bucketLinkageWorldPoints(0.32);
+
+    addLine("boom-cylinder", "boom", boomStart, boomEnd, 0.075);
+    addLine("stick-cylinder", "stick", stickStart, stickEnd, 0.064);
+    addLine("bucket-cylinder", "bucket", bucketCenter.cylinderBase, bucketCenter.rockerInput, 0.054);
+    addLine("bucket-rocker-left", "bucket", bucketLeft.rockerInput, bucketLeft.rockerOutput, 0.052);
+    addLine("bucket-rocker-right", "bucket", bucketRight.rockerInput, bucketRight.rockerOutput, 0.052);
+    addLine("bucket-link-left", "bucket", bucketLeft.rockerOutput, bucketLeft.bucketEar, 0.048);
+    addLine("bucket-link-right", "bucket", bucketRight.rockerOutput, bucketRight.bucketEar, 0.048);
     return samples;
   }
 
@@ -2358,6 +2405,14 @@ class ExcavatorModel {
       { key: "bucket-pin", action: "bucket", point: this.bucketPinWorld(), radius: 0.2 },
       { key: "bucket-pocket", action: "bucket", point: this.bucketPocketWorld(), radius: 0.3 },
     );
+    for (const sample of this.hydraulicCollisionSamples()) {
+      samples.push({
+        key: sample.key ?? `hydraulic-${samples.length}`,
+        action: sample.action,
+        point: sample.point,
+        radius: sample.radius * 0.86,
+      });
+    }
     return samples;
   }
 
@@ -3957,6 +4012,81 @@ class Simulator {
           sideOrthogonality: current.sideOrthogonality,
           cylinderDelta: Math.abs(dumped.cylinderLength - curled.cylinderLength),
           linkSymmetry: Math.abs(current.leftLinkLength - current.rightLinkLength),
+        };
+      },
+      forceHydraulicLinkagePhysics: () => {
+        const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.52, stick: -1.08, bucket: -2.08 };
+        Object.assign(this.angles, previousAngles, { stick: -1.36, bucket: -2.32 });
+        this.velocities.boom = -0.08;
+        this.velocities.stick = -0.62;
+        this.velocities.bucket = -0.42;
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.group.rotation.set(0, 0, 0);
+        this.excavator.applyAngles(this.angles);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+
+        const samples = this.excavator.hydraulicCollisionSamples();
+        const objectSample = samples.find((sample) => sample.key === "stick-cylinder-0.50") ?? samples.find((sample) => sample.action === "stick") ?? samples[0];
+        const subsoilSamples = this.excavator.armSubsoilSamples().filter((sample) =>
+          sample.key?.includes("cylinder") || sample.key?.includes("rocker") || sample.key?.includes("link"),
+        );
+        let objectPenetrationBefore = 0;
+        let objectPenetrationAfter = 0;
+        let objectTravel = 0;
+        let objectVelocity = 0;
+        let movableHit = false;
+        const obstacle =
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "rock") ??
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "clod");
+        if (objectSample && obstacle) {
+          const savedPosition = obstacle.mesh.position.clone();
+          const savedVelocity = obstacle.velocity.clone();
+          const savedSleeping = obstacle.sleeping;
+          obstacle.mesh.position.copy(objectSample.point);
+          obstacle.velocity.set(0, 0, 0);
+          obstacle.sleeping = false;
+          this.worldColliderGridDirty = true;
+          this.collisionCooldown = 0;
+          objectPenetrationBefore = Math.max(0, objectSample.radius + obstacle.radius - objectSample.point.distanceTo(obstacle.mesh.position));
+          const beforePosition = obstacle.mesh.position.clone();
+          const objectResult = this.resolveArmWorldObjectCollisions(previousAngles);
+          const afterSample =
+            this.excavator.hydraulicCollisionSamples().find((sample) => sample.key === objectSample.key) ?? objectSample;
+          objectPenetrationAfter = Math.max(0, afterSample.radius + obstacle.radius - afterSample.point.distanceTo(obstacle.mesh.position));
+          objectTravel = obstacle.mesh.position.distanceTo(beforePosition);
+          objectVelocity = obstacle.velocity.length();
+          movableHit = objectResult.movableHit;
+          obstacle.mesh.position.copy(savedPosition);
+          obstacle.velocity.copy(savedVelocity);
+          obstacle.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        }
+
+        const subsoilTarget =
+          subsoilSamples.find((sample) => sample.key === "bucket-link-left-0.50") ??
+          subsoilSamples.find((sample) => sample.key?.startsWith("bucket-link")) ??
+          subsoilSamples[0];
+        if (subsoilTarget) {
+          const ground = this.terrain.getHeightAt(subsoilTarget.point.x, subsoilTarget.point.z);
+          const buryDepth = Math.max(0, subsoilTarget.point.y - ground + subsoilTarget.radius + 0.28);
+          this.excavator.group.position.y -= buryDepth;
+          this.excavator.applyAngles(this.angles);
+        }
+        const subsoilResult = this.resolveArmTerrainResistance(previousAngles);
+        this.updateUi(0);
+        return {
+          sampleCount: samples.length,
+          subsoilSampleCount: subsoilSamples.length,
+          movableHit,
+          objectPenetrationBefore,
+          objectPenetrationAfter,
+          objectTravel,
+          objectVelocity,
+          pressure: this.pressure,
+          collisionCount: this.collisionCount,
+          subsoilResisted: subsoilResult.resisted,
+          subsoilMaxSubmerged: subsoilResult.maxSubmerged,
+          subsoilAverageSubmerged: subsoilResult.averageSubmerged,
         };
       },
       forceTrackPass: () => {

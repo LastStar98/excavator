@@ -326,6 +326,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const hydraulicLinkagePhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceHydraulicLinkagePhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const trackPass = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceTrackPass()`,
       returnByValue: true,
@@ -642,6 +647,7 @@ async function main() {
     const soilPushValue = soilPush.result.value;
     const cuttingFlowPhysicsValue = cuttingFlowPhysics.result.value;
     const bucketKinematicsValue = bucketKinematics.result.value;
+    const hydraulicLinkagePhysicsValue = hydraulicLinkagePhysics.result.value;
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
     const deepExcavationValue = deepExcavation.result.value;
@@ -825,6 +831,21 @@ async function main() {
           bucketKinematicsValue?.sideOrthogonality < 0.02 &&
           bucketKinematicsValue?.cylinderDelta > 0.08 &&
           bucketKinematicsValue?.linkSymmetry < 0.025,
+      ],
+      [
+        "hydraulic cylinders and bucket links participate in physics",
+        hydraulicLinkagePhysicsValue?.sampleCount >= 18 &&
+          hydraulicLinkagePhysicsValue?.subsoilSampleCount >= hydraulicLinkagePhysicsValue?.sampleCount &&
+          hydraulicLinkagePhysicsValue?.movableHit &&
+          hydraulicLinkagePhysicsValue?.objectPenetrationBefore > 0.05 &&
+          hydraulicLinkagePhysicsValue?.objectPenetrationAfter < hydraulicLinkagePhysicsValue?.objectPenetrationBefore - 0.015 &&
+          hydraulicLinkagePhysicsValue?.objectTravel > 0.01 &&
+          hydraulicLinkagePhysicsValue?.objectVelocity > 0.005 &&
+          hydraulicLinkagePhysicsValue?.subsoilResisted &&
+          hydraulicLinkagePhysicsValue?.subsoilMaxSubmerged > 0.05 &&
+          hydraulicLinkagePhysicsValue?.subsoilAverageSubmerged > 0.01 &&
+          hydraulicLinkagePhysicsValue?.pressure > 0.25 &&
+          hydraulicLinkagePhysicsValue?.collisionCount > 0,
       ],
       [
         "crawler tracks compact soil and raise berms",
@@ -1168,6 +1189,7 @@ async function main() {
           soilPush: soilPushValue,
           cuttingFlowPhysics: cuttingFlowPhysicsValue,
           bucketKinematics: bucketKinematicsValue,
+          hydraulicLinkagePhysics: hydraulicLinkagePhysicsValue,
           trackPass: trackPassValue,
           pitSink: pitSinkValue,
           deepExcavation: deepExcavationValue,
