@@ -682,6 +682,9 @@ async function main() {
           cuttingFlowPhysicsValue?.capturedVolume > 0.12 &&
           Math.abs(cuttingFlowPhysicsValue?.transitRemaining ?? 1) < 0.003 &&
           cuttingFlowPhysicsValue?.gravityDelta > 0.08 &&
+          cuttingFlowPhysicsValue?.collisionReleasedVolume > 0.08 &&
+          cuttingFlowPhysicsValue?.obstacleImpulse > 0.015 &&
+          cuttingFlowPhysicsValue?.obstacleTravel > 0.002 &&
           cuttingFlowPhysicsValue?.activeFlowAfter === 0,
       ],
       [

@@ -184,6 +184,9 @@ interface ExcavatorDebugApi {
     capturedVolume: number;
     transitRemaining: number;
     gravityDelta: number;
+    collisionReleasedVolume: number;
+    obstacleImpulse: number;
+    obstacleTravel: number;
     activeFlowAfter: number;
   };
   forceBucketKinematics: () => {
@@ -3413,6 +3416,67 @@ class Simulator {
         for (let step = 0; step < 150; step += 1) {
           this.updateSoilParticles(1 / 60);
         }
+        let collisionReleasedVolume = 0;
+        let obstacleImpulse = 0;
+        let obstacleTravel = 0;
+        const obstacle =
+          this.worldColliders.find((collider) => collider.kind === "boulder") ??
+          this.worldColliders.find((collider) => collider.kind === "rock");
+        if (obstacle) {
+          const savedPosition = obstacle.mesh.position.clone();
+          const savedQuaternion = obstacle.mesh.quaternion.clone();
+          const savedVelocity = obstacle.velocity.clone();
+          const savedSleeping = obstacle.sleeping;
+          const source = this.excavator.bucketCuttingEdgeWorld()[0].clone();
+          const target = this.excavator.bucketPocketWorld().clone();
+          const flight = target.clone().sub(source);
+          const collisionPoint = source.clone().addScaledVector(flight, 0.38);
+          const collisionVolume = 0.12;
+          const radius = 0.09;
+          obstacle.mesh.position.copy(collisionPoint);
+          obstacle.velocity.set(0, 0, 0);
+          obstacle.sleeping = false;
+          this.worldColliderGridDirty = true;
+          const mesh = this.acquireSoilParticleMesh(radius, this.looseSoilMats[0], 2401);
+          mesh.position.copy(source);
+          const velocity =
+            flight.lengthSq() > 0.0001
+              ? flight.clone().normalize().multiplyScalar(2.8).add(new THREE.Vector3(0, 0.18, 0))
+              : new THREE.Vector3(1.8, 0.18, 0);
+          const collisionParticle: SoilParticle = {
+            mesh,
+            velocity,
+            volume: collisionVolume,
+            radius,
+            life: 0,
+            settles: false,
+            target,
+            toBucket: true,
+          };
+          this.bucketTransitLoad += collisionVolume;
+          this.soilParticles.push(collisionParticle);
+          const obstacleBefore = obstacle.mesh.position.clone();
+          const transitBeforeCollision = this.bucketTransitLoad;
+          for (let step = 0; step < 20; step += 1) {
+            this.updateSoilParticles(1 / 60);
+          }
+          obstacleImpulse = obstacle.velocity.length();
+          obstacleTravel = obstacle.mesh.position.distanceTo(obstacleBefore);
+          collisionReleasedVolume = Math.max(0, transitBeforeCollision - this.bucketTransitLoad);
+          const collisionParticleIndex = this.soilParticles.indexOf(collisionParticle);
+          if (collisionParticleIndex >= 0) {
+            this.soilParticles.splice(collisionParticleIndex, 1);
+            if (collisionParticle.toBucket) {
+              this.bucketTransitLoad = Math.max(0, this.bucketTransitLoad - collisionParticle.volume);
+            }
+            this.recycleSoilParticle(collisionParticle);
+          }
+          obstacle.mesh.position.copy(savedPosition);
+          obstacle.mesh.quaternion.copy(savedQuaternion);
+          obstacle.velocity.copy(savedVelocity);
+          obstacle.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        }
         this.excavator.setBucketLoad(this.bucketLoad);
         this.updateUi(0);
         return {
@@ -3420,6 +3484,9 @@ class Simulator {
           capturedVolume: this.bucketLoad - beforeBucket,
           transitRemaining: this.bucketTransitLoad - beforeTransit,
           gravityDelta,
+          collisionReleasedVolume,
+          obstacleImpulse,
+          obstacleTravel,
           activeFlowAfter: this.soilParticles.filter((particle) => particle.toBucket).length,
         };
       },
@@ -5705,7 +5772,12 @@ class Simulator {
         particle.mesh.position.addScaledVector(particle.velocity, dt);
         particle.mesh.rotation.x += particle.velocity.z * dt * 3.2;
         particle.mesh.rotation.z -= particle.velocity.x * dt * 3.2;
-        if (!particle.toBucket) {
+        if (particle.toBucket && this.resolveSoilParticleCollisions(particle)) {
+          particle.toBucket = false;
+          particle.target = undefined;
+          particle.settles = true;
+          this.bucketTransitLoad = Math.max(0, this.bucketTransitLoad - particle.volume);
+        } else if (!particle.toBucket) {
           particle.mesh.scale.multiplyScalar(1 - Math.min(dt * 1.5, 0.055));
           this.resolveSoilParticleCollisions(particle);
         }
