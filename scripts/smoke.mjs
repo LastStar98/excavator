@@ -301,6 +301,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const fineGrainSettlement = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceFineGrainSettlement()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const soilPush = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceFullBucketPush()`,
       returnByValue: true,
@@ -443,6 +448,7 @@ async function main() {
     const soilAfterDigValue = soilAfterDig.result.value;
     const soilDumpValue = soilDump.result.value;
     const soilAfterDumpValue = soilAfterDump.result.value;
+    const fineGrainSettlementValue = fineGrainSettlement.result.value;
     const soilPushValue = soilPush.result.value;
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
@@ -532,11 +538,17 @@ async function main() {
       ],
       [
         "digging emits fine soil grains",
-        (soilAfterDigValue?.fineGrainCount ?? 0) >= 4,
+        (soilAfterDigValue?.fineGrainCount ?? 0) >= 1 &&
+          (soilAfterDigValue?.activeFineGrainVolume ?? 0) + (soilAfterDigValue?.settledFineGrainVolume ?? 0) > 0.01,
       ],
       [
-        "removed soil enters bucket exactly",
-        Math.abs((soilAfterDigValue?.bucketLoad ?? 0) - (soilDigValue?.removed ?? -1)) < 0.002,
+        "removed soil is conserved across bucket and fine grains",
+        Math.abs(
+          (soilAfterDigValue?.bucketLoad ?? 0) +
+            (soilAfterDigValue?.activeFineGrainVolume ?? 0) +
+            (soilAfterDigValue?.settledFineGrainVolume ?? 0) -
+            (soilDigValue?.removed ?? -1),
+        ) < 0.003,
       ],
       [
         "bucket load surface fills after digging",
@@ -549,6 +561,13 @@ async function main() {
           (soilAfterDumpValue?.bucketLoad ?? 1) < 0.002,
       ],
       ["bucket load surface clears after dumping", (soilAfterDumpValue?.bucketVisualLoad ?? 1) < 0.01],
+      [
+        "fine grains settle into physical volume",
+        fineGrainSettlementValue?.spawnedVolume > 0.05 &&
+          Math.abs((fineGrainSettlementValue?.settledVolume ?? 0) - fineGrainSettlementValue.spawnedVolume) < 0.004 &&
+          fineGrainSettlementValue?.activeAfter === 0 &&
+          fineGrainSettlementValue?.terrainGain > 0.035,
+      ],
       [
         "full bucket pushes soil into berms",
         soilPushValue?.displaced > 0.02 &&
@@ -670,6 +689,7 @@ async function main() {
           soilAfterDig: soilAfterDigValue,
           soilDump: soilDumpValue,
           soilAfterDump: soilAfterDumpValue,
+          fineGrainSettlement: fineGrainSettlementValue,
           soilPush: soilPushValue,
           trackPass: trackPassValue,
           pitSink: pitSinkValue,

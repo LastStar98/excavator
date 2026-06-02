@@ -104,6 +104,8 @@ interface ExcavatorDebugApi {
     settlingParticleCount: number;
     flowParticleCount: number;
     fineGrainCount: number;
+    activeFineGrainVolume: number;
+    settledFineGrainVolume: number;
     chassisSinkage: number;
     chassisPitch: number;
     chassisRoll: number;
@@ -111,7 +113,7 @@ interface ExcavatorDebugApi {
     collisionCount: number;
     terrainVolumeDelta: number;
   };
-  forceDigPass: () => { removed: number; beforeHeight: number; afterHeight: number; bucketLoad: number };
+  forceDigPass: () => { removed: number; beforeHeight: number; afterHeight: number; bucketLoad: number; airborneFines: number };
   forceTruckDump: () => { dumped: number; truckLoad: number; bucketLoad: number };
   forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
@@ -123,6 +125,13 @@ interface ExcavatorDebugApi {
     hardBlocked: boolean;
     collisionCount: number;
     pressure: number;
+  };
+  forceFineGrainSettlement: () => {
+    spawnedVolume: number;
+    settledVolume: number;
+    activeAfter: number;
+    terrainGain: number;
+    truckLoad: number;
   };
   forceExcavatorPitSink: () => {
     lowered: number;
@@ -1633,6 +1642,7 @@ class Simulator {
   private readonly fineGrainVelocities = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainLife = new Float32Array(this.fineGrainMax);
   private readonly fineGrainMaxLife = new Float32Array(this.fineGrainMax);
+  private readonly fineGrainVolumes = new Float32Array(this.fineGrainMax);
   private readonly fineGrainSettles = new Uint8Array(this.fineGrainMax);
   private readonly fineGrainGeometry = new THREE.BufferGeometry();
   private readonly fineGrainMaterial = new THREE.PointsMaterial({
@@ -1678,6 +1688,7 @@ class Simulator {
   private supportHeight = 0;
   private collisionCount = 0;
   private fineGrainCursor = 0;
+  private fineGrainSettledVolume = 0;
   private fpsAccumulator = 0;
   private fpsFrames = 0;
   private fps = 0;
@@ -1723,6 +1734,7 @@ class Simulator {
       this.fineGrainPositions[i * 3] = 0;
       this.fineGrainPositions[i * 3 + 1] = -999;
       this.fineGrainPositions[i * 3 + 2] = 0;
+      this.fineGrainVolumes[i] = 0;
     }
     this.fineGrainGeometry.setAttribute("position", new THREE.BufferAttribute(this.fineGrainPositions, 3));
     (this.fineGrainGeometry.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
@@ -1754,6 +1766,7 @@ class Simulator {
     this.chassisRoll = 0;
     this.supportHeight = this.terrain.getHeightAt(0, 0);
     this.collisionCount = 0;
+    this.fineGrainSettledVolume = 0;
     this.resetWorldColliders();
     this.clearFineGrains();
     this.clearMobileInput();
@@ -2276,6 +2289,8 @@ class Simulator {
         settlingParticleCount: this.soilParticles.filter((particle) => particle.settles).length,
         flowParticleCount: this.soilParticles.filter((particle) => !particle.settles).length,
         fineGrainCount: this.fineGrainCount(),
+        activeFineGrainVolume: this.activeFineGrainVolume(),
+        settledFineGrainVolume: this.fineGrainSettledVolume,
         chassisSinkage: this.chassisSinkage,
         chassisPitch: this.chassisPitch,
         chassisRoll: this.chassisRoll,
@@ -2295,10 +2310,16 @@ class Simulator {
           0.24,
           BUCKET_CAPACITY - this.bucketLoad,
         );
-        this.bucketLoad += removed;
+        const airborneFines = removed * 0.06;
+        const bucketAccepted = Math.min(BUCKET_CAPACITY - this.bucketLoad, Math.max(0, removed - airborneFines));
+        const spill = Math.max(0, removed - airborneFines - bucketAccepted);
+        this.bucketLoad += bucketAccepted;
         this.totalExcavated += removed;
-        if (removed > 0) {
-          this.spawnFineGrains(end, removed, new THREE.Vector3(1, 0.25, 0), false, 1.25);
+        if (airborneFines > 0.001) {
+          this.spawnFineGrains(end, airborneFines, new THREE.Vector3(1, 0.25, 0), true, 1.25);
+        }
+        if (spill > 0.001) {
+          this.spawnSoilParticles(end, spill, new THREE.Vector3(1, -0.25, 0), 0.35);
         }
         this.excavator.setBucketLoad(this.bucketLoad);
         this.updateUi(0);
@@ -2307,6 +2328,7 @@ class Simulator {
           beforeHeight,
           afterHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
           bucketLoad: this.bucketLoad,
+          airborneFines,
         };
       },
       forceTruckDump: () => {
@@ -2450,6 +2472,27 @@ class Simulator {
           hardBlocked,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
+        };
+      },
+      forceFineGrainSettlement: () => {
+        const x = DIG_SITE.x - 0.35;
+        const z = DIG_SITE.z + 0.62;
+        const ground = this.terrain.getHeightAt(x, z);
+        const origin = new THREE.Vector3(x, ground + 1.1, z);
+        const spawnedVolume = 0.12;
+        const beforeSettled = this.fineGrainSettledVolume;
+        const beforeTerrain = this.terrain.terrainVolumeDelta();
+        this.spawnFineGrains(origin, spawnedVolume, new THREE.Vector3(0.15, -0.72, 0.08), true, 1.25);
+        for (let step = 0; step < 180; step += 1) {
+          this.updateFineGrains(1 / 45);
+        }
+        this.updateUi(0);
+        return {
+          spawnedVolume,
+          settledVolume: this.fineGrainSettledVolume - beforeSettled,
+          activeAfter: this.fineGrainCount(),
+          terrainGain: this.terrain.terrainVolumeDelta() - beforeTerrain,
+          truckLoad: this.truckLoad,
         };
       },
       forceExcavatorPitSink: () => {
@@ -2883,12 +2926,22 @@ class Simulator {
         digDepth,
         freeCapacity,
       );
-      this.bucketLoad += removed;
+      const airborneFines = removed * clamp(0.045 + tipSpeed * 0.012 + (1 - attackEfficiency) * 0.02, 0.045, 0.11);
+      const bucketAccepted = Math.min(freeCapacity, Math.max(0, removed - airborneFines));
+      const spill = Math.max(0, removed - airborneFines - bucketAccepted);
+      this.bucketLoad += bucketAccepted;
       this.totalExcavated += removed;
       if (removed > 0) {
         this.pressure = Math.max(this.pressure, clamp(0.42 + removed * 1.8 + contactRatio * 0.22, 0, 1));
-        this.spawnCuttingFlow(edgePoints, pocket, removed);
-        this.spawnFineGrains(edgePoints[0], removed, forward.clone().multiplyScalar(-1).add(new THREE.Vector3(0, 0.35, 0)), false, 1.35);
+        if (bucketAccepted > 0.001) {
+          this.spawnCuttingFlow(edgePoints, pocket, bucketAccepted);
+        }
+        if (airborneFines > 0.001) {
+          this.spawnFineGrains(edgePoints[0], airborneFines, forward.clone().multiplyScalar(-1).add(new THREE.Vector3(0, 0.35, 0)), true, 1.35);
+        }
+        if (spill > 0.001) {
+          this.spawnSoilParticles(pocket, spill, forward.clone().multiplyScalar(-0.25).add(new THREE.Vector3(0, -0.45, 0)), 0.28);
+        }
       }
     }
 
@@ -2913,8 +2966,10 @@ class Simulator {
       const dumpRate = (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95) * dt;
       const dumped = Math.min(this.bucketLoad, dumpRate);
       this.bucketLoad -= dumped;
-      this.spawnSoilParticles(pocket, dumped, forward, openFactor);
-      this.spawnFineGrains(pocket, dumped, forward.clone().add(new THREE.Vector3(0, -0.35 - openFactor, 0)), true, 1.05 + openFactor);
+      const fineVolume = dumped * clamp(0.035 + openFactor * 0.055, 0.035, 0.1);
+      const coarseVolume = Math.max(0, dumped - fineVolume);
+      this.spawnSoilParticles(pocket, coarseVolume, forward, openFactor);
+      this.spawnFineGrains(pocket, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openFactor, 0)), true, 1.05 + openFactor);
     }
 
     this.excavator.setBucketLoad(this.bucketLoad);
@@ -2993,7 +3048,8 @@ class Simulator {
       return;
     }
 
-    const count = clamp(Math.ceil(volume * 72 * burst), 4, 46);
+    const count = clamp(Math.ceil(volume * 96 * burst), 8, 60);
+    const perGrain = volume / count;
     const baseDirection = direction.clone();
     if (baseDirection.lengthSq() < 0.0001) {
       baseDirection.set(1, 0, 0);
@@ -3004,17 +3060,22 @@ class Simulator {
     for (let i = 0; i < count; i += 1) {
       const idx = this.fineGrainCursor;
       this.fineGrainCursor = (this.fineGrainCursor + 1) % this.fineGrainMax;
+      if (this.fineGrainMaxLife[idx] > 0 && this.fineGrainVolumes[idx] > 0) {
+        this.depositFineGrain(idx);
+      }
       const p = idx * 3;
       const spray = 0.08 + Math.random() * 0.22;
       this.fineGrainPositions[p] = origin.x + (Math.random() - 0.5) * 0.22;
       this.fineGrainPositions[p + 1] = origin.y + (Math.random() - 0.5) * 0.1;
       this.fineGrainPositions[p + 2] = origin.z + (Math.random() - 0.5) * 0.22;
       this.fineGrainVelocities[p] = baseDirection.x * spray + side.x * (Math.random() - 0.5) * 0.9;
-      this.fineGrainVelocities[p + 1] = (settles ? -0.1 : 0.22) + (Math.random() - 0.5) * 0.42;
+      this.fineGrainVelocities[p + 1] =
+        (settles ? -0.08 : 0.22) + baseDirection.y * (0.28 + Math.random() * 0.42) + (Math.random() - 0.5) * 0.34;
       this.fineGrainVelocities[p + 2] = baseDirection.z * spray + side.z * (Math.random() - 0.5) * 0.9;
       this.fineGrainLife[idx] = 0;
       this.fineGrainMaxLife[idx] = settles ? 0.85 + Math.random() * 0.75 : 0.38 + Math.random() * 0.28;
       this.fineGrainSettles[idx] = settles ? 1 : 0;
+      this.fineGrainVolumes[idx] = perGrain;
     }
 
     (this.fineGrainGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
@@ -3042,10 +3103,18 @@ class Simulator {
       changed = true;
 
       const ground = this.terrain.getHeightAt(this.fineGrainPositions[p], this.fineGrainPositions[p + 2]);
+      const inTruck =
+        this.fineGrainSettles[i] === 1 &&
+        this.truck.containsWorldPoint(new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2])) &&
+        this.fineGrainPositions[p + 1] < TRUCK_CENTER.y + 1.72;
       if (
         this.fineGrainLife[i] > this.fineGrainMaxLife[i] ||
+        inTruck ||
         (settles && this.fineGrainPositions[p + 1] <= ground + 0.025)
       ) {
+        if (this.fineGrainVolumes[i] > 0) {
+          this.depositFineGrain(i);
+        }
         this.deactivateFineGrain(i);
       }
     }
@@ -3059,12 +3128,36 @@ class Simulator {
     const p = i * 3;
     this.fineGrainMaxLife[i] = 0;
     this.fineGrainLife[i] = 0;
+    this.fineGrainVolumes[i] = 0;
     this.fineGrainPositions[p] = 0;
     this.fineGrainPositions[p + 1] = -999;
     this.fineGrainPositions[p + 2] = 0;
     this.fineGrainVelocities[p] = 0;
     this.fineGrainVelocities[p + 1] = 0;
     this.fineGrainVelocities[p + 2] = 0;
+  }
+
+  private depositFineGrain(i: number): void {
+    const volume = this.fineGrainVolumes[i];
+    if (volume <= 0) {
+      return;
+    }
+    const p = i * 3;
+    const pos = new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2]);
+    const inTruck = this.truck.containsWorldPoint(pos) && pos.y < TRUCK_CENTER.y + 1.72;
+    if (inTruck) {
+      const accepted = this.truck.depositSoilAt(pos, volume, TRUCK_CAPACITY - this.truckLoad);
+      this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
+      if (accepted < volume) {
+        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.18, volume - accepted);
+      }
+    } else {
+      const ground = this.terrain.getHeightAt(pos.x, pos.z);
+      this.terrain.raiseAt(new THREE.Vector3(pos.x, ground, pos.z), 0.14 + Math.cbrt(volume) * 0.08, volume);
+    }
+    this.fineGrainSettledVolume += volume;
+    this.truck.updateLoad(this.truckLoad);
+    this.fineGrainVolumes[i] = 0;
   }
 
   private clearFineGrains(): void {
@@ -3082,6 +3175,16 @@ class Simulator {
       }
     }
     return count;
+  }
+
+  private activeFineGrainVolume(): number {
+    let volume = 0;
+    for (let i = 0; i < this.fineGrainMax; i += 1) {
+      if (this.fineGrainMaxLife[i] > 0) {
+        volume += this.fineGrainVolumes[i];
+      }
+    }
+    return volume;
   }
 
   private updateSoilParticles(dt: number): void {
