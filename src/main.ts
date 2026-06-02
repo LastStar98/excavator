@@ -372,6 +372,10 @@ interface ExcavatorDebugApi {
     velocityAfter: number;
     maxSubmerged: number;
     averageSubmerged: number;
+    displacedVolume: number;
+    surfaceDrop: number;
+    bermRise: number;
+    terrainDelta: number;
     pressure: number;
     blockedActions: ActionName[];
   };
@@ -4744,10 +4748,35 @@ class Simulator {
           .armSubsoilSamples()
           .find((sample) => sample.action === "stick" && sample.key === "stick-0.8");
         const buryPoint = stickSample?.point ?? this.excavator.bucketPocketWorld();
+        const currentAngles = { ...this.angles };
+        this.excavator.applyAngles(previousAngles);
+        const previousStickSample = this.excavator
+          .armSubsoilSamples()
+          .find((sample) => sample.action === "stick" && sample.key === "stick-0.8");
+        this.excavator.applyAngles(currentAngles);
+        const sweepMotion = buryPoint.clone().sub(previousStickSample?.point ?? buryPoint);
+        let sweepSide =
+          Math.hypot(sweepMotion.x, sweepMotion.z) > 0.0001
+            ? new THREE.Vector3(-sweepMotion.z, 0, sweepMotion.x).normalize()
+            : this.excavator.bucketSidewaysWorld().setY(0).normalize();
+        if (sweepSide.lengthSq() < 0.0001) {
+          sweepSide = new THREE.Vector3(0, 0, 1);
+        }
+        const sweepCenter = previousStickSample?.point ? new THREE.Vector3().addVectors(previousStickSample.point, buryPoint).multiplyScalar(0.5) : buryPoint;
         this.raiseTerrainWithWake(buryPoint, 0.58, 0.86);
+        const sampleBerm = () =>
+          Math.max(
+            this.terrain.getHeightAt(sweepCenter.x + sweepSide.x * 0.66, sweepCenter.z + sweepSide.z * 0.66),
+            this.terrain.getHeightAt(sweepCenter.x - sweepSide.x * 0.66, sweepCenter.z - sweepSide.z * 0.66),
+          );
+        const beforeSurface = this.terrain.getHeightAt(sweepCenter.x, sweepCenter.z);
+        const beforeBerm = sampleBerm();
+        const beforeTerrain = this.terrain.terrainVolumeDelta();
         this.collisionCooldown = 0;
         const beforeStick = this.angles.stick;
         const result = this.resolveArmTerrainResistance(previousAngles);
+        const afterSurface = this.terrain.getHeightAt(sweepCenter.x, sweepCenter.z);
+        const afterBerm = sampleBerm();
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
         this.updateUi(0);
         return {
@@ -4758,6 +4787,10 @@ class Simulator {
           velocityAfter: this.velocities.stick,
           maxSubmerged: result.maxSubmerged,
           averageSubmerged: result.averageSubmerged,
+          displacedVolume: result.displacedVolume,
+          surfaceDrop: beforeSurface - afterSurface,
+          bermRise: afterBerm - afterSurface - (beforeBerm - beforeSurface),
+          terrainDelta: this.terrain.terrainVolumeDelta() - beforeTerrain,
           pressure: this.pressure,
           blockedActions: result.blockedActions,
         };
@@ -7160,6 +7193,7 @@ class Simulator {
     blockedActions: ActionName[];
     maxSubmerged: number;
     averageSubmerged: number;
+    displacedVolume: number;
     drag: number;
   } {
     const currentAngles = { ...this.angles };
@@ -7180,6 +7214,15 @@ class Simulator {
     let bucketIntrusion = 0;
     const affected = new Set<"boom" | "stick" | "bucket">();
     const bucketCuttingMotion = Math.max(0, -this.velocities.bucket) > 0.035 || Math.max(0, -this.velocities.stick) > 0.045;
+    const displacementStrokes: Array<{
+      start: THREE.Vector3;
+      end: THREE.Vector3;
+      sideways: THREE.Vector3;
+      width: number;
+      depth: number;
+      volumeLimit: number;
+      score: number;
+    }> = [];
 
     for (let i = 0; i < currentSamples.length; i += 1) {
       const sample = currentSamples[i];
@@ -7202,6 +7245,29 @@ class Simulator {
       const weighted = Math.pow(submerged, 1.08) * (1 + subsoil * 0.48) * yieldingScale;
       const intrusionLoad = localIntrusion * yieldingScale;
       const motionLoad = (verticalIntrusion + horizontalMotion) * (cuttingBucketContact ? 0.55 : 1);
+      if (motionLoad > 0.006) {
+        const horizontalMotionVector = new THREE.Vector3(motion.x, 0, motion.z);
+        const sideways =
+          horizontalMotionVector.lengthSq() > 0.0001
+            ? new THREE.Vector3(-horizontalMotionVector.z, 0, horizontalMotionVector.x).normalize()
+            : this.excavator.bucketSidewaysWorld().setY(0).normalize();
+        if (sideways.lengthSq() > 0.0001) {
+          const structureScale = isBucket ? (cuttingBucketContact ? 0.28 : 0.54) : 0.74;
+          const sweptLength = Math.max(sample.point.distanceTo(previous.point), sample.radius * 0.45);
+          const width = clamp(sample.radius * (isBucket ? 3.0 : 2.75), 0.42, 0.86);
+          const depth = clamp((submerged * 0.055 + motionLoad * 0.2) * structureScale / (1 + subsoil * 0.18), 0.002, isBucket ? 0.052 : 0.07);
+          const volumeLimit = clamp(width * depth * sweptLength * (0.72 + subsoil * 0.12), 0.004, isBucket ? 0.075 : 0.11);
+          displacementStrokes.push({
+            start: previous.point,
+            end: sample.point,
+            sideways,
+            width,
+            depth,
+            volumeLimit,
+            score: submerged * motionLoad * (isBucket ? 0.75 : 1) * (1 + subsoil * 0.12),
+          });
+        }
+      }
 
       maxSubmerged = Math.max(maxSubmerged, submerged);
       weightedSubmerged += weighted;
@@ -7220,7 +7286,7 @@ class Simulator {
     }
 
     if (contactCount === 0) {
-      return { resisted: false, blockedActions: [], maxSubmerged: 0, averageSubmerged: 0, drag: 1 };
+      return { resisted: false, blockedActions: [], maxSubmerged: 0, averageSubmerged: 0, displacedVolume: 0, drag: 1 };
     }
 
     const averageSubmerged = weightedSubmerged / contactCount;
@@ -7238,14 +7304,22 @@ class Simulator {
 
     const hasSubmergedMotion = submergedMotion > 0.004;
     if (!hasSubmergedMotion) {
-      return { resisted: false, blockedActions: [], maxSubmerged, averageSubmerged, drag: 1 };
+      return { resisted: false, blockedActions: [], maxSubmerged, averageSubmerged, displacedVolume: 0, drag: 1 };
     }
 
     const blockedActions: ActionName[] = [];
+    let displacedVolume = 0;
+    displacementStrokes.sort((a, b) => b.score - a.score);
+    for (const stroke of displacementStrokes.slice(0, 3)) {
+      displacedVolume += this.displaceTerrainWithWake(stroke.start, stroke.end, stroke.sideways, stroke.width, stroke.depth, stroke.volumeLimit);
+    }
 
     this.pressure = Math.max(this.pressure, clamp(0.22 + severity * 0.74, 0, 1));
+    if (displacedVolume > 0) {
+      this.pressure = Math.max(this.pressure, clamp(0.34 + displacedVolume * 1.9, 0, 1));
+    }
 
-    return { resisted: true, blockedActions, maxSubmerged, averageSubmerged, drag };
+    return { resisted: true, blockedActions, maxSubmerged, averageSubmerged, displacedVolume, drag };
   }
 
   private updateSoil(dt: number): void {

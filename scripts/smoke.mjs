@@ -960,6 +960,10 @@ async function main() {
           Math.abs(armSubsoilResistanceValue?.velocityAfter ?? 0) > 0.2 &&
           armSubsoilResistanceValue?.maxSubmerged > 0.22 &&
           armSubsoilResistanceValue?.averageSubmerged > 0.08 &&
+          armSubsoilResistanceValue?.displacedVolume > 0.015 &&
+          armSubsoilResistanceValue?.surfaceDrop > 0.001 &&
+          armSubsoilResistanceValue?.bermRise > 0.001 &&
+          Math.abs(armSubsoilResistanceValue?.terrainDelta ?? 1) < 0.08 &&
           armSubsoilResistanceValue?.pressure > 0.45,
       ],
       [
