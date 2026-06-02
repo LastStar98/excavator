@@ -351,6 +351,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const armWorldObjectPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceArmWorldObjectPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const truckLoadPhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceTruckLoadPhysics()`,
       returnByValue: true,
@@ -498,6 +503,7 @@ async function main() {
     const truckCollisionValue = truckCollision.result.value;
     const armTruckCollisionValue = armTruckCollision.result.value;
     const armSubsoilResistanceValue = armSubsoilResistance.result.value;
+    const armWorldObjectPhysicsValue = armWorldObjectPhysics.result.value;
     const truckLoadPhysicsValue = truckLoadPhysics.result.value;
     const terrainMaterialPhysicsValue = terrainMaterialPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
@@ -694,6 +700,19 @@ async function main() {
           armSubsoilResistanceValue?.pressure > 0.45,
       ],
       [
+        "bucket carries world objects by mass and hard objects block",
+        armWorldObjectPhysicsValue?.movableHit &&
+          armWorldObjectPhysicsValue?.movableTravel > 0.025 &&
+          armWorldObjectPhysicsValue?.liftedObject &&
+          armWorldObjectPhysicsValue?.liftHeight > 0.04 &&
+          armWorldObjectPhysicsValue?.carriedMass > 0.1 &&
+          armWorldObjectPhysicsValue?.immovableBlocked &&
+          Math.abs(armWorldObjectPhysicsValue?.velocityAfter ?? 1) < 0.001 &&
+          armWorldObjectPhysicsValue?.penetration > 0.02 &&
+          armWorldObjectPhysicsValue?.collisionCount > 0 &&
+          armWorldObjectPhysicsValue?.pressure > 0.35,
+      ],
+      [
         "loaded truck sags, tilts, and compacts tire ruts",
         truckLoadPhysicsValue?.accepted > 4.5 &&
           truckLoadPhysicsValue?.loadRatio > 0.6 &&
@@ -834,6 +853,7 @@ async function main() {
           truckCollision: truckCollisionValue,
           armTruckCollision: armTruckCollisionValue,
           armSubsoilResistance: armSubsoilResistanceValue,
+          armWorldObjectPhysics: armWorldObjectPhysicsValue,
           truckLoadPhysics: truckLoadPhysicsValue,
           terrainMaterialPhysics: terrainMaterialPhysicsValue,
           roughTrack: roughTrackValue,

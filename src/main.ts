@@ -77,6 +77,7 @@ interface WorldCollider {
   friction: number;
   groundOffset: number;
   velocity: THREE.Vector3;
+  sleeping: boolean;
   initialPosition: THREE.Vector3;
   initialQuaternion: THREE.Quaternion;
   initialScale: THREE.Vector3;
@@ -211,6 +212,21 @@ interface ExcavatorDebugApi {
     pressure: number;
     blockedActions: ActionName[];
   };
+  forceArmWorldObjectPhysics: () => {
+    movableHit: boolean;
+    movableTravel: number;
+    liftedObject: boolean;
+    liftHeight: number;
+    carriedMass: number;
+    immovableBlocked: boolean;
+    beforeStick: number;
+    afterStick: number;
+    velocityAfter: number;
+    pressure: number;
+    collisionCount: number;
+    penetration: number;
+    blockedActions: ActionName[];
+  };
   forceTruckLoadPhysics: () => {
     accepted: number;
     loadRatio: number;
@@ -331,8 +347,10 @@ const TRACK_MAX_SPEED = 1.25;
 const SOIL_REPOSE_TAN = Math.tan(THREE.MathUtils.degToRad(34));
 const SOIL_BEDROCK_FLOOR = -3.2;
 const DIG_SITE = new THREE.Vector3(-4.1, 0, 2.3);
-const TRUCK_CENTER = new THREE.Vector3(4.8, 0, -2.4);
+const TRUCK_CENTER = new THREE.Vector3(7.2, 0, -3.8);
 const WORKER_ZONE = new THREE.Vector3(2.0, 0, 2.15);
+const BUCKET_OBJECT_LIFT_LIMIT = 5.8;
+const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 
 const ANGLE_LIMITS: Record<ActionName, Limits> = {
   swing: { min: -Infinity, max: Infinity },
@@ -2241,6 +2259,8 @@ class Simulator {
   private readonly canvasPointers = new Map<number, { x: number; y: number }>();
   private readonly soilParticles: SoilParticle[] = [];
   private readonly worldColliders: WorldCollider[] = [];
+  private readonly carriedWorldColliders = new Map<WorldCollider, THREE.Vector3>();
+  private readonly carriedWorldPreviousPositions = new Map<WorldCollider, THREE.Vector3>();
   private readonly looseSoilMats = [
     makeMat(0x6d4c2c, 0.95, 0.02),
     makeMat(0x855f36, 0.94, 0.02),
@@ -2411,6 +2431,7 @@ class Simulator {
       friction: options.friction ?? 0.82,
       groundOffset: options.groundOffset ?? radius * 0.45,
       velocity: new THREE.Vector3(),
+      sleeping: !(options.immovable ?? false),
       initialPosition: mesh.position.clone(),
       initialQuaternion: mesh.quaternion.clone(),
       initialScale: mesh.scale.clone(),
@@ -2420,11 +2441,14 @@ class Simulator {
   }
 
   private resetWorldColliders(): void {
+    this.carriedWorldColliders.clear();
+    this.carriedWorldPreviousPositions.clear();
     for (const collider of this.worldColliders) {
       collider.mesh.position.copy(collider.initialPosition);
       collider.mesh.quaternion.copy(collider.initialQuaternion);
       collider.mesh.scale.copy(collider.initialScale);
       collider.velocity.set(0, 0, 0);
+      collider.sleeping = !collider.immovable;
       if (!collider.immovable) {
         const ground = this.terrain.getHeightAt(collider.mesh.position.x, collider.mesh.position.z);
         collider.mesh.position.y = ground + collider.groundOffset;
@@ -3221,6 +3245,96 @@ class Simulator {
           blockedActions: result.blockedActions,
         };
       },
+      forceArmWorldObjectPhysics: () => {
+        const debris =
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "cone") ??
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "rock") ??
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "clod");
+        const hard = this.worldColliders.find((collider) => collider.immovable && collider.kind === "boulder");
+        const forward = new THREE.Vector3(1, 0, 0);
+        let movableHit = false;
+        let movableTravel = 0;
+        let liftedObject = false;
+        let liftHeight = 0;
+        let carriedMass = 0;
+        let immovableBlocked = false;
+        let beforeStick = 0;
+        let afterStick = 0;
+        let velocityAfter = 0;
+        let penetration = 0;
+        let blockedActions: ActionName[] = [];
+
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.group.rotation.set(0, 0, 0);
+        if (debris) {
+          const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.42, stick: -1.46, bucket: -2.36 };
+          Object.assign(this.angles, previousAngles);
+          this.velocities.stick = -0.28;
+          this.velocities.bucket = -0.72;
+          this.excavator.applyAngles(this.angles);
+          const debrisStart = this.excavator.bucketGroup.localToWorld(new THREE.Vector3(-0.56, -0.3, 0));
+          debris.mesh.position.copy(debrisStart);
+          debris.velocity.set(0, 0, 0);
+          debris.sleeping = false;
+          this.collisionCooldown = 0;
+          const result = this.resolveArmWorldObjectCollisions(previousAngles);
+          const carriedAfterHit = this.carriedWorldColliders.has(debris);
+          const beforeLiftY = debris.mesh.position.y;
+          Object.assign(this.angles, { boom: this.angles.boom + 0.18, stick: this.angles.stick + 0.04 });
+          this.velocities.boom = 0.38;
+          this.excavator.applyAngles(this.angles);
+          this.updateCarriedWorldObjects(0.32);
+          movableHit = result.movableHit || carriedAfterHit;
+          movableTravel = debris.mesh.position.distanceTo(debrisStart);
+          liftHeight = debris.mesh.position.y - beforeLiftY;
+          carriedMass = carriedAfterHit ? this.carriedWorldObjectMass() : 0;
+          liftedObject = carriedAfterHit && carriedMass > 0 && liftHeight > 0.02;
+          penetration = Math.max(penetration, result.penetration);
+          this.releaseCarriedWorldObjects();
+        }
+
+        if (hard) {
+          const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.24, stick: -1.36, bucket: -2.12 };
+          Object.assign(this.angles, previousAngles, { stick: -1.82 });
+          this.velocities.stick = -0.54;
+          this.velocities.bucket = -0.08;
+          this.excavator.applyAngles(this.angles);
+          const stickSample = this.excavator.armCollisionSamples().find((sample) => sample.action === "stick") ?? {
+            action: "stick" as const,
+            point: this.excavator.bucketPocketWorld(),
+            radius: 0.2,
+          };
+          hard.mesh.position.copy(stickSample.point.clone().add(new THREE.Vector3(0.05, 0, 0)));
+          hard.velocity.set(0, 0, 0);
+          this.collisionCooldown = 0;
+          beforeStick = this.angles.stick;
+          const result = this.resolveArmWorldObjectCollisions(previousAngles);
+          afterStick = this.angles.stick;
+          velocityAfter = this.velocities.stick;
+          blockedActions = result.blockedActions;
+          penetration = Math.max(penetration, result.penetration);
+          immovableBlocked = result.immovableBlocked && blockedActions.includes("stick") && afterStick > beforeStick + 0.12;
+        }
+
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.updateExcavatorSupport(0.2, forward);
+        this.updateUi(0);
+        return {
+          movableHit,
+          movableTravel,
+          liftedObject,
+          liftHeight,
+          carriedMass,
+          immovableBlocked,
+          beforeStick,
+          afterStick,
+          velocityAfter,
+          pressure: this.pressure,
+          collisionCount: this.collisionCount,
+          penetration,
+          blockedActions,
+        };
+      },
       forceTruckLoadPhysics: () => {
         this.truck.reset(this.terrain);
         this.truckLoad = 0;
@@ -3484,8 +3598,11 @@ class Simulator {
     this.updateLooseWorldObjects(dt);
     const anglesBeforeArmMotion = this.updateAngles(dt);
     this.excavator.applyAngles(this.angles);
+    this.updateCarriedWorldObjects(dt);
     this.resolveArmTruckCollisions(anglesBeforeArmMotion);
+    this.resolveArmWorldObjectCollisions(anglesBeforeArmMotion);
     this.resolveArmTerrainResistance(anglesBeforeArmMotion);
+    this.updateCarriedWorldObjects(dt);
     this.updateSoil(dt);
     this.updateSoilParticles(dt);
     this.updateFineGrains(dt);
@@ -3564,7 +3681,7 @@ class Simulator {
       targetPressure = Math.max(targetPressure, Math.abs(this.targetActions[action]));
     }
 
-    const loadFactor = this.bucketLoad / BUCKET_CAPACITY;
+    const loadFactor = clamp(this.bucketLoad / BUCKET_CAPACITY + (this.carriedWorldObjectMass() / BUCKET_OBJECT_LIFT_LIMIT) * 0.38, 0, 1.4);
     this.pressure = smoothTo(this.pressure, clamp(targetPressure * (0.55 + loadFactor * 0.45), 0, 1), 3.8, dt);
     if (targetPressure < 0.03) {
       this.idleSeconds += dt;
@@ -3608,6 +3725,9 @@ class Simulator {
     }
 
     for (const collider of this.worldColliders) {
+      if (this.carriedWorldColliders.has(collider)) {
+        continue;
+      }
       const obstacleHit = this.resolveColliderHit(collider, this.excavator.group.position, 1.62);
       if (!obstacleHit) {
         continue;
@@ -3630,9 +3750,12 @@ class Simulator {
         collider.mesh.position.addScaledVector(movableNormal, -Math.min(obstacleHit.penetration * 0.7, 0.16));
         collider.velocity.addScaledVector(movableNormal, -impulse);
         collider.velocity.y = Math.max(collider.velocity.y, 0.18 * severity);
-        const trackDrag = clamp(1 - severity * clamp(collider.mass * 0.08, 0.03, 0.36), 0.58, 0.98);
-        this.leftTrackVelocity *= trackDrag;
-        this.rightTrackVelocity *= trackDrag;
+        collider.sleeping = false;
+        if (collider.mass > BUCKET_OBJECT_LIFT_LIMIT) {
+          const trackDrag = clamp(1 - severity * clamp((collider.mass - BUCKET_OBJECT_LIFT_LIMIT) * 0.03, 0.02, 0.24), 0.72, 0.98);
+          this.leftTrackVelocity *= trackDrag;
+          this.rightTrackVelocity *= trackDrag;
+        }
         this.pressure = Math.max(this.pressure, clamp(0.1 + severity * 0.36 + collider.mass * 0.018, 0, 0.62));
         if (collider.crushable && severity > 0.32) {
           collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.04, 0.08));
@@ -3691,13 +3814,126 @@ class Simulator {
     };
   }
 
+  private carriedWorldObjectMass(): number {
+    let mass = 0;
+    for (const collider of this.carriedWorldColliders.keys()) {
+      mass += collider.mass;
+    }
+    return mass;
+  }
+
+  private bucketCarryLocalPoint(collider: WorldCollider): THREE.Vector3 | null {
+    const local = this.excavator.bucketGroup.worldToLocal(collider.mesh.position.clone());
+    const radius = Math.max(0.08, collider.radius);
+    const withinBucket =
+      local.x >= -BUCKET_LEN - 0.22 - radius &&
+      local.x <= 0.12 + radius &&
+      local.y >= -0.74 - radius &&
+      local.y <= 0.16 + radius &&
+      Math.abs(local.z) <= 0.58 + radius;
+    const pocketDx = local.x + 0.46;
+    const pocketDy = local.y + 0.28;
+    const pocketDz = local.z;
+    const nearPocket = pocketDx * pocketDx + pocketDy * pocketDy + pocketDz * pocketDz < (0.42 + radius) * (0.42 + radius);
+    if (!withinBucket && !nearPocket) {
+      return null;
+    }
+
+    return new THREE.Vector3(
+      clamp(local.x, -0.92, -0.2),
+      clamp(local.y, -0.46, -0.1),
+      clamp(local.z, -0.44, 0.44),
+    );
+  }
+
+  private canCarryWorldCollider(collider: WorldCollider): boolean {
+    if (collider.immovable || this.carriedWorldColliders.has(collider)) {
+      return false;
+    }
+    return this.carriedWorldObjectMass() + collider.mass <= BUCKET_OBJECT_LIFT_LIMIT;
+  }
+
+  private tryCarryWorldCollider(collider: WorldCollider): boolean {
+    if (!this.canCarryWorldCollider(collider)) {
+      return false;
+    }
+
+    const local = this.bucketCarryLocalPoint(collider);
+    if (!local) {
+      return false;
+    }
+
+    const world = this.excavator.bucketGroup.localToWorld(local.clone());
+    this.carriedWorldColliders.set(collider, local);
+    this.carriedWorldPreviousPositions.set(collider, world.clone());
+    collider.mesh.position.copy(world);
+    collider.velocity.set(0, 0, 0);
+    collider.sleeping = false;
+    this.pressure = Math.max(this.pressure, clamp(0.18 + collider.mass / BUCKET_OBJECT_LIFT_LIMIT * 0.34, 0, 0.62));
+    return true;
+  }
+
+  private updateCarriedWorldObjects(dt: number): void {
+    if (this.carriedWorldColliders.size === 0) {
+      return;
+    }
+
+    for (const [collider, local] of this.carriedWorldColliders) {
+      const previous = this.carriedWorldPreviousPositions.get(collider) ?? collider.mesh.position.clone();
+      const next = this.excavator.bucketGroup.localToWorld(local.clone());
+      collider.velocity.copy(next).sub(previous).divideScalar(Math.max(dt, 0.001));
+      collider.mesh.position.copy(next);
+      collider.mesh.rotation.x += collider.velocity.z * dt * 0.65;
+      collider.mesh.rotation.z -= collider.velocity.x * dt * 0.65;
+      this.carriedWorldPreviousPositions.set(collider, next.clone());
+    }
+
+    this.pressure = Math.max(
+      this.pressure,
+      clamp(0.1 + this.carriedWorldObjectMass() / BUCKET_OBJECT_LIFT_LIMIT * 0.34, 0, 0.58),
+    );
+  }
+
+  private releaseCarriedWorldCollider(collider: WorldCollider, extraVelocity?: THREE.Vector3): void {
+    const carriedVelocity = collider.velocity.clone();
+    this.carriedWorldColliders.delete(collider);
+    this.carriedWorldPreviousPositions.delete(collider);
+    collider.velocity.copy(carriedVelocity);
+    if (extraVelocity) {
+      collider.velocity.add(extraVelocity);
+    }
+    collider.sleeping = false;
+  }
+
+  private releaseCarriedWorldObjects(extraVelocity?: THREE.Vector3): void {
+    for (const collider of Array.from(this.carriedWorldColliders.keys())) {
+      this.releaseCarriedWorldCollider(collider, extraVelocity);
+    }
+  }
+
   private updateLooseWorldObjects(dt: number): void {
+    const bucket = this.excavator.bucketPocketWorld();
+    const machine = this.excavator.group.position;
     for (const collider of this.worldColliders) {
-      if (collider.immovable) {
+      if (collider.immovable || this.carriedWorldColliders.has(collider)) {
         continue;
       }
 
       const pos = collider.mesh.position;
+      const dxMachine = pos.x - machine.x;
+      const dzMachine = pos.z - machine.z;
+      const dxBucket = pos.x - bucket.x;
+      const dyBucket = pos.y - bucket.y;
+      const dzBucket = pos.z - bucket.z;
+      const speedSq = collider.velocity.lengthSq();
+      const nearActiveMachine =
+        dxMachine * dxMachine + dzMachine * dzMachine < 38 ||
+        dxBucket * dxBucket + dyBucket * dyBucket + dzBucket * dzBucket < 10;
+      if (collider.sleeping && speedSq < 0.0004 && !nearActiveMachine) {
+        continue;
+      }
+      collider.sleeping = false;
+
       const sample = Math.max(0.24, collider.radius * 2.2);
       const hx = this.terrain.getHeightAt(pos.x + sample, pos.z) - this.terrain.getHeightAt(pos.x - sample, pos.z);
       const hz = this.terrain.getHeightAt(pos.x, pos.z + sample) - this.terrain.getHeightAt(pos.x, pos.z - sample);
@@ -3729,6 +3965,10 @@ class Simulator {
       if (horizontalSpeed > 0.01) {
         collider.mesh.rotation.x += collider.velocity.z * dt * 1.7;
         collider.mesh.rotation.z -= collider.velocity.x * dt * 1.7;
+      }
+      if (pos.y <= ground + 0.001 && horizontalSpeed < 0.008 && Math.abs(collider.velocity.y) < 0.008) {
+        collider.velocity.set(0, 0, 0);
+        collider.sleeping = true;
       }
     }
   }
@@ -3891,6 +4131,189 @@ class Simulator {
     }
 
     return { collided: true, blockedActions, penetration: maxPenetration };
+  }
+
+  private resolveArmWorldObjectCollisions(previousAngles: ExcavatorAngles): {
+    collided: boolean;
+    movableHit: boolean;
+    immovableBlocked: boolean;
+    blockedActions: ActionName[];
+    penetration: number;
+  } {
+    const activeMotion =
+      Math.abs(this.velocities.swing) +
+        Math.abs(this.velocities.boom) +
+        Math.abs(this.velocities.stick) +
+        Math.abs(this.velocities.bucket) +
+        Math.abs(this.leftTrackVelocity) +
+        Math.abs(this.rightTrackVelocity) >
+      0.012;
+    if (!activeMotion) {
+      return { collided: false, movableHit: false, immovableBlocked: false, blockedActions: [], penetration: 0 };
+    }
+
+    const currentAngles = { ...this.angles };
+    const currentSamples = this.excavator.armCollisionSamples();
+    this.excavator.applyAngles(previousAngles);
+    const previousSamples = this.excavator.armCollisionSamples();
+    this.excavator.applyAngles(currentAngles);
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < currentSamples.length; i += 1) {
+      const current = currentSamples[i];
+      const previous = previousSamples[i] ?? current;
+      const pad = Math.max(current.radius, previous.radius) + ARM_WORLD_BROADPHASE_PADDING;
+      minX = Math.min(minX, current.point.x - pad, previous.point.x - pad);
+      minY = Math.min(minY, current.point.y - pad, previous.point.y - pad);
+      minZ = Math.min(minZ, current.point.z - pad, previous.point.z - pad);
+      maxX = Math.max(maxX, current.point.x + pad, previous.point.x + pad);
+      maxY = Math.max(maxY, current.point.y + pad, previous.point.y + pad);
+      maxZ = Math.max(maxZ, current.point.z + pad, previous.point.z + pad);
+    }
+
+    let maxPenetration = 0;
+    let maxSeverity = 0;
+    let movableHit = false;
+    let immovableHit = false;
+    const affectedImmovable = new Set<"boom" | "stick" | "bucket">();
+
+    for (const collider of this.worldColliders) {
+      if (this.carriedWorldColliders.has(collider)) {
+        continue;
+      }
+
+      const obstacle = collider.mesh.position;
+      const outerRadius = collider.radius + 0.08;
+      if (
+        obstacle.x + outerRadius < minX ||
+        obstacle.x - outerRadius > maxX ||
+        obstacle.y + outerRadius < minY ||
+        obstacle.y - outerRadius > maxY ||
+        obstacle.z + outerRadius < minZ ||
+        obstacle.z - outerRadius > maxZ
+      ) {
+        continue;
+      }
+
+      for (let i = 0; i < currentSamples.length; i += 1) {
+        const sample = currentSamples[i];
+        const previous = previousSamples[i] ?? sample;
+        const dx = sample.point.x - obstacle.x;
+        const dy = sample.point.y - obstacle.y;
+        const dz = sample.point.z - obstacle.z;
+        const combinedRadius = sample.radius + collider.radius;
+        const distanceSq = dx * dx + dy * dy + dz * dz;
+        if (distanceSq >= combinedRadius * combinedRadius) {
+          continue;
+        }
+
+        const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+        const normalX = distanceSq < 0.000001 ? 1 : dx / distance;
+        const normalY = distanceSq < 0.000001 ? 0 : dy / distance;
+        const normalZ = distanceSq < 0.000001 ? 0 : dz / distance;
+        const penetration = combinedRadius - distance;
+        const motionX = sample.point.x - previous.point.x;
+        const motionY = sample.point.y - previous.point.y;
+        const motionZ = sample.point.z - previous.point.z;
+        const approach = Math.max(0, -(motionX * normalX + motionY * normalY + motionZ * normalZ));
+        const severity = clamp(penetration * 2.8 + approach * 5.5 + (collider.immovable ? 0.18 : 0), 0, 1);
+        maxPenetration = Math.max(maxPenetration, penetration);
+        maxSeverity = Math.max(maxSeverity, severity);
+
+        if (collider.immovable) {
+          immovableHit = true;
+          affectedImmovable.add(sample.action);
+          continue;
+        }
+
+        movableHit = true;
+        if (sample.action === "bucket" && this.tryCarryWorldCollider(collider)) {
+          break;
+        }
+
+        let pushX = normalX;
+        let pushZ = normalZ;
+        let pushLenSq = pushX * pushX + pushZ * pushZ;
+        if (pushLenSq < 0.0001) {
+          pushX = -motionX;
+          pushZ = -motionZ;
+          pushLenSq = pushX * pushX + pushZ * pushZ;
+        }
+        if (pushLenSq < 0.0001) {
+          pushX = 1;
+          pushZ = 0;
+          pushLenSq = 1;
+        }
+        const pushInvLen = 1 / Math.sqrt(pushLenSq);
+        pushX *= pushInvLen;
+        pushZ *= pushInvLen;
+
+        const impulse = clamp((penetration * 3.2 + approach * 6.0 + 0.06) / Math.max(collider.mass, 0.12), 0.04, 1.9);
+        const correction = Math.min(penetration * 0.85, 0.2);
+        collider.mesh.position.x -= pushX * correction;
+        collider.mesh.position.z -= pushZ * correction;
+        collider.velocity.x -= pushX * impulse;
+        collider.velocity.z -= pushZ * impulse;
+        collider.velocity.y = Math.max(collider.velocity.y, 0.06 + severity * 0.2);
+        collider.sleeping = false;
+        this.pressure = Math.max(this.pressure, clamp(0.08 + severity * 0.26 + collider.mass * 0.01, 0, 0.55));
+        if (collider.crushable && severity > 0.34) {
+          collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.035, 0.07));
+          this.terrain.raiseAt(collider.mesh.position, Math.max(0.14, collider.radius * 1.4), collider.radius * 0.008 * severity, 0);
+        }
+      }
+    }
+
+    const blockedActions: ActionName[] = [];
+    if (immovableHit) {
+      const chain = new Set<ActionName>(["swing"]);
+      if (affectedImmovable.has("boom")) {
+        chain.add("boom");
+      }
+      if (affectedImmovable.has("stick")) {
+        chain.add("boom");
+        chain.add("stick");
+      }
+      if (affectedImmovable.has("bucket")) {
+        chain.add("boom");
+        chain.add("stick");
+        chain.add("bucket");
+      }
+
+      for (const action of chain) {
+        const delta = this.angles[action] - previousAngles[action];
+        if (Math.abs(delta) < 0.00001) {
+          continue;
+        }
+        this.angles[action] = previousAngles[action];
+        this.velocities[action] = 0;
+        blockedActions.push(action);
+      }
+      if (blockedActions.length > 0) {
+        this.excavator.applyAngles(this.angles);
+      }
+    }
+
+    if (maxSeverity > 0.08) {
+      this.pressure = Math.max(this.pressure, clamp(0.32 + maxSeverity * 0.58, 0, 1));
+      if (this.collisionCooldown <= 0 && (blockedActions.length > 0 || movableHit || maxPenetration > 0.025)) {
+        this.collisionCount += 1;
+        this.collisionCooldown = 0.34;
+      }
+    }
+
+    return {
+      collided: movableHit || immovableHit,
+      movableHit,
+      immovableBlocked: blockedActions.length > 0,
+      blockedActions,
+      penetration: maxPenetration,
+    };
   }
 
   private resolveArmTerrainResistance(previousAngles: ExcavatorAngles): {
@@ -4163,6 +4586,13 @@ class Simulator {
 
     const openFactor = clamp((this.angles.bucket + 0.58) / (ANGLE_LIMITS.bucket.max + 0.58), 0, 1);
     const dumpIntent = openFactor > 0.02 || this.velocities.bucket > 0.12;
+    if ((openFactor > 0.08 || this.velocities.bucket > 0.18) && this.carriedWorldColliders.size > 0) {
+      const releaseVelocity = forward
+        .clone()
+        .multiplyScalar(0.28 + openFactor * 0.86)
+        .add(new THREE.Vector3(0, -0.3 - openFactor * 0.72, 0));
+      this.releaseCarriedWorldObjects(releaseVelocity);
+    }
     if (dumpIntent && this.bucketLoad > 0.002) {
       const dumpRate = (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95) * dt;
       const dumped = Math.min(this.bucketLoad, dumpRate);
