@@ -494,13 +494,13 @@ const SOIL_BEDROCK_FLOOR = -5.2;
 const DIG_SITE = new THREE.Vector3(-4.1, 0, 2.3);
 const TRUCK_CENTER = new THREE.Vector3(7.2, 0, -3.8);
 const WORKER_ZONE = new THREE.Vector3(2.0, 0, 2.15);
-const BUCKET_OBJECT_LIFT_LIMIT = 2000;
+const BUCKET_OBJECT_LIFT_LIMIT = 4000;
 const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 const WORLD_COLLIDER_GRID_SIZE = 2.4;
-const SOIL_PARTICLE_SOFT_LIMIT = 42;
-const SOIL_PARTICLE_HARD_LIMIT = 56;
-const SOIL_PARTICLE_COLLISION_QUERY_PADDING = 0.42;
-const FINE_GRAIN_COLLISION_QUERY_PADDING = 0.28;
+const SOIL_PARTICLE_SOFT_LIMIT = 22;
+const SOIL_PARTICLE_HARD_LIMIT = 30;
+const SOIL_PARTICLE_COLLISION_QUERY_PADDING = 0.28;
+const FINE_GRAIN_COLLISION_QUERY_PADDING = 0.18;
 
 const ANGLE_LIMITS: Record<ActionName, Limits> = {
   swing: { min: -Infinity, max: Infinity },
@@ -2423,8 +2423,8 @@ class Simulator {
   ];
   private readonly pooledSoilGeometry = new THREE.DodecahedronGeometry(1, 0);
   private readonly soilParticlePool: THREE.Mesh[] = [];
-  private readonly soilParticlePoolLimit = 72;
-  private readonly fineGrainMax = 120;
+  private readonly soilParticlePoolLimit = 40;
+  private readonly fineGrainMax = 72;
   private readonly fineGrainPositions = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainVelocities = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainLife = new Float32Array(this.fineGrainMax);
@@ -5186,13 +5186,14 @@ class Simulator {
   private bucketCarryLocalPoint(collider: WorldCollider): THREE.Vector3 | null {
     const local = this.excavator.bucketGroup.worldToLocal(collider.mesh.position.clone());
     const radius = Math.max(0.08, collider.radius);
-    const captureRadius = radius + 0.22;
+    const heavyReach = collider.kind === "boulder" || collider.kind === "fence" ? 0.58 : 0.36;
+    const captureRadius = radius + heavyReach;
     const withinBucket =
-      local.x >= -BUCKET_LEN - 0.38 - captureRadius &&
-      local.x <= 0.24 + captureRadius &&
-      local.y >= -0.88 - captureRadius &&
-      local.y <= 0.32 + captureRadius &&
-      Math.abs(local.z) <= 0.7 + captureRadius;
+      local.x >= -BUCKET_LEN - 0.52 - captureRadius &&
+      local.x <= 0.34 + captureRadius &&
+      local.y >= -1.02 - captureRadius &&
+      local.y <= 0.44 + captureRadius &&
+      Math.abs(local.z) <= 0.82 + captureRadius;
     const pocketDx = local.x + 0.46;
     const pocketDy = local.y + 0.28;
     const pocketDz = local.z;
@@ -5215,9 +5216,9 @@ class Simulator {
     }
 
     return new THREE.Vector3(
-      clamp(local.x, -1.04, -0.14),
-      clamp(local.y, -0.58, -0.04),
-      clamp(local.z, -0.52, 0.52),
+      clamp(local.x, -1.08, -0.1),
+      clamp(local.y, -0.64, -0.02),
+      clamp(local.z, -0.58, 0.58),
     );
   }
 
@@ -5225,7 +5226,7 @@ class Simulator {
     if (this.carriedWorldColliders.has(collider)) {
       return false;
     }
-    return this.carriedWorldObjectMass() + collider.mass <= BUCKET_OBJECT_LIFT_LIMIT;
+    return this.carriedWorldObjectMass() + Math.max(0, collider.mass) <= BUCKET_OBJECT_LIFT_LIMIT;
   }
 
   private tryCarryWorldCollider(collider: WorldCollider): boolean {
@@ -5301,7 +5302,8 @@ class Simulator {
       return true;
     }
 
-    for (const other of this.worldColliders) {
+    const nearbyObjects = [...this.nearbyWorldColliders(collider.mesh.position, collider.radius + 0.68)];
+    for (const other of nearbyObjects) {
       if (other === collider || this.carriedWorldColliders.has(other)) {
         continue;
       }
@@ -5316,11 +5318,12 @@ class Simulator {
       const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
       const normal = delta.divideScalar(distance);
       const penetration = combined - distance;
-      const invMassA = 1 / Math.max(collider.mass, 0.05);
+      const invMassA = 0;
       const invMassB = other.immovable ? 0 : 1 / Math.max(other.mass, 0.05);
       const totalInvMass = invMassA + invMassB;
       if (totalInvMass <= 0) {
-        continue;
+        this.releaseCarriedWorldCollider(collider);
+        return true;
       }
 
       const correction = Math.min(penetration * 0.86, 0.32);
@@ -5345,13 +5348,12 @@ class Simulator {
 
       other.sleeping = false;
       this.worldColliderGridDirty = true;
-      this.releaseCarriedWorldCollider(collider);
       this.pressure = Math.max(this.pressure, clamp(0.22 + penetration * 1.35 + Math.min(collider.mass, other.mass) * 0.006, 0, 0.72));
       if (this.collisionCooldown <= 0 && penetration > 0.018) {
         this.collisionCount += 1;
         this.collisionCooldown = 0.34;
       }
-      return true;
+      return false;
     }
 
     return false;
@@ -5391,14 +5393,13 @@ class Simulator {
       const dyBucket = pos.y - bucket.y;
       const dzBucket = pos.z - bucket.z;
       const speedSq = collider.velocity.lengthSq();
-      const nearActiveMachine =
-        dxMachine * dxMachine + dzMachine * dzMachine < 38 ||
-        dxBucket * dxBucket + dyBucket * dyBucket + dzBucket * dzBucket < 10;
-      if (collider.sleeping && speedSq < 0.0004 && !nearActiveMachine) {
+      const bucketWakeRadius = collider.radius + 1.28;
+      const nearActiveBucket = dxBucket * dxBucket + dyBucket * dyBucket + dzBucket * dzBucket < bucketWakeRadius * bucketWakeRadius;
+      const nearCrawlerBody = dxMachine * dxMachine + dzMachine * dzMachine < 5.8;
+      if (collider.sleeping && speedSq < 0.0004 && !nearActiveBucket && !nearCrawlerBody) {
         continue;
       }
       collider.sleeping = false;
-      activeObjectMoved = true;
 
       const sample = Math.max(0.24, collider.radius * 2.2);
       const hx = this.terrain.getHeightAt(pos.x + sample, pos.z) - this.terrain.getHeightAt(pos.x - sample, pos.z);
@@ -5757,7 +5758,10 @@ class Simulator {
     let immovableHit = false;
     const affectedImmovable = new Set<"boom" | "stick" | "bucket">();
 
-    for (const collider of this.worldColliders) {
+    const broadphaseCenter = new THREE.Vector3((minX + maxX) * 0.5, 0, (minZ + maxZ) * 0.5);
+    const broadphaseRadius = Math.hypot(maxX - minX, maxZ - minZ) * 0.5 + ARM_WORLD_BROADPHASE_PADDING;
+    const candidates = [...this.nearbyWorldColliders(broadphaseCenter, broadphaseRadius)];
+    for (const collider of candidates) {
       if (this.carriedWorldColliders.has(collider)) {
         continue;
       }
@@ -6125,7 +6129,7 @@ class Simulator {
     if (volume <= 0) {
       return;
     }
-    const count = clamp(Math.ceil(volume * 10), 1, 4);
+    const count = clamp(Math.ceil(volume * 7), 1, 3);
     const perParticle = volume / count;
     for (let i = 0; i < count; i += 1) {
       if (this.soilParticles.length > SOIL_PARTICLE_HARD_LIMIT || (this.soilParticles.length > SOIL_PARTICLE_SOFT_LIMIT && i % 2 === 0)) {
@@ -6158,7 +6162,7 @@ class Simulator {
     if (volume <= 0) {
       return;
     }
-    const count = clamp(Math.ceil(volume * 8), 1, 4);
+    const count = clamp(Math.ceil(volume * 6), 1, 3);
     const perParticle = volume / count;
     const flowDirection =
       bucketForward.lengthSq() > 0.0001 ? bucketForward.clone().normalize() : new THREE.Vector3(0, -1, 0);
@@ -6225,7 +6229,7 @@ class Simulator {
       return;
     }
 
-    const count = clamp(Math.ceil(volume * 18 * burst), 2, 8);
+    const count = clamp(Math.ceil(volume * 12 * burst), 1, 5);
     const perGrain = volume / count;
     const baseDirection = direction.clone();
     if (baseDirection.lengthSq() < 0.0001) {
@@ -6531,11 +6535,8 @@ class Simulator {
     let collided = false;
 
     if (!this.truck.containsWorldPoint(pos)) {
-      for (let pass = 0; pass < 3; pass += 1) {
-        const truckHit = this.truck.resolveSolidCollision(pos, radius);
-        if (!truckHit) {
-          break;
-        }
+      const truckHit = this.truck.resolveSolidCollision(pos, radius);
+      if (truckHit) {
         pos.addScaledVector(truckHit.normal, truckHit.penetration + 0.004);
         const normalSpeed = particle.velocity.dot(truckHit.normal);
         const tangent = particle.velocity.clone().addScaledVector(truckHit.normal, -normalSpeed);

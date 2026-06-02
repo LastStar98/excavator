@@ -901,11 +901,11 @@ async function main() {
       [
         "soil and contact physics stay responsive without resistance drag",
         lagFreeSoilCycleValue?.terrainDrag === 1 &&
-          lagFreeSoilCycleValue?.particleCount <= 88 &&
-          lagFreeSoilCycleValue?.fineGrainCount <= 180 &&
+          lagFreeSoilCycleValue?.particleCount <= 40 &&
+          lagFreeSoilCycleValue?.fineGrainCount <= 80 &&
           lagFreeSoilCycleValue?.nearbyCandidates < lagFreeSoilCycleValue?.worldColliderCount * 0.45 &&
-          lagFreeSoilCycleValue?.averageStepMs < 16 &&
-          lagFreeSoilCycleValue?.maxStepMs < 80 &&
+          lagFreeSoilCycleValue?.averageStepMs < 8 &&
+          lagFreeSoilCycleValue?.maxStepMs < 40 &&
           lagFreeSoilCycleValue?.bucketLoad > 0.5,
       ],
       [
