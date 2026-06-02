@@ -955,6 +955,10 @@ async function main() {
         worldObjectPhysicsValue?.debrisTravel > 0.035 &&
           worldObjectPhysicsValue?.hardTravel > 0.035 &&
           worldObjectPhysicsValue?.railTravel > 0.035 &&
+          worldObjectPhysicsValue?.trackContactCount >= 2 &&
+          worldObjectPhysicsValue?.cornerContacts >= 1 &&
+          worldObjectPhysicsValue?.movedMass > 6 &&
+          (worldObjectPhysicsValue?.leftImpulse > 0.01 || worldObjectPhysicsValue?.rightImpulse > 0.01) &&
           worldObjectPhysicsValue?.truckPenetrationBefore > worldObjectPhysicsValue?.truckPenetrationAfter &&
           worldObjectPhysicsValue?.truckPenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.pairDistanceAfter > worldObjectPhysicsValue?.pairDistanceBefore &&

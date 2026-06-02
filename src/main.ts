@@ -126,6 +126,20 @@ interface TruckCrawlerContactResult {
   rightBlocked: boolean;
 }
 
+interface CrawlerWorldObjectContactResult {
+  contact: boolean;
+  contactCount: number;
+  trackContactCount: number;
+  cornerContacts: number;
+  centerContact: boolean;
+  maxPenetration: number;
+  minApproachSpeed: number;
+  movedCount: number;
+  movedMass: number;
+  leftImpulse: number;
+  rightImpulse: number;
+}
+
 interface TrackTractionState {
   leftTraction: number;
   rightTraction: number;
@@ -334,6 +348,12 @@ interface ExcavatorDebugApi {
     debrisTravel: number;
     hardTravel: number;
     railTravel: number;
+    trackContactCount: number;
+    cornerContacts: number;
+    movedMass: number;
+    leftImpulse: number;
+    rightImpulse: number;
+    centerContact: boolean;
     truckPenetrationBefore: number;
     truckPenetrationAfter: number;
     pairDistanceBefore: number;
@@ -4130,32 +4150,50 @@ class Simulator {
         let truckPenetrationAfter = 0;
         let pairDistanceBefore = 0;
         let pairDistanceAfter = 0;
+        let trackContactCount = 0;
+        let cornerContacts = 0;
+        let movedMass = 0;
+        let leftImpulse = 0;
+        let rightImpulse = 0;
+        let centerContact = false;
+        const collectObjectContact = (contact: CrawlerWorldObjectContactResult) => {
+          trackContactCount += contact.trackContactCount;
+          cornerContacts += contact.cornerContacts;
+          movedMass += contact.movedMass;
+          leftImpulse += contact.leftImpulse;
+          rightImpulse += contact.rightImpulse;
+          centerContact = centerContact || contact.centerContact;
+        };
 
         this.excavator.group.rotation.set(0, 0, 0);
         if (debris) {
-          const debrisStart = new THREE.Vector3(1.54, 0, 1.55);
+          const debrisStart = new THREE.Vector3(1.68, 0, 0.74);
           debrisStart.y = this.terrain.getHeightAt(debrisStart.x, debrisStart.z) + debris.groundOffset;
           debris.mesh.position.copy(debrisStart);
           debris.velocity.set(0, 0, 0);
-          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 1.55), 1.55);
+          debris.sleeping = false;
+          this.worldColliderGridDirty = true;
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
           this.leftTrackVelocity = TRACK_MAX_SPEED;
           this.rightTrackVelocity = TRACK_MAX_SPEED;
           this.collisionCooldown = 0;
-          this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward);
+          collectObjectContact(this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward).objectContact);
           this.updateLooseWorldObjects(0.28);
           debrisTravel = debris.mesh.position.distanceTo(debrisStart);
         }
 
         if (hard) {
-          const hardStart = new THREE.Vector3(2.05, 0, -1.45);
+          const hardStart = new THREE.Vector3(1.68, 0, -0.74);
           hardStart.y = this.terrain.getHeightAt(hardStart.x, hardStart.z) + hard.groundOffset;
           hard.mesh.position.copy(hardStart);
           hard.velocity.set(0, 0, 0);
-          this.excavator.group.position.set(0.42, this.terrain.getHeightAt(0.42, -1.45), -1.45);
+          hard.sleeping = false;
+          this.worldColliderGridDirty = true;
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
           this.leftTrackVelocity = TRACK_MAX_SPEED;
           this.rightTrackVelocity = TRACK_MAX_SPEED;
           this.collisionCooldown = 0;
-          this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward);
+          collectObjectContact(this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward).objectContact);
           this.updateLooseWorldObjects(0.28);
           hardTravel = hard.mesh.position.distanceTo(hardStart);
         }
@@ -4169,7 +4207,9 @@ class Simulator {
           this.rightTrackVelocity = TRACK_MAX_SPEED;
           this.collisionCooldown = 0;
           const railBefore = rail.mesh.position.clone();
-          this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, railForward);
+          rail.sleeping = false;
+          this.worldColliderGridDirty = true;
+          collectObjectContact(this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, railForward).objectContact);
           this.updateLooseWorldObjects(0.28);
           railTravel = rail.mesh.position.distanceTo(railBefore);
         }
@@ -4209,6 +4249,12 @@ class Simulator {
           debrisTravel,
           hardTravel,
           railTravel,
+          trackContactCount,
+          cornerContacts,
+          movedMass,
+          leftImpulse,
+          rightImpulse,
+          centerContact,
           truckPenetrationBefore,
           truckPenetrationAfter,
           pairDistanceBefore,
@@ -4846,11 +4892,167 @@ class Simulator {
     };
   }
 
+  private emptyCrawlerWorldObjectContact(): CrawlerWorldObjectContactResult {
+    return {
+      contact: false,
+      contactCount: 0,
+      trackContactCount: 0,
+      cornerContacts: 0,
+      centerContact: false,
+      maxPenetration: 0,
+      minApproachSpeed: 0,
+      movedCount: 0,
+      movedMass: 0,
+      leftImpulse: 0,
+      rightImpulse: 0,
+    };
+  }
+
+  private resolveCrawlerWorldObjectFootprintCollision(
+    forwardSpeed: number,
+    turnRate: number,
+    forward: THREE.Vector3,
+    hasDriveIntent: boolean,
+  ): CrawlerWorldObjectContactResult {
+    const result = this.emptyCrawlerWorldObjectContact();
+    const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    const base = this.excavator.group.position;
+    const samples = [
+      { x: TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.58, track: "left" },
+      { x: TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.58, track: "right" },
+      { x: 0, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.6, track: "left" },
+      { x: 0, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.6, track: "right" },
+      { x: -TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.58, track: "left" },
+      { x: -TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.58, track: "right" },
+    ] as const;
+    const candidates = [...this.nearbyWorldColliders(base, TRACK_LENGTH * 0.62 + TRACK_GAUGE * 0.58 + 1.35)];
+
+    for (const collider of candidates) {
+      if (this.carriedWorldColliders.has(collider)) {
+        continue;
+      }
+
+      let colliderContactCount = 0;
+      let colliderTrackContactCount = 0;
+      let colliderCornerContacts = 0;
+      let colliderMaxPenetration = 0;
+      let colliderMinApproachSpeed = 0;
+      let colliderMaxClosingSpeed = 0;
+      let colliderSeverity = 0;
+      let colliderLeftSeverity = 0;
+      let colliderRightSeverity = 0;
+      const correctionNormal = new THREE.Vector3();
+
+      for (const sample of samples) {
+        const samplePoint = base
+          .clone()
+          .addScaledVector(forward, sample.x)
+          .addScaledVector(side, sample.z);
+        const dx = samplePoint.x - collider.mesh.position.x;
+        const dz = samplePoint.z - collider.mesh.position.z;
+        const distanceSq = dx * dx + dz * dz;
+        const combinedRadius = sample.radius + collider.radius;
+        if (distanceSq >= combinedRadius * combinedRadius) {
+          continue;
+        }
+
+        const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+        const normal =
+          distanceSq < 0.000001 ? forward.clone().multiplyScalar(-1) : new THREE.Vector3(dx / distance, 0, dz / distance);
+        const penetration = combinedRadius - distance;
+        const sampleVelocity = forward
+          .clone()
+          .multiplyScalar(forwardSpeed + turnRate * sample.z)
+          .addScaledVector(side, -turnRate * sample.x);
+        const approachSpeed = sampleVelocity.dot(normal);
+        const closingSpeed = Math.max(0, -approachSpeed);
+        const severity = clamp(penetration * 2.35 + closingSpeed * 0.62 + Math.abs(turnRate) * 0.08, 0, 1);
+
+        colliderContactCount += 1;
+        colliderTrackContactCount += 1;
+        colliderMaxPenetration = Math.max(colliderMaxPenetration, penetration);
+        colliderMinApproachSpeed = Math.min(colliderMinApproachSpeed, approachSpeed);
+        colliderMaxClosingSpeed = Math.max(colliderMaxClosingSpeed, closingSpeed);
+        colliderSeverity = Math.max(colliderSeverity, severity);
+        correctionNormal.addScaledVector(normal, 0.16 + severity + penetration * 1.8);
+        if (Math.abs(sample.x) > TRACK_LENGTH * 0.34) {
+          colliderCornerContacts += 1;
+        }
+        if (sample.track === "left") {
+          colliderLeftSeverity = Math.max(colliderLeftSeverity, severity);
+        } else {
+          colliderRightSeverity = Math.max(colliderRightSeverity, severity);
+        }
+      }
+
+      if (colliderContactCount === 0) {
+        const bodyHit = this.resolveColliderHit(collider, base, 1.62);
+        if (!bodyHit) {
+          continue;
+        }
+        const approachSpeed = forward.clone().multiplyScalar(forwardSpeed).dot(bodyHit.normal);
+        const closingSpeed = Math.max(0, -approachSpeed);
+        const severity = clamp(bodyHit.penetration * 2.1 + closingSpeed * 0.48 + Math.abs(turnRate) * 0.08, 0, 1);
+        colliderContactCount = 1;
+        colliderMaxPenetration = bodyHit.penetration;
+        colliderMinApproachSpeed = approachSpeed;
+        colliderMaxClosingSpeed = closingSpeed;
+        colliderSeverity = severity;
+        correctionNormal.copy(bodyHit.normal);
+        result.centerContact = true;
+      }
+
+      if (correctionNormal.lengthSq() < 0.000001) {
+        correctionNormal.copy(forward).multiplyScalar(-1);
+      }
+      correctionNormal.normalize();
+
+      result.contact = true;
+      result.contactCount += colliderContactCount;
+      result.trackContactCount += colliderTrackContactCount;
+      result.cornerContacts += colliderCornerContacts;
+      result.maxPenetration = Math.max(result.maxPenetration, colliderMaxPenetration);
+      result.minApproachSpeed = Math.min(result.minApproachSpeed, colliderMinApproachSpeed);
+
+      if (collider.immovable) {
+        this.applyCollisionResponse(correctionNormal, colliderMaxPenetration, forwardSpeed, turnRate, forward, 0.92);
+        continue;
+      }
+
+      if (!hasDriveIntent && colliderMaxPenetration < 0.22) {
+        continue;
+      }
+
+      const impulse = clamp(
+        (colliderSeverity * 1.55 + colliderMaxClosingSpeed * 0.5 + colliderMaxPenetration * 0.9) / Math.max(collider.mass, 0.1),
+        0.045,
+        1.9,
+      );
+      const correction = Math.min(colliderMaxPenetration * (0.72 + colliderSeverity * 0.16), 0.22);
+      collider.mesh.position.addScaledVector(correctionNormal, -correction);
+      collider.velocity.addScaledVector(correctionNormal, -impulse);
+      collider.velocity.y = Math.max(collider.velocity.y, 0.08 + 0.18 * colliderSeverity);
+      collider.sleeping = false;
+      result.movedCount += 1;
+      result.movedMass += collider.mass;
+      result.leftImpulse += impulse * colliderLeftSeverity;
+      result.rightImpulse += impulse * colliderRightSeverity;
+      this.worldColliderGridDirty = true;
+      this.pressure = Math.max(this.pressure, clamp(0.1 + colliderSeverity * 0.38 + collider.mass * 0.018, 0, 0.66));
+      if (collider.crushable && colliderSeverity > 0.32) {
+        collider.mesh.scale.multiplyScalar(1 - Math.min(colliderSeverity * 0.04, 0.08));
+        this.raiseTerrainWithWake(collider.mesh.position, Math.max(0.16, collider.radius * 1.7), collider.radius * 0.012 * colliderSeverity, 0);
+      }
+    }
+
+    return result;
+  }
+
   private resolveWorldCollisions(
     forwardSpeed: number,
     turnRate: number,
     forward: THREE.Vector3,
-  ): { truckContact: TruckCrawlerContactResult; bodyHit: boolean } {
+  ): { truckContact: TruckCrawlerContactResult; objectContact: CrawlerWorldObjectContactResult; bodyHit: boolean } {
     const hasDriveIntent = Math.abs(forwardSpeed) > 0.02 || Math.abs(turnRate) > 0.05;
     const truckContact = this.resolveTruckCrawlerFootprintCollision(forwardSpeed, turnRate, forward);
     const hit = this.truck.resolveBodyCollision(this.excavator.group.position, 1.62);
@@ -4858,43 +5060,9 @@ class Simulator {
       this.applyCollisionResponse(hit.normal, hit.penetration, forwardSpeed, turnRate, forward, 1.0);
     }
 
-    for (const collider of this.worldColliders) {
-      if (this.carriedWorldColliders.has(collider)) {
-        continue;
-      }
-      const obstacleHit = this.resolveColliderHit(collider, this.excavator.group.position, 1.62);
-      if (!obstacleHit) {
-        continue;
-      }
+    const objectContact = this.resolveCrawlerWorldObjectFootprintCollision(forwardSpeed, turnRate, forward, hasDriveIntent);
 
-      const approachSpeed = forward.clone().multiplyScalar(forwardSpeed).dot(obstacleHit.normal);
-      const severity = clamp(
-        obstacleHit.penetration * 2.1 + Math.abs(approachSpeed) * 0.48 + Math.abs(turnRate) * 0.08,
-        0,
-        1,
-      );
-      if (collider.immovable) {
-        this.applyCollisionResponse(obstacleHit.normal, obstacleHit.penetration, forwardSpeed, turnRate, forward, 0.92);
-      } else {
-        if (!hasDriveIntent && obstacleHit.penetration < 0.22) {
-          continue;
-        }
-        const movableNormal = obstacleHit.normal.clone();
-        const impulse = clamp((severity * 1.4 + Math.max(0, -approachSpeed) * 0.45) / Math.max(collider.mass, 0.1), 0.05, 1.7);
-        collider.mesh.position.addScaledVector(movableNormal, -Math.min(obstacleHit.penetration * 0.7, 0.16));
-        collider.velocity.addScaledVector(movableNormal, -impulse);
-        collider.velocity.y = Math.max(collider.velocity.y, 0.18 * severity);
-        collider.sleeping = false;
-        this.worldColliderGridDirty = true;
-        this.pressure = Math.max(this.pressure, clamp(0.1 + severity * 0.36 + collider.mass * 0.018, 0, 0.62));
-        if (collider.crushable && severity > 0.32) {
-          collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.04, 0.08));
-          this.raiseTerrainWithWake(collider.mesh.position, Math.max(0.16, collider.radius * 1.7), collider.radius * 0.012 * severity, 0);
-        }
-      }
-    }
-
-    return { truckContact, bodyHit: Boolean(hit) };
+    return { truckContact, objectContact, bodyHit: Boolean(hit) };
   }
 
   private applyCollisionResponse(
