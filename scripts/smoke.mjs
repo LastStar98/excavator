@@ -346,6 +346,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const truckImpactPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceTruckImpactPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const armTruckCollision = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceArmTruckCollision()`,
       returnByValue: true,
@@ -631,6 +636,7 @@ async function main() {
     const pitSinkValue = pitSink.result.value;
     const deepExcavationValue = deepExcavation.result.value;
     const truckCollisionValue = truckCollision.result.value;
+    const truckImpactPhysicsValue = truckImpactPhysics.result.value;
     const armTruckCollisionValue = armTruckCollision.result.value;
     const armSubsoilResistanceValue = armSubsoilResistance.result.value;
     const armWorldObjectPhysicsValue = armWorldObjectPhysics.result.value;
@@ -848,6 +854,17 @@ async function main() {
           truckCollisionValue?.diagonalAfterZ < truckCollisionValue?.diagonalBeforeZ - 0.04 &&
           truckCollisionValue?.collisionCount > 0 &&
           truckCollisionValue?.pressure > 0.4,
+      ],
+      [
+        "truck body reacts to crawler, object, and soil impacts",
+        truckImpactPhysicsValue?.crawlerContact &&
+          truckImpactPhysicsValue?.crawlerBlocked &&
+          truckImpactPhysicsValue?.crawlerImpactImpulse > 0.1 &&
+          truckImpactPhysicsValue?.objectImpactImpulse > 0.04 &&
+          truckImpactPhysicsValue?.soilImpactImpulse > 0.004 &&
+          (truckImpactPhysicsValue?.bodyPitchDelta > 0.004 || truckImpactPhysicsValue?.bodyRollDelta > 0.004) &&
+          (truckImpactPhysicsValue?.impactPitch > 0.004 || truckImpactPhysicsValue?.impactRoll > 0.004) &&
+          truckImpactPhysicsValue?.truckStayedPut,
       ],
       [
         "truck collision blocks arm and bucket joints",
@@ -1110,6 +1127,7 @@ async function main() {
           pitSink: pitSinkValue,
           deepExcavation: deepExcavationValue,
           truckCollision: truckCollisionValue,
+          truckImpactPhysics: truckImpactPhysicsValue,
           armTruckCollision: armTruckCollisionValue,
           armSubsoilResistance: armSubsoilResistanceValue,
           armWorldObjectPhysics: armWorldObjectPhysicsValue,

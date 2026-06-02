@@ -114,6 +114,9 @@ interface TruckPhysicsState {
   tireCompacted: number;
   tireRutDrop: number;
   bodyY: number;
+  impactImpulse: number;
+  impactPitch: number;
+  impactRoll: number;
 }
 
 interface TruckCrawlerContactResult {
@@ -189,6 +192,9 @@ interface ExcavatorDebugApi {
     truckPitch: number;
     truckRoll: number;
     truckTireRutDrop: number;
+    truckImpactImpulse: number;
+    truckImpactPitch: number;
+    truckImpactRoll: number;
     trackTraction: TrackTractionState;
     collisionCount: number;
     terrainVolumeDelta: number;
@@ -265,6 +271,18 @@ interface ExcavatorDebugApi {
     diagonalContact: TruckCrawlerContactResult;
     collisionCount: number;
     pressure: number;
+  };
+  forceTruckImpactPhysics: () => {
+    crawlerContact: boolean;
+    crawlerBlocked: boolean;
+    crawlerImpactImpulse: number;
+    objectImpactImpulse: number;
+    soilImpactImpulse: number;
+    bodyPitchDelta: number;
+    bodyRollDelta: number;
+    impactPitch: number;
+    impactRoll: number;
+    truckStayedPut: boolean;
   };
   forceArmTruckCollision: () => {
     collided: boolean;
@@ -1477,7 +1495,14 @@ class WorkTruck {
     tireCompacted: 0,
     tireRutDrop: 0,
     bodyY: TRUCK_CENTER.y,
+    impactImpulse: 0,
+    impactPitch: 0,
+    impactRoll: 0,
   };
+  private impactImpulse = 0;
+  private impactPitch = 0;
+  private impactRoll = 0;
+  private impactLift = 0;
 
   constructor(scene: THREE.Scene) {
     const tireMat = makeMat(0x151817, 0.85, 0.12);
@@ -1531,12 +1556,24 @@ class WorkTruck {
       tireCompacted: 0,
       tireRutDrop: 0,
       bodyY: this.group.position.y,
+      impactImpulse: 0,
+      impactPitch: 0,
+      impactRoll: 0,
     };
+    this.impactImpulse = 0;
+    this.impactPitch = 0;
+    this.impactRoll = 0;
+    this.impactLift = 0;
     this.updatePhysics(terrain, 0, 1, false);
   }
 
   physicsState(): TruckPhysicsState {
-    return { ...this.truckPhysics };
+    return {
+      ...this.truckPhysics,
+      impactImpulse: this.impactImpulse,
+      impactPitch: this.impactPitch,
+      impactRoll: this.impactRoll,
+    };
   }
 
   wheelWorldPoints(): THREE.Vector3[] {
@@ -1561,14 +1598,19 @@ class WorkTruck {
     const wheelBase = 3.15;
     const axleWidth = 2.04;
     const targetSag = clamp(loadRatio * 0.22 + supportSpread * 0.1, 0, 0.28);
-    const targetPitch = clamp((rearAverage - frontAverage) / wheelBase + loadCenter.x * loadRatio * 0.045, -0.16, 0.16);
-    const targetRoll = clamp((leftAverage - rightAverage) / axleWidth + loadCenter.z * loadRatio * 0.055, -0.14, 0.14);
+    const targetPitch = clamp((rearAverage - frontAverage) / wheelBase + loadCenter.x * loadRatio * 0.045 + this.impactPitch, -0.2, 0.2);
+    const targetRoll = clamp((leftAverage - rightAverage) / axleWidth + loadCenter.z * loadRatio * 0.055 + this.impactRoll, -0.18, 0.18);
     const response = dt <= 0 ? 1 : 1 - Math.exp(-5.2 * dt);
-    const targetY = groundAverage - targetSag;
+    const targetY = groundAverage - targetSag + this.impactLift;
     this.group.position.y = THREE.MathUtils.lerp(this.group.position.y, targetY, response);
     this.group.rotation.x = THREE.MathUtils.lerp(this.group.rotation.x, targetRoll, response);
     this.group.rotation.y = this.baseYaw;
     this.group.rotation.z = THREE.MathUtils.lerp(this.group.rotation.z, targetPitch, response);
+    const impactDecay = dt <= 0 ? 1 : Math.exp(-3.8 * dt);
+    this.impactPitch *= impactDecay;
+    this.impactRoll *= impactDecay;
+    this.impactLift *= impactDecay;
+    this.impactImpulse *= dt <= 0 ? 1 : Math.exp(-5.4 * dt);
 
     let tireCompacted = 0;
     let tireRutDrop = 0;
@@ -1597,7 +1639,32 @@ class WorkTruck {
       tireCompacted,
       tireRutDrop,
       bodyY: this.group.position.y,
+      impactImpulse: this.impactImpulse,
+      impactPitch: this.impactPitch,
+      impactRoll: this.impactRoll,
     };
+    return this.physicsState();
+  }
+
+  applyImpact(worldPoint: THREE.Vector3, worldNormal: THREE.Vector3, impulse: number): TruckPhysicsState {
+    const impulseMagnitude = clamp(impulse, 0, 5.5);
+    if (impulseMagnitude <= 0) {
+      return this.physicsState();
+    }
+    const localPoint = this.group.worldToLocal(worldPoint.clone());
+    const inverseTruckRotation = this.group.quaternion.clone().invert();
+    const localNormal = worldNormal.clone().normalize().applyQuaternion(inverseTruckRotation);
+    const forceX = -localNormal.x;
+    const forceY = -localNormal.y;
+    const forceZ = -localNormal.z;
+    const pointX = clamp(localPoint.x / 2.7, -1, 1);
+    const pointZ = clamp(localPoint.z / 1.28, -1, 1);
+    const pitchImpulse = clamp((forceX * 0.035 + pointX * Math.abs(forceY) * 0.026) * impulseMagnitude, -0.11, 0.11);
+    const rollImpulse = clamp((forceZ * 0.042 + pointZ * Math.abs(forceY) * 0.03) * impulseMagnitude, -0.12, 0.12);
+    this.impactPitch = clamp(this.impactPitch + pitchImpulse, -0.14, 0.14);
+    this.impactRoll = clamp(this.impactRoll + rollImpulse, -0.15, 0.15);
+    this.impactLift = clamp(Math.max(this.impactLift, Math.abs(forceY) * impulseMagnitude * 0.018), 0, 0.08);
+    this.impactImpulse = clamp(this.impactImpulse + impulseMagnitude, 0, 8);
     return this.physicsState();
   }
 
@@ -3400,6 +3467,9 @@ class Simulator {
           truckPitch: truckPhysics.pitch,
           truckRoll: truckPhysics.roll,
           truckTireRutDrop: truckPhysics.tireRutDrop,
+          truckImpactImpulse: truckPhysics.impactImpulse,
+          truckImpactPitch: truckPhysics.impactPitch,
+          truckImpactRoll: truckPhysics.impactRoll,
           trackTraction: { ...this.trackTraction },
           collisionCount: this.collisionCount,
           terrainVolumeDelta: this.terrain.terrainVolumeDelta(),
@@ -3832,6 +3902,93 @@ class Simulator {
           diagonalContact: diagonal.contact,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
+        };
+      },
+      forceTruckImpactPhysics: () => {
+        const yawFromForward = (worldForward: THREE.Vector3) => Math.atan2(-worldForward.z, worldForward.x);
+        this.truck.reset(this.terrain);
+        this.truckLoad = 0;
+        this.truck.updateLoad(this.truckLoad);
+        const before = this.truck.physicsState();
+
+        const localStart = new THREE.Vector3(-3.1, 0, 0);
+        const localForward = new THREE.Vector3(1, 0, 0);
+        const start = this.truck.group.localToWorld(localStart.clone());
+        const forwardWorld = localForward
+          .clone()
+          .normalize()
+          .applyQuaternion(this.truck.group.quaternion)
+          .setY(0)
+          .normalize();
+        this.excavator.group.position.set(start.x, this.terrain.getHeightAt(start.x, start.z), start.z);
+        this.excavator.group.rotation.set(0, yawFromForward(forwardWorld), 0);
+        this.leftTrackVelocity = TRACK_MAX_SPEED;
+        this.rightTrackVelocity = TRACK_MAX_SPEED;
+        this.collisionCooldown = 0;
+        const crawlerContact = this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forwardWorld).truckContact;
+        const afterCrawlerImpact = this.truck.physicsState();
+        const crawlerImpactImpulse = Math.max(0, afterCrawlerImpact.impactImpulse - before.impactImpulse);
+        const afterCrawlerBody = this.truck.updatePhysics(this.terrain, this.truckLoad, 0.08, false);
+
+        let objectImpactImpulse = 0;
+        const obstacle =
+          this.worldColliders.find((collider) => collider.kind === "boulder") ??
+          this.worldColliders.find((collider) => collider.kind === "rock");
+        if (obstacle) {
+          const savedPosition = obstacle.mesh.position.clone();
+          const savedVelocity = obstacle.velocity.clone();
+          const savedSleeping = obstacle.sleeping;
+          const probe = this.truck.group.localToWorld(new THREE.Vector3(-2.12, 1.03, 0.0));
+          obstacle.mesh.position.copy(probe);
+          const hit = this.truck.resolveSolidCollision(obstacle.mesh.position, obstacle.radius);
+          obstacle.velocity.copy(hit?.normal ?? new THREE.Vector3(1, 0, 0)).multiplyScalar(-1.15);
+          obstacle.sleeping = false;
+          const beforeObjectImpact = this.truck.physicsState().impactImpulse;
+          this.resolveLooseObjectTruckCollision(obstacle);
+          objectImpactImpulse = Math.max(0, this.truck.physicsState().impactImpulse - beforeObjectImpact);
+          this.truck.updatePhysics(this.terrain, this.truckLoad, 0.08, false);
+          obstacle.mesh.position.copy(savedPosition);
+          obstacle.velocity.copy(savedVelocity);
+          obstacle.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        }
+
+        const soilRadius = 0.08;
+        const soilMesh = this.acquireSoilParticleMesh(soilRadius, this.looseSoilMats[0], 3409);
+        const soilProbe = this.truck.group.localToWorld(new THREE.Vector3(0.54, 1.12, -0.86));
+        soilMesh.position.copy(soilProbe);
+        const soilHit = this.truck.resolveSolidCollision(soilMesh.position, soilRadius);
+        const soilParticle: SoilParticle = {
+          mesh: soilMesh,
+          velocity: (soilHit?.normal ?? new THREE.Vector3(0, 0, 1)).clone().multiplyScalar(-0.85).add(new THREE.Vector3(0, -0.08, 0)),
+          volume: 0.045,
+          radius: soilRadius,
+          life: 0,
+          settles: true,
+        };
+        const beforeSoilImpact = this.truck.physicsState().impactImpulse;
+        this.resolveSoilParticleCollisions(soilParticle);
+        const afterSoilImpact = this.truck.physicsState();
+        const soilImpactImpulse = Math.max(0, afterSoilImpact.impactImpulse - beforeSoilImpact);
+        this.recycleSoilParticle(soilParticle);
+
+        const afterBody = this.truck.updatePhysics(this.terrain, this.truckLoad, 0.08, false);
+        this.updateUi(0);
+        return {
+          crawlerContact: crawlerContact.contact,
+          crawlerBlocked:
+            crawlerContact.leftBlocked ||
+            crawlerContact.rightBlocked ||
+            Math.abs(this.leftTrackVelocity) < TRACK_MAX_SPEED * 0.58 ||
+            Math.abs(this.rightTrackVelocity) < TRACK_MAX_SPEED * 0.58,
+          crawlerImpactImpulse,
+          objectImpactImpulse,
+          soilImpactImpulse,
+          bodyPitchDelta: Math.abs(afterBody.pitch - before.pitch),
+          bodyRollDelta: Math.abs(afterBody.roll - before.roll),
+          impactPitch: Math.max(Math.abs(afterCrawlerImpact.impactPitch), Math.abs(afterCrawlerBody.impactPitch), Math.abs(afterBody.impactPitch)),
+          impactRoll: Math.max(Math.abs(afterCrawlerImpact.impactRoll), Math.abs(afterCrawlerBody.impactRoll), Math.abs(afterBody.impactRoll)),
+          truckStayedPut: Math.hypot(this.truck.group.position.x - TRUCK_CENTER.x, this.truck.group.position.z - TRUCK_CENTER.z) < 0.02,
         };
       },
       forceArmTruckCollision: () => {
@@ -4963,6 +5120,8 @@ class Simulator {
     let rightSeverity = 0;
     let correctionWeight = 0;
     const correctionNormal = new THREE.Vector3();
+    const impactPoint = new THREE.Vector3();
+    let impactWeight = 0;
 
     for (const sample of samples) {
       const world = base
@@ -4986,6 +5145,8 @@ class Simulator {
       minApproachSpeed = Math.min(minApproachSpeed, approachSpeed);
       correctionWeight += Math.min(hit.penetration + Math.max(0, -approachSpeed) * 0.04, 0.36);
       correctionNormal.addScaledVector(hit.normal, 0.12 + severity);
+      impactPoint.addScaledVector(world, 0.1 + severity);
+      impactWeight += 0.1 + severity;
       if (Math.abs(sample.x) > TRACK_LENGTH * 0.34 && Math.abs(sample.z) > TRACK_GAUGE * 0.34) {
         cornerContacts += 1;
       }
@@ -5019,6 +5180,10 @@ class Simulator {
     }
 
     const peakSeverity = Math.max(leftSeverity, rightSeverity, maxPenetration * 1.8);
+    if (impactWeight > 0) {
+      const truckImpact = clamp(0.28 + peakSeverity * 2.2 + Math.max(0, -minApproachSpeed) * 0.7, 0.04, 3.4);
+      this.truck.applyImpact(impactPoint.divideScalar(impactWeight), correctionNormal, truckImpact);
+    }
     this.pressure = Math.max(this.pressure, clamp(0.36 + peakSeverity * 0.54, 0, 1));
     if (this.collisionCooldown <= 0 && peakSeverity > 0.07) {
       this.collisionCount += 1;
@@ -5201,6 +5366,11 @@ class Simulator {
     const truckContact = this.resolveTruckCrawlerFootprintCollision(forwardSpeed, turnRate, forward);
     const hit = this.truck.resolveBodyCollision(this.excavator.group.position, 1.62);
     if (hit) {
+      this.truck.applyImpact(
+        this.excavator.group.position,
+        hit.normal,
+        clamp(0.18 + hit.penetration * 2.2 + Math.abs(forwardSpeed) * 0.72 + Math.abs(turnRate) * 0.18, 0.04, 2.8),
+      );
       this.applyCollisionResponse(hit.normal, hit.penetration, forwardSpeed, turnRate, forward, 1.0);
     }
 
@@ -5375,6 +5545,11 @@ class Simulator {
       const normalSpeed = collider.velocity.dot(normal);
       const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed).multiplyScalar(0.72);
       const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.08, 0.08, 0.42) : normalSpeed;
+      this.truck.applyImpact(
+        collider.mesh.position,
+        normal,
+        clamp(0.12 + maxPenetration * 2.2 + Math.max(0, -normalSpeed) * collider.mass * 0.045 + collider.mass * 0.015, 0.05, 3.2),
+      );
       collider.velocity.copy(tangent).addScaledVector(normal, bounceSpeed);
       this.releaseCarriedWorldCollider(collider);
       this.pressure = Math.max(this.pressure, clamp(0.42 + maxPenetration * 1.6 + collider.mass * 0.008, 0, 1));
@@ -5551,6 +5726,11 @@ class Simulator {
     const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed);
     const tangentDamping = 1 - clamp(0.12 + collider.friction * 0.24, 0.12, 0.42);
     const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution, 0.04, 0.38) : normalSpeed;
+    this.truck.applyImpact(
+      collider.mesh.position,
+      normal,
+      clamp(0.08 + hit.penetration * 2.0 + Math.max(0, -normalSpeed) * collider.mass * 0.04 + collider.mass * 0.012, 0.035, 2.8),
+    );
     collider.velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(normal, bounceSpeed);
     collider.sleeping = false;
     this.pressure = Math.max(this.pressure, clamp(0.34 + hit.penetration * 1.8 + collider.mass * 0.008, 0, 0.9));
@@ -5760,6 +5940,11 @@ class Simulator {
       }
       maxPenetration = Math.max(maxPenetration, hit.penetration);
       affected.add(sample.action);
+      this.truck.applyImpact(
+        sample.point,
+        hit.normal,
+        clamp(0.06 + hit.penetration * 2.6 + sample.radius * 0.22, 0.03, 1.1),
+      );
     }
 
     if (affected.size === 0) {
@@ -6549,12 +6734,18 @@ class Simulator {
     const pos = new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2]);
     const velocity = new THREE.Vector3(this.fineGrainVelocities[p], this.fineGrainVelocities[p + 1], this.fineGrainVelocities[p + 2]);
     let collided = false;
+    const fineMass = Math.max(0.006, this.fineGrainVolumes[i] * 1.8);
 
     if (!this.truck.containsWorldPoint(pos)) {
       const truckHit = this.truck.resolveSolidCollision(pos, radius);
       if (truckHit) {
         pos.addScaledVector(truckHit.normal, truckHit.penetration + 0.002);
         const normalSpeed = velocity.dot(truckHit.normal);
+        this.truck.applyImpact(
+          pos,
+          truckHit.normal,
+          clamp(0.002 + truckHit.penetration * 0.08 + Math.max(0, -normalSpeed) * fineMass * 0.24, 0.001, 0.05),
+        );
         if (normalSpeed < 0) {
           velocity.addScaledVector(truckHit.normal, -(1.18 * normalSpeed));
           velocity.multiplyScalar(0.62);
@@ -6563,7 +6754,6 @@ class Simulator {
       }
     }
 
-    const fineMass = Math.max(0.006, this.fineGrainVolumes[i] * 1.8);
     for (const collider of this.nearbyWorldColliders(pos, radius + FINE_GRAIN_COLLISION_QUERY_PADDING)) {
       if (this.carriedWorldColliders.has(collider)) {
         continue;
@@ -6628,6 +6818,7 @@ class Simulator {
     const radius = Math.max(0.018, particle.radius);
     const pos = particle.mesh.position;
     let collided = false;
+    const soilMass = Math.max(0.025, particle.volume * 1.8);
 
     if (!this.truck.containsWorldPoint(pos)) {
       const truckHit = this.truck.resolveSolidCollision(pos, radius);
@@ -6635,6 +6826,11 @@ class Simulator {
         pos.addScaledVector(truckHit.normal, truckHit.penetration + 0.004);
         const normalSpeed = particle.velocity.dot(truckHit.normal);
         const tangent = particle.velocity.clone().addScaledVector(truckHit.normal, -normalSpeed);
+        this.truck.applyImpact(
+          pos,
+          truckHit.normal,
+          clamp(0.012 + truckHit.penetration * 0.42 + Math.max(0, -normalSpeed) * soilMass * 0.28, 0.006, 0.42),
+        );
         if (normalSpeed < 0) {
           particle.velocity.copy(tangent.multiplyScalar(0.68)).addScaledVector(truckHit.normal, -normalSpeed * 0.22);
         } else {
@@ -6644,7 +6840,6 @@ class Simulator {
       }
     }
 
-    const soilMass = Math.max(0.025, particle.volume * 1.8);
     for (const collider of this.nearbyWorldColliders(pos, radius + SOIL_PARTICLE_COLLISION_QUERY_PADDING)) {
       if (this.carriedWorldColliders.has(collider)) {
         continue;
