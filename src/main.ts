@@ -89,6 +89,17 @@ interface TrackSupportSample {
   disturbedDepth: number;
 }
 
+interface TruckPhysicsState {
+  loadRatio: number;
+  suspensionSag: number;
+  pitch: number;
+  roll: number;
+  supportSpread: number;
+  tireCompacted: number;
+  tireRutDrop: number;
+  bodyY: number;
+}
+
 interface ExcavatorDebugApi {
   snapshot: () => {
     bucketLoad: number;
@@ -110,6 +121,10 @@ interface ExcavatorDebugApi {
     chassisPitch: number;
     chassisRoll: number;
     supportHeight: number;
+    truckSag: number;
+    truckPitch: number;
+    truckRoll: number;
+    truckTireRutDrop: number;
     collisionCount: number;
     terrainVolumeDelta: number;
   };
@@ -126,6 +141,17 @@ interface ExcavatorDebugApi {
   };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
   forceTruckCollision: () => { beforeX: number; afterX: number; blocked: boolean; collisionCount: number; pressure: number };
+  forceTruckLoadPhysics: () => {
+    accepted: number;
+    loadRatio: number;
+    sag: number;
+    pitch: number;
+    roll: number;
+    compacted: number;
+    rutDrop: number;
+    bodyYDrop: number;
+    supportSpread: number;
+  };
   forceRoughTrackSupport: () => { roll: number; pitch: number; sinkage: number; pressure: number; supportDrop: number };
   forceWorldObjectPhysics: () => {
     debrisTravel: number;
@@ -1009,12 +1035,29 @@ class WorkTruck {
   readonly loadMesh: THREE.Mesh;
   private readonly loadGeometry: THREE.BufferGeometry;
   private readonly loadHeights: Float32Array;
+  private readonly baseYaw = -0.07;
   private readonly bedLength = 3.75;
   private readonly bedWidth = 1.72;
   private readonly bedFloorY = 0.72;
   private readonly bedCenterX = 0.54;
   private readonly loadSegmentsX = 10;
   private readonly loadSegmentsZ = 6;
+  private readonly wheelLocals = [
+    new THREE.Vector3(-1.7, 0, -1.02),
+    new THREE.Vector3(-1.7, 0, 1.02),
+    new THREE.Vector3(1.45, 0, -1.02),
+    new THREE.Vector3(1.45, 0, 1.02),
+  ];
+  private truckPhysics: TruckPhysicsState = {
+    loadRatio: 0,
+    suspensionSag: 0,
+    pitch: 0,
+    roll: 0,
+    supportSpread: 0,
+    tireCompacted: 0,
+    tireRutDrop: 0,
+    bodyY: TRUCK_CENTER.y,
+  };
 
   constructor(scene: THREE.Scene) {
     const tireMat = makeMat(0x151817, 0.85, 0.12);
@@ -1023,7 +1066,7 @@ class WorkTruck {
     const soilMat = makeMat(0x7d5b32, 0.9, 0.02);
 
     this.group.position.copy(TRUCK_CENTER);
-    this.group.rotation.y = -0.07;
+    this.group.rotation.y = this.baseYaw;
     this.group.add(makeBox([4.4, 0.22, 1.95], bodyMat, [0, 0.45, 0]));
     this.group.add(makeBox([1.05, 0.95, 1.72], cabMat, [-2.12, 1.03, 0]));
     this.group.add(makeBox([3.85, 0.16, 1.72], bodyMat, [0.54, this.bedFloorY, 0]));
@@ -1051,6 +1094,90 @@ class WorkTruck {
     this.loadMesh.receiveShadow = true;
     this.group.add(this.loadMesh);
     scene.add(this.group);
+  }
+
+  reset(terrain: HeightfieldTerrain): void {
+    this.group.position.copy(TRUCK_CENTER);
+    this.group.rotation.set(0, this.baseYaw, 0);
+    this.loadHeights.fill(0);
+    this.loadMesh.visible = false;
+    this.commitLoadSurface();
+    this.truckPhysics = {
+      loadRatio: 0,
+      suspensionSag: 0,
+      pitch: 0,
+      roll: 0,
+      supportSpread: 0,
+      tireCompacted: 0,
+      tireRutDrop: 0,
+      bodyY: this.group.position.y,
+    };
+    this.updatePhysics(terrain, 0, 1, false);
+  }
+
+  physicsState(): TruckPhysicsState {
+    return { ...this.truckPhysics };
+  }
+
+  wheelWorldPoints(): THREE.Vector3[] {
+    return this.wheelLocals.map((local) => this.localWheelToWorld(local));
+  }
+
+  updatePhysics(terrain: HeightfieldTerrain, load: number, dt: number, compactTires = true): TruckPhysicsState {
+    const samples = this.wheelLocals.map((local) => {
+      const world = this.localWheelToWorld(local);
+      return { local, world, ground: terrain.getHeightAt(world.x, world.z) };
+    });
+    const loadRatio = clamp(load / TRUCK_CAPACITY, 0, 1);
+    const groundAverage = samples.reduce((sum, sample) => sum + sample.ground, 0) / samples.length;
+    const groundHigh = Math.max(...samples.map((sample) => sample.ground));
+    const groundLow = Math.min(...samples.map((sample) => sample.ground));
+    const supportSpread = groundHigh - groundLow;
+    const frontAverage = this.averageGround(samples, (local) => local.x > 0);
+    const rearAverage = this.averageGround(samples, (local) => local.x < 0);
+    const leftAverage = this.averageGround(samples, (local) => local.z < 0);
+    const rightAverage = this.averageGround(samples, (local) => local.z > 0);
+    const loadCenter = this.loadCenterOffset();
+    const wheelBase = 3.15;
+    const axleWidth = 2.04;
+    const targetSag = clamp(loadRatio * 0.22 + supportSpread * 0.1, 0, 0.28);
+    const targetPitch = clamp((rearAverage - frontAverage) / wheelBase + loadCenter.x * loadRatio * 0.045, -0.16, 0.16);
+    const targetRoll = clamp((leftAverage - rightAverage) / axleWidth + loadCenter.z * loadRatio * 0.055, -0.14, 0.14);
+    const response = dt <= 0 ? 1 : 1 - Math.exp(-5.2 * dt);
+    const targetY = groundAverage - targetSag;
+    this.group.position.y = THREE.MathUtils.lerp(this.group.position.y, targetY, response);
+    this.group.rotation.x = THREE.MathUtils.lerp(this.group.rotation.x, targetRoll, response);
+    this.group.rotation.y = this.baseYaw;
+    this.group.rotation.z = THREE.MathUtils.lerp(this.group.rotation.z, targetPitch, response);
+
+    let tireCompacted = 0;
+    let tireRutDrop = 0;
+    if (compactTires && loadRatio > 0.025 && dt > 0) {
+      const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.baseYaw).normalize();
+      const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+      const depth = clamp((0.0018 + loadRatio * 0.0115 + supportSpread * 0.007) * clamp(dt * 2.4, 0.12, 1), 0.0005, 0.014);
+      for (const sample of samples) {
+        const before = terrain.getHeightAt(sample.world.x, sample.world.z);
+        const axleBias = sample.local.x > 0 ? 0.96 : 1.04;
+        const result = terrain.compactTrackStrip(sample.world, forward, side, 0.56, 0.38, depth * axleBias);
+        const after = terrain.getHeightAt(sample.world.x, sample.world.z);
+        tireCompacted += result.compacted;
+        tireRutDrop += Math.max(result.rutDrop, before - after);
+      }
+      tireRutDrop /= samples.length;
+    }
+
+    this.truckPhysics = {
+      loadRatio,
+      suspensionSag: targetSag,
+      pitch: this.group.rotation.z,
+      roll: this.group.rotation.x,
+      supportSpread,
+      tireCompacted,
+      tireRutDrop,
+      bodyY: this.group.position.y,
+    };
+    return this.physicsState();
   }
 
   containsWorldPoint(point: THREE.Vector3): boolean {
@@ -1128,6 +1255,50 @@ class WorkTruck {
     this.addLoadMound(local.x, local.z, accepted);
     this.loadMesh.visible = true;
     return accepted;
+  }
+
+  private localWheelToWorld(local: THREE.Vector3): THREE.Vector3 {
+    const yaw = this.baseYaw;
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    return new THREE.Vector3(
+      this.group.position.x + local.x * cos + local.z * sin,
+      this.group.position.y + local.y,
+      this.group.position.z - local.x * sin + local.z * cos,
+    );
+  }
+
+  private averageGround(
+    samples: Array<{ local: THREE.Vector3; ground: number }>,
+    predicate: (local: THREE.Vector3) => boolean,
+  ): number {
+    const filtered = samples.filter((sample) => predicate(sample.local));
+    return filtered.reduce((sum, sample) => sum + sample.ground, 0) / Math.max(1, filtered.length);
+  }
+
+  private loadCenterOffset(): { x: number; z: number } {
+    let total = 0;
+    let weightedX = 0;
+    let weightedZ = 0;
+    for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+        const idx = this.loadIndex(ix, iz);
+        const height = this.loadHeights[idx];
+        if (height <= 0) {
+          continue;
+        }
+        const x = this.bedCenterX - this.bedLength / 2 + (ix / this.loadSegmentsX) * this.bedLength;
+        const z = -this.bedWidth / 2 + (iz / this.loadSegmentsZ) * this.bedWidth;
+        total += height;
+        weightedX += x * height;
+        weightedZ += z * height;
+      }
+    }
+
+    if (total <= 0) {
+      return { x: 0, z: 0 };
+    }
+    return { x: weightedX / total - this.bedCenterX, z: weightedZ / total };
   }
 
   private createLoadGeometry(): THREE.BufferGeometry {
@@ -1827,7 +1998,7 @@ class Simulator {
     this.buildWorld();
     this.terrain = new HeightfieldTerrain(this.scene);
     this.truck = new WorkTruck(this.scene);
-    this.truck.group.position.y = this.terrain.getHeightAt(TRUCK_CENTER.x, TRUCK_CENTER.z);
+    this.truck.reset(this.terrain);
     this.excavator = new ExcavatorModel(this.scene);
     this.excavator.applyAngles(this.angles);
     this.supportHeight = this.terrain.getHeightAt(0, 0);
@@ -1887,13 +2058,12 @@ class Simulator {
     this.clearMobileInput();
     this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
     this.excavator.group.rotation.set(0, 0, 0);
-    this.truck.group.position.y = this.terrain.getHeightAt(TRUCK_CENTER.x, TRUCK_CENTER.z);
+    this.truck.reset(this.terrain);
     for (const particle of this.soilParticles) {
       this.scene.remove(particle.mesh);
       particle.mesh.geometry.dispose();
     }
     this.soilParticles.length = 0;
-    this.truck.updateLoad(0);
     this.excavator.setBucketLoad(0);
     this.excavator.applyAngles(this.angles);
     this.previousBucketTip.copy(this.excavator.bucketTipWorld());
@@ -2390,29 +2560,36 @@ class Simulator {
 
   private installDebugApi(): void {
     window.__excavatorSim = {
-      snapshot: () => ({
-        bucketLoad: this.bucketLoad,
-        truckLoad: this.truckLoad,
-        totalExcavated: this.totalExcavated,
-        digHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
-        bucketAngle: this.angles.bucket,
-        bucketVisualLoad: this.excavator.bucketLoadVisualRatio(),
-        trackSoilWork: this.trackSoilWork,
-        mobileAxes: { ...this.touchAxes },
-        orbit: { azimuth: this.orbit.azimuth, elevation: this.orbit.elevation, distance: this.orbit.distance },
-        particleCount: this.soilParticles.length,
-        settlingParticleCount: this.soilParticles.filter((particle) => particle.settles).length,
-        flowParticleCount: this.soilParticles.filter((particle) => !particle.settles).length,
-        fineGrainCount: this.fineGrainCount(),
-        activeFineGrainVolume: this.activeFineGrainVolume(),
-        settledFineGrainVolume: this.fineGrainSettledVolume,
-        chassisSinkage: this.chassisSinkage,
-        chassisPitch: this.chassisPitch,
-        chassisRoll: this.chassisRoll,
-        supportHeight: this.supportHeight,
-        collisionCount: this.collisionCount,
-        terrainVolumeDelta: this.terrain.terrainVolumeDelta(),
-      }),
+      snapshot: () => {
+        const truckPhysics = this.truck.physicsState();
+        return {
+          bucketLoad: this.bucketLoad,
+          truckLoad: this.truckLoad,
+          totalExcavated: this.totalExcavated,
+          digHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
+          bucketAngle: this.angles.bucket,
+          bucketVisualLoad: this.excavator.bucketLoadVisualRatio(),
+          trackSoilWork: this.trackSoilWork,
+          mobileAxes: { ...this.touchAxes },
+          orbit: { azimuth: this.orbit.azimuth, elevation: this.orbit.elevation, distance: this.orbit.distance },
+          particleCount: this.soilParticles.length,
+          settlingParticleCount: this.soilParticles.filter((particle) => particle.settles).length,
+          flowParticleCount: this.soilParticles.filter((particle) => !particle.settles).length,
+          fineGrainCount: this.fineGrainCount(),
+          activeFineGrainVolume: this.activeFineGrainVolume(),
+          settledFineGrainVolume: this.fineGrainSettledVolume,
+          chassisSinkage: this.chassisSinkage,
+          chassisPitch: this.chassisPitch,
+          chassisRoll: this.chassisRoll,
+          supportHeight: this.supportHeight,
+          truckSag: truckPhysics.suspensionSag,
+          truckPitch: truckPhysics.pitch,
+          truckRoll: truckPhysics.roll,
+          truckTireRutDrop: truckPhysics.tireRutDrop,
+          collisionCount: this.collisionCount,
+          terrainVolumeDelta: this.terrain.terrainVolumeDelta(),
+        };
+      },
       forceDigPass: () => {
         const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
         const start = new THREE.Vector3(DIG_SITE.x - 0.55, beforeHeight + 0.02, DIG_SITE.z);
@@ -2541,6 +2718,34 @@ class Simulator {
           blocked: afterLocal.x < -3.74 && Math.abs(this.leftTrackVelocity) < TRACK_MAX_SPEED * 0.55,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
+        };
+      },
+      forceTruckLoadPhysics: () => {
+        this.truck.reset(this.terrain);
+        this.truckLoad = 0;
+        const beforeY = this.truck.group.position.y;
+        const roughWheel = this.truck.wheelWorldPoints()[3];
+        this.terrain.raiseAt(roughWheel, 0.52, 0.1);
+        const beforeRut = this.terrain.getHeightAt(roughWheel.x, roughWheel.z);
+        const dumpPoint = this.truck.group.localToWorld(new THREE.Vector3(1.18, 1.36, 0.58));
+        const accepted = this.truck.depositSoilAt(dumpPoint, TRUCK_CAPACITY * 0.74, TRUCK_CAPACITY);
+        this.truckLoad = accepted;
+        this.truck.updateLoad(this.truckLoad);
+        this.truck.settleLoad(2);
+        const state = this.truck.updatePhysics(this.terrain, this.truckLoad, 0.95, true);
+        const afterRut = this.terrain.getHeightAt(roughWheel.x, roughWheel.z);
+        this.truck.updateLoad(this.truckLoad);
+        this.updateUi(0);
+        return {
+          accepted,
+          loadRatio: state.loadRatio,
+          sag: state.suspensionSag,
+          pitch: state.pitch,
+          roll: state.roll,
+          compacted: state.tireCompacted,
+          rutDrop: Math.max(state.tireRutDrop, beforeRut - afterRut),
+          bodyYDrop: beforeY - this.truck.group.position.y,
+          supportSpread: state.supportSpread,
         };
       },
       forceRoughTrackSupport: () => {
@@ -2674,10 +2879,18 @@ class Simulator {
     this.updateSoilParticles(dt);
     this.updateFineGrains(dt);
     this.updatePassiveSoil(dt);
+    this.updateTruckPhysics(dt);
     this.updateSafety(dt);
     this.updateCamera(dt);
     this.updateUi(dt);
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private updateTruckPhysics(dt: number): void {
+    const state = this.truck.updatePhysics(this.terrain, this.truckLoad, dt, this.truckLoad > 0.02);
+    if (state.tireCompacted > 0.001) {
+      this.pressure = Math.max(this.pressure, clamp(0.04 + state.loadRatio * 0.18 + state.tireRutDrop * 2.4, 0, 0.42));
+    }
   }
 
   private readAxes(): JoystickAxes {

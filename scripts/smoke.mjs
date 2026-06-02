@@ -331,6 +331,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const truckLoadPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceTruckLoadPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const roughTrack = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceRoughTrackSupport()`,
       returnByValue: true,
@@ -459,6 +464,7 @@ async function main() {
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
     const truckCollisionValue = truckCollision.result.value;
+    const truckLoadPhysicsValue = truckLoadPhysics.result.value;
     const roughTrackValue = roughTrack.result.value;
     const worldObjectPhysicsValue = worldObjectPhysics.result.value;
     const mobileUiValue = mobileUi.result.value;
@@ -612,6 +618,17 @@ async function main() {
           truckCollisionValue?.pressure > 0.4,
       ],
       [
+        "loaded truck sags, tilts, and compacts tire ruts",
+        truckLoadPhysicsValue?.accepted > 4.5 &&
+          truckLoadPhysicsValue?.loadRatio > 0.6 &&
+          truckLoadPhysicsValue?.sag > 0.12 &&
+          Math.abs(truckLoadPhysicsValue?.pitch ?? 0) > 0.01 &&
+          Math.abs(truckLoadPhysicsValue?.roll ?? 0) > 0.01 &&
+          truckLoadPhysicsValue?.compacted > 0.004 &&
+          truckLoadPhysicsValue?.rutDrop > 0.0015 &&
+          truckLoadPhysicsValue?.bodyYDrop > 0.07,
+      ],
+      [
         "rough ground tilts and loads crawler tracks",
         Math.abs(roughTrackValue?.roll ?? 0) > 0.015 &&
           Math.abs(roughTrackValue?.pitch ?? 0) > 0.004 &&
@@ -710,6 +727,7 @@ async function main() {
           trackPass: trackPassValue,
           pitSink: pitSinkValue,
           truckCollision: truckCollisionValue,
+          truckLoadPhysics: truckLoadPhysicsValue,
           roughTrack: roughTrackValue,
           worldObjectPhysics: worldObjectPhysicsValue,
           mobileUi: mobileUiValue,
