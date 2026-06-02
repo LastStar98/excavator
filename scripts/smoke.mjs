@@ -336,6 +336,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const deepExcavation = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceDeepExcavation()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const truckCollision = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceTruckCollision()`,
       returnByValue: true,
@@ -515,6 +520,7 @@ async function main() {
     const bucketKinematicsValue = bucketKinematics.result.value;
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
+    const deepExcavationValue = deepExcavation.result.value;
     const truckCollisionValue = truckCollision.result.value;
     const armTruckCollisionValue = armTruckCollision.result.value;
     const armSubsoilResistanceValue = armSubsoilResistance.result.value;
@@ -694,6 +700,15 @@ async function main() {
           pitSinkValue?.afterGround < pitSinkValue?.beforeGround - 0.22 &&
           pitSinkValue?.afterY < pitSinkValue?.beforeY - 0.16 &&
           pitSinkValue?.chassisSinkage > 0.01,
+      ],
+      [
+        "repeated bucket passes dig below the previous bedrock limit",
+        deepExcavationValue?.removed > 3.0 &&
+          deepExcavationValue?.afterHeight < -3.35 &&
+          deepExcavationValue?.depthReached > 3.2 &&
+          deepExcavationValue?.bedrockFloor <= -5 &&
+          deepExcavationValue?.deepResistance > deepExcavationValue?.shallowResistance + 0.55 &&
+          deepExcavationValue?.terrainDrag === 1,
       ],
       [
         "truck collision blocks crawler body",
@@ -907,6 +922,7 @@ async function main() {
           bucketKinematics: bucketKinematicsValue,
           trackPass: trackPassValue,
           pitSink: pitSinkValue,
+          deepExcavation: deepExcavationValue,
           truckCollision: truckCollisionValue,
           armTruckCollision: armTruckCollisionValue,
           armSubsoilResistance: armSubsoilResistanceValue,

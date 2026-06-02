@@ -313,6 +313,16 @@ interface ExcavatorDebugApi {
     afterGround: number;
     chassisSinkage: number;
   };
+  forceDeepExcavation: () => {
+    beforeHeight: number;
+    afterHeight: number;
+    removed: number;
+    depthReached: number;
+    shallowResistance: number;
+    deepResistance: number;
+    bedrockFloor: number;
+    terrainDrag: number;
+  };
   forceLiftableObjectAudit: () => {
     worldColliderCount: number;
     liftableCount: number;
@@ -4026,6 +4036,50 @@ class Simulator {
           beforeGround,
           afterGround,
           chassisSinkage: this.chassisSinkage,
+        };
+      },
+      forceDeepExcavation: () => {
+        const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
+        const shallowResistance = this.terrain.getSubsoilResistanceAt(DIG_SITE.x, DIG_SITE.z);
+        let removed = 0;
+
+        const lanes = [-0.82, 0, 0.82];
+        for (let pass = 0; pass < 36; pass += 1) {
+          const lane = lanes[pass % lanes.length];
+          const current = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z + lane);
+          const start = new THREE.Vector3(DIG_SITE.x - 0.86, current + 0.08, DIG_SITE.z + lane);
+          const end = new THREE.Vector3(DIG_SITE.x + 0.86, current - 0.68, DIG_SITE.z + lane);
+          removed += this.terrain.excavateSweptBucket(
+            start,
+            end,
+            new THREE.Vector3(0, 0, 1),
+            1.38,
+            0.68,
+            BUCKET_CAPACITY,
+          );
+          if (pass % lanes.length === lanes.length - 1) {
+            this.terrain.settleAt(DIG_SITE, 2.45, 1);
+          }
+        }
+
+        const afterHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
+        const deepResistance = this.terrain.getSubsoilResistanceAt(DIG_SITE.x, DIG_SITE.z);
+        const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.24, stick: -1.52, bucket: -1.72 };
+        this.velocities.boom = -0.04;
+        this.velocities.stick = -0.34;
+        this.velocities.bucket = -0.82;
+        const resistance = this.resolveArmTerrainResistance(previousAngles);
+        this.updateUi(0);
+
+        return {
+          beforeHeight,
+          afterHeight,
+          removed,
+          depthReached: beforeHeight - afterHeight,
+          shallowResistance,
+          deepResistance,
+          bedrockFloor: SOIL_BEDROCK_FLOOR,
+          terrainDrag: resistance.drag,
         };
       },
     };
