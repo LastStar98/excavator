@@ -285,6 +285,16 @@ interface ExcavatorDebugApi {
     collisionCount: number;
     pressure: number;
   };
+  forceTerrainChangeWakesObjects: () => {
+    sleptBefore: boolean;
+    wokeFromCut: number;
+    wokeFromRaise: number;
+    groundDrop: number;
+    fallDistance: number;
+    liftDelta: number;
+    finalSleeping: boolean;
+    pressure: number;
+  };
   forceMapDiversity: () => {
     terrainSize: number;
     spacing: number;
@@ -2601,6 +2611,124 @@ class Simulator {
     this.nearbyWorldColliders(this.excavator.group.position, 2.2);
   }
 
+  private wakeWorldCollidersNear(center: THREE.Vector3, radius: number): number {
+    let woke = 0;
+    const candidates = this.nearbyWorldColliders(center, radius + 1.2);
+    for (const collider of candidates) {
+      if (collider.immovable || this.carriedWorldColliders.has(collider)) {
+        continue;
+      }
+
+      const pos = collider.mesh.position;
+      const horizontalDistance = Math.hypot(pos.x - center.x, pos.z - center.z);
+      if (horizontalDistance > radius + collider.radius) {
+        continue;
+      }
+
+      const supportY = this.terrain.getHeightAt(pos.x, pos.z) + collider.groundOffset;
+      const buriedDepth = supportY - pos.y;
+      const unsupportedDrop = pos.y - supportY;
+      const sample = Math.max(0.24, collider.radius * 2.2);
+      const hx = this.terrain.getHeightAt(pos.x + sample, pos.z) - this.terrain.getHeightAt(pos.x - sample, pos.z);
+      const hz = this.terrain.getHeightAt(pos.x, pos.z + sample) - this.terrain.getHeightAt(pos.x, pos.z - sample);
+      const slope = Math.hypot(hx, hz) / Math.max(sample * 2, 0.001);
+      const shouldWake = collider.sleeping || buriedDepth > 0.004 || unsupportedDrop > 0.012 || slope > 0.08;
+      if (!shouldWake) {
+        continue;
+      }
+
+      if (collider.sleeping) {
+        woke += 1;
+      }
+      collider.sleeping = false;
+      if (buriedDepth > 0.004) {
+        pos.y = supportY + 0.002;
+        collider.velocity.y = Math.max(collider.velocity.y, clamp(0.08 + buriedDepth * 3.2, 0.08, 1.15));
+      } else if (unsupportedDrop > 0.012) {
+        collider.velocity.y = Math.min(collider.velocity.y, -0.04);
+      }
+      if (slope > 0.08) {
+        collider.velocity.x += (-hx / Math.max(sample * 2, 0.001)) * clamp(slope * 0.18, 0.012, 0.12);
+        collider.velocity.z += (-hz / Math.max(sample * 2, 0.001)) * clamp(slope * 0.18, 0.012, 0.12);
+      }
+      this.pressure = Math.max(this.pressure, clamp(0.06 + Math.max(buriedDepth, unsupportedDrop, slope) * 0.22, 0, 0.5));
+    }
+    if (woke > 0) {
+      this.worldColliderGridDirty = true;
+    }
+    return woke;
+  }
+
+  private excavateTerrainWithWake(
+    start: THREE.Vector3,
+    end: THREE.Vector3,
+    sideways: THREE.Vector3,
+    width: number,
+    depth: number,
+    volumeLimit: number,
+  ): number {
+    const removed = this.terrain.excavateSweptBucket(start, end, sideways, width, depth, volumeLimit);
+    if (removed > 0) {
+      const center = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+      center.y = this.terrain.getHeightAt(center.x, center.z);
+      this.wakeWorldCollidersNear(center, start.distanceTo(end) * 0.5 + width * 0.5 + 0.9);
+    }
+    return removed;
+  }
+
+  private displaceTerrainWithWake(
+    start: THREE.Vector3,
+    end: THREE.Vector3,
+    sideways: THREE.Vector3,
+    width: number,
+    depth: number,
+    volumeLimit: number,
+  ): number {
+    const moved = this.terrain.displaceSweptBucket(start, end, sideways, width, depth, volumeLimit);
+    if (moved > 0) {
+      const center = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+      center.y = this.terrain.getHeightAt(center.x, center.z);
+      this.wakeWorldCollidersNear(center, start.distanceTo(end) * 0.5 + width * 1.3);
+    }
+    return moved;
+  }
+
+  private compactTrackStripWithWake(
+    center: THREE.Vector3,
+    forward: THREE.Vector3,
+    side: THREE.Vector3,
+    length: number,
+    width: number,
+    depth: number,
+  ): { compacted: number; rutDrop: number; bermRise: number } {
+    const result = this.terrain.compactTrackStrip(center, forward, side, length, width, depth);
+    if (result.compacted > 0) {
+      this.wakeWorldCollidersNear(center, length * 0.5 + width + 0.7);
+    }
+    return result;
+  }
+
+  private raiseTerrainWithWake(center: THREE.Vector3, radius: number, volume: number, relaxPasses = 2): number {
+    const deposited = this.terrain.raiseAt(center, radius, volume, relaxPasses);
+    if (deposited > 0) {
+      this.wakeWorldCollidersNear(center, radius + 0.55);
+    }
+    return deposited;
+  }
+
+  private settleTerrainWithWake(center: THREE.Vector3, radius: number, passes = 1): void {
+    this.terrain.settleAt(center, radius, passes);
+    this.wakeWorldCollidersNear(center, radius + 0.45);
+  }
+
+  private wakeTruckWheelColliders(): number {
+    let woke = 0;
+    for (const wheel of this.truck.wheelWorldPoints()) {
+      woke += this.wakeWorldCollidersNear(wheel, 0.92);
+    }
+    return woke;
+  }
+
   private clearMobileInput(): void {
     Object.assign(this.touchAxes, { leftX: 0, leftY: 0, rightX: 0, rightY: 0, leftTrack: 0, rightTrack: 0 });
     this.activeMobileJoysticks.clear();
@@ -3102,7 +3230,7 @@ class Simulator {
         const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
         const start = new THREE.Vector3(DIG_SITE.x - 0.55, beforeHeight + 0.02, DIG_SITE.z);
         const end = new THREE.Vector3(DIG_SITE.x + 0.55, beforeHeight - 0.18, DIG_SITE.z);
-        const removed = this.terrain.excavateSweptBucket(
+        const removed = this.excavateTerrainWithWake(
           start,
           end,
           new THREE.Vector3(0, 0, 1),
@@ -3253,7 +3381,7 @@ class Simulator {
         const bermBefore = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z + 0.78);
         const start = new THREE.Vector3(DIG_SITE.x - 0.55, centerBefore + 0.02, DIG_SITE.z);
         const end = new THREE.Vector3(DIG_SITE.x + 0.55, centerBefore - 0.12, DIG_SITE.z);
-        const displaced = this.terrain.displaceSweptBucket(
+        const displaced = this.displaceTerrainWithWake(
           start,
           end,
           new THREE.Vector3(0, 0, 1),
@@ -3328,7 +3456,7 @@ class Simulator {
           this.terrain.getHeightAt(leftBermPoint.x, leftBermPoint.z),
           this.terrain.getHeightAt(rightBermPoint.x, rightBermPoint.z),
         );
-        const result = this.terrain.compactTrackStrip(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, 0.2);
+        const result = this.compactTrackStripWithWake(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, 0.2);
         this.trackSoilWork += result.compacted;
         const rutAfter = this.terrain.getHeightAt(center.x, center.z);
         const bermAfter = Math.max(
@@ -3408,7 +3536,7 @@ class Simulator {
           .armSubsoilSamples()
           .find((sample) => sample.action === "stick" && sample.key === "stick-0.8");
         const buryPoint = stickSample?.point ?? this.excavator.bucketPocketWorld();
-        this.terrain.raiseAt(buryPoint, 0.58, 0.86);
+        this.raiseTerrainWithWake(buryPoint, 0.58, 0.86);
         this.collisionCooldown = 0;
         const beforeStick = this.angles.stick;
         const result = this.resolveArmTerrainResistance(previousAngles);
@@ -3596,7 +3724,7 @@ class Simulator {
         this.truckLoad = 0;
         const beforeY = this.truck.group.position.y;
         const roughWheel = this.truck.wheelWorldPoints()[3];
-        this.terrain.raiseAt(roughWheel, 0.52, 0.1);
+        this.raiseTerrainWithWake(roughWheel, 0.52, 0.1);
         const beforeRut = this.terrain.getHeightAt(roughWheel.x, roughWheel.z);
         const dumpPoint = this.truck.group.localToWorld(new THREE.Vector3(1.18, 1.36, 0.58));
         const accepted = this.truck.depositSoilAt(dumpPoint, TRUCK_CAPACITY * 0.74, TRUCK_CAPACITY);
@@ -3604,6 +3732,7 @@ class Simulator {
         this.truck.updateLoad(this.truckLoad);
         this.truck.settleLoad(2);
         const state = this.truck.updatePhysics(this.terrain, this.truckLoad, 0.95, true);
+        this.wakeTruckWheelColliders();
         const afterRut = this.terrain.getHeightAt(roughWheel.x, roughWheel.z);
         this.truck.updateLoad(this.truckLoad);
         this.updateUi(0);
@@ -3631,7 +3760,7 @@ class Simulator {
         const hardSurface = this.terrain.getSurfaceConditionAt(hard.x, hard.z);
         const beforeMud = this.terrain.getHeightAt(mud.x, mud.z);
         const beforeDry = this.terrain.getHeightAt(dry.x, dry.z);
-        const mudResult = this.terrain.compactTrackStrip(
+        const mudResult = this.compactTrackStripWithWake(
           mud,
           forward,
           side,
@@ -3639,7 +3768,7 @@ class Simulator {
           TRACK_WIDTH,
           0.035 * mudSurface.trackSinkMultiplier,
         );
-        const dryResult = this.terrain.compactTrackStrip(
+        const dryResult = this.compactTrackStripWithWake(
           dry,
           forward,
           side,
@@ -3670,7 +3799,7 @@ class Simulator {
         const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
         const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
         this.terrain.lowerAt(base.clone().addScaledVector(side, -0.72), 0.9, 0.42);
-        this.terrain.raiseAt(base.clone().addScaledVector(side, 0.72).addScaledVector(forward, 0.65), 0.78, 0.18);
+        this.raiseTerrainWithWake(base.clone().addScaledVector(side, 0.72).addScaledVector(forward, 0.65), 0.78, 0.18);
         this.leftTrackVelocity = TRACK_MAX_SPEED * 0.85;
         this.rightTrackVelocity = TRACK_MAX_SPEED * 0.65;
         this.updateTrackSoilInteraction(0.42, forward);
@@ -3834,6 +3963,81 @@ class Simulator {
           pairDistanceAfter,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
+        };
+      },
+      forceTerrainChangeWakesObjects: () => {
+        const collider =
+          this.worldColliders.find((candidate) => candidate.kind === "boulder") ??
+          this.worldColliders.find((candidate) => candidate.kind === "rock") ??
+          this.worldColliders.find((candidate) => candidate.kind === "clod");
+        if (!collider) {
+          return {
+            sleptBefore: false,
+            wokeFromCut: 0,
+            wokeFromRaise: 0,
+            groundDrop: 0,
+            fallDistance: 0,
+            liftDelta: 0,
+            finalSleeping: false,
+            pressure: this.pressure,
+          };
+        }
+
+        const savedPosition = collider.mesh.position.clone();
+        const savedQuaternion = collider.mesh.quaternion.clone();
+        const savedScale = collider.mesh.scale.clone();
+        const savedVelocity = collider.velocity.clone();
+        const savedSleeping = collider.sleeping;
+        const savedPressure = this.pressure;
+        const testPoint = new THREE.Vector3(24.5, 0, -16.5);
+        const beforeGround = this.terrain.getHeightAt(testPoint.x, testPoint.z);
+        collider.mesh.position.set(testPoint.x, beforeGround + collider.groundOffset, testPoint.z);
+        collider.velocity.set(0, 0, 0);
+        collider.sleeping = true;
+        this.worldColliderGridDirty = true;
+
+        const sleptBefore = collider.sleeping;
+        const cutStart = new THREE.Vector3(testPoint.x - 0.58, beforeGround + 0.02, testPoint.z);
+        const cutEnd = new THREE.Vector3(testPoint.x + 0.58, beforeGround - 0.22, testPoint.z);
+        const cutRemoved = this.excavateTerrainWithWake(cutStart, cutEnd, new THREE.Vector3(0, 0, 1), 1.24, 0.7, 3.2);
+        const wokeFromCut = cutRemoved > 0 && !collider.sleeping ? 1 : 0;
+        const afterCutGround = this.terrain.getHeightAt(testPoint.x, testPoint.z);
+        for (let i = 0; i < 96; i += 1) {
+          this.updateLooseWorldObjects(1 / 60);
+        }
+        const afterFallY = collider.mesh.position.y;
+
+        collider.velocity.set(0, 0, 0);
+        collider.sleeping = true;
+        this.worldColliderGridDirty = true;
+        const beforeRaiseY = collider.mesh.position.y;
+        const raised = this.raiseTerrainWithWake(new THREE.Vector3(testPoint.x, afterCutGround, testPoint.z), 0.72, 0.46, 1);
+        const wokeFromRaise = raised > 0 && !collider.sleeping ? 1 : 0;
+        for (let i = 0; i < 8; i += 1) {
+          this.updateLooseWorldObjects(1 / 60);
+        }
+        const afterRaiseY = collider.mesh.position.y;
+        const finalSleeping = collider.sleeping;
+        const pressure = this.pressure;
+
+        collider.mesh.position.copy(savedPosition);
+        collider.mesh.quaternion.copy(savedQuaternion);
+        collider.mesh.scale.copy(savedScale);
+        collider.velocity.copy(savedVelocity);
+        collider.sleeping = savedSleeping;
+        this.pressure = Math.max(savedPressure, pressure);
+        this.worldColliderGridDirty = true;
+        this.updateUi(0);
+
+        return {
+          sleptBefore,
+          wokeFromCut,
+          wokeFromRaise,
+          groundDrop: beforeGround - afterCutGround,
+          fallDistance: beforeGround + collider.groundOffset - afterFallY,
+          liftDelta: afterRaiseY - beforeRaiseY,
+          finalSleeping,
+          pressure,
         };
       },
       forceLiftableObjectAudit: () => {
@@ -4049,7 +4253,7 @@ class Simulator {
           const current = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z + lane);
           const start = new THREE.Vector3(DIG_SITE.x - 0.86, current + 0.08, DIG_SITE.z + lane);
           const end = new THREE.Vector3(DIG_SITE.x + 0.86, current - 0.68, DIG_SITE.z + lane);
-          removed += this.terrain.excavateSweptBucket(
+          removed += this.excavateTerrainWithWake(
             start,
             end,
             new THREE.Vector3(0, 0, 1),
@@ -4058,7 +4262,7 @@ class Simulator {
             BUCKET_CAPACITY,
           );
           if (pass % lanes.length === lanes.length - 1) {
-            this.terrain.settleAt(DIG_SITE, 2.45, 1);
+            this.settleTerrainWithWake(DIG_SITE, 2.45, 1);
           }
         }
 
@@ -4119,6 +4323,7 @@ class Simulator {
   private updateTruckPhysics(dt: number): void {
     const state = this.truck.updatePhysics(this.terrain, this.truckLoad, dt, this.truckLoad > 0.02);
     if (state.tireCompacted > 0.001) {
+      this.wakeTruckWheelColliders();
       this.pressure = Math.max(this.pressure, clamp(0.04 + state.loadRatio * 0.18 + state.tireRutDrop * 2.4, 0, 0.42));
     }
   }
@@ -4257,7 +4462,7 @@ class Simulator {
         this.pressure = Math.max(this.pressure, clamp(0.1 + severity * 0.36 + collider.mass * 0.018, 0, 0.62));
         if (collider.crushable && severity > 0.32) {
           collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.04, 0.08));
-          this.terrain.raiseAt(collider.mesh.position, Math.max(0.16, collider.radius * 1.7), collider.radius * 0.012 * severity, 0);
+          this.raiseTerrainWithWake(collider.mesh.position, Math.max(0.16, collider.radius * 1.7), collider.radius * 0.012 * severity, 0);
         }
       }
     }
@@ -4731,7 +4936,7 @@ class Simulator {
         0.002,
         0.052,
       );
-      const result = this.terrain.compactTrackStrip(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, depth);
+      const result = this.compactTrackStripWithWake(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, depth);
       this.trackSoilWork += result.compacted;
       if (result.compacted > 0) {
         this.pressure = Math.max(
@@ -4955,7 +5160,7 @@ class Simulator {
         this.pressure = Math.max(this.pressure, clamp(0.08 + severity * 0.26 + collider.mass * 0.01, 0, 0.55));
         if (collider.crushable && severity > 0.34) {
           collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.035, 0.07));
-          this.terrain.raiseAt(collider.mesh.position, Math.max(0.14, collider.radius * 1.4), collider.radius * 0.008 * severity, 0);
+          this.raiseTerrainWithWake(collider.mesh.position, Math.max(0.14, collider.radius * 1.4), collider.radius * 0.008 * severity, 0);
         }
       }
     }
@@ -5162,7 +5367,7 @@ class Simulator {
         0.004,
         0.28,
       );
-      const removed = this.terrain.excavateSweptBucket(
+      const removed = this.excavateTerrainWithWake(
         this.previousBucketTip,
         tip,
         sideways,
@@ -5199,7 +5404,7 @@ class Simulator {
 
     if (contactRatio > 0 && isDiggingMotion && this.bucketLoad + this.bucketTransitLoad >= BUCKET_CAPACITY * 0.985) {
       const displacementDepth = clamp(maxPenetration * (0.035 + tipSpeed * 0.025), 0.002, 0.045);
-      const displaced = this.terrain.displaceSweptBucket(
+      const displaced = this.displaceTerrainWithWake(
         this.previousBucketTip,
         tip,
         sideways,
@@ -5445,12 +5650,12 @@ class Simulator {
       const accepted = this.truck.depositSoilAt(pos, volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < volume) {
-        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.18, volume - accepted, 0);
+        this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.18, volume - accepted, 0);
       }
     } else {
       const ground = this.terrain.getHeightAt(pos.x, pos.z);
       const settleRadius = Math.max(this.terrain.spacing * 0.62, 0.14 + Math.cbrt(volume) * 0.08);
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, ground, pos.z), settleRadius, volume, 0);
+      this.raiseTerrainWithWake(new THREE.Vector3(pos.x, ground, pos.z), settleRadius, volume, 0);
     }
     this.fineGrainSettledVolume += volume;
     this.truck.updateLoad(this.truckLoad);
@@ -5545,10 +5750,10 @@ class Simulator {
           const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
           this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
           if (accepted < particle.volume) {
-            this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted, 1);
+            this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted, 1);
           }
         } else {
-          this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
+          this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
         }
         this.recycleSoilParticle(particle);
       }
@@ -5706,7 +5911,7 @@ class Simulator {
     this.bucketLoad += accepted;
     if (accepted < volume) {
       const pos = particle.mesh.position;
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.34 + Math.cbrt(volume - accepted) * 0.1, volume - accepted, 1);
+      this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.34 + Math.cbrt(volume - accepted) * 0.1, volume - accepted, 1);
     }
     this.excavator.setBucketLoad(this.bucketLoad);
   }
@@ -5722,10 +5927,10 @@ class Simulator {
       const accepted = this.truck.depositSoilAt(pos, volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < volume) {
-        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.36, volume - accepted, 1);
+        this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.36, volume - accepted, 1);
       }
     } else {
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.32 + Math.cbrt(volume) * 0.1, volume, 1);
+      this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.32 + Math.cbrt(volume) * 0.1, volume, 1);
     }
     this.truck.updateLoad(this.truckLoad);
   }
@@ -5736,9 +5941,9 @@ class Simulator {
       return;
     }
     this.soilSettleAccumulator = 0;
-    this.terrain.settleAt(DIG_SITE, 2.6, 1);
+    this.settleTerrainWithWake(DIG_SITE, 2.6, 1);
     const tip = this.excavator.bucketTipWorld();
-    this.terrain.settleAt(tip, 1.15, 1);
+    this.settleTerrainWithWake(tip, 1.15, 1);
     if (this.truckLoad > 0.02) {
       this.truck.settleLoad(1);
     }
@@ -5760,10 +5965,10 @@ class Simulator {
       const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < particle.volume) {
-        this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted, 1);
+        this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted, 1);
       }
     } else {
-      this.terrain.raiseAt(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
+      this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
     }
     this.recycleSoilParticle(particle);
   }

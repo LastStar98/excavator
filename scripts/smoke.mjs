@@ -396,6 +396,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const terrainWakePhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceTerrainChangeWakesObjects()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const mapDiversity = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceMapDiversity()`,
       returnByValue: true,
@@ -532,6 +537,7 @@ async function main() {
     const roughTrackValue = roughTrack.result.value;
     const payloadSupportValue = payloadSupport.result.value;
     const worldObjectPhysicsValue = worldObjectPhysics.result.value;
+    const terrainWakePhysicsValue = terrainWakePhysics.result.value;
     const mapDiversityValue = mapDiversity.result.value;
     const mobileUiValue = mobileUi.result.value;
     const mobileMenuUiValue = mobileMenuUi.result.value;
@@ -824,6 +830,16 @@ async function main() {
           worldObjectPhysicsValue?.pressure > 0.35,
       ],
       [
+        "terrain edits wake and support sleeping world objects",
+        terrainWakePhysicsValue?.sleptBefore &&
+          terrainWakePhysicsValue?.wokeFromCut >= 1 &&
+          terrainWakePhysicsValue?.groundDrop > 0.12 &&
+          terrainWakePhysicsValue?.fallDistance > 0.08 &&
+          terrainWakePhysicsValue?.wokeFromRaise >= 1 &&
+          terrainWakePhysicsValue?.liftDelta > 0.035 &&
+          terrainWakePhysicsValue?.pressure > 0.05,
+      ],
+      [
         "expanded map has diverse physical terrain zones",
         mapDiversityValue?.terrainSize >= 92 &&
           mapDiversityValue?.spacing < 0.46 &&
@@ -934,6 +950,7 @@ async function main() {
           roughTrack: roughTrackValue,
           payloadSupport: payloadSupportValue,
           worldObjectPhysics: worldObjectPhysicsValue,
+          terrainWakePhysics: terrainWakePhysicsValue,
           mapDiversity: mapDiversityValue,
           mobileUi: mobileUiValue,
           mobileMenuUi: mobileMenuUiValue,
