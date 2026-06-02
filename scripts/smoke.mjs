@@ -351,6 +351,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const upperStructurePhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceUpperStructurePhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const armTruckCollision = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceArmTruckCollision()`,
       returnByValue: true,
@@ -637,6 +642,7 @@ async function main() {
     const deepExcavationValue = deepExcavation.result.value;
     const truckCollisionValue = truckCollision.result.value;
     const truckImpactPhysicsValue = truckImpactPhysics.result.value;
+    const upperStructurePhysicsValue = upperStructurePhysics.result.value;
     const armTruckCollisionValue = armTruckCollision.result.value;
     const armSubsoilResistanceValue = armSubsoilResistance.result.value;
     const armWorldObjectPhysicsValue = armWorldObjectPhysics.result.value;
@@ -865,6 +871,21 @@ async function main() {
           (truckImpactPhysicsValue?.bodyPitchDelta > 0.004 || truckImpactPhysicsValue?.bodyRollDelta > 0.004) &&
           (truckImpactPhysicsValue?.impactPitch > 0.004 || truckImpactPhysicsValue?.impactRoll > 0.004) &&
           truckImpactPhysicsValue?.truckStayedPut,
+      ],
+      [
+        "upper structure collides with truck and world objects",
+        upperStructurePhysicsValue?.truckCollided &&
+          upperStructurePhysicsValue?.truckBlocked &&
+          Math.abs(upperStructurePhysicsValue?.velocityAfter ?? 1) < 0.001 &&
+          upperStructurePhysicsValue?.swingAfter < upperStructurePhysicsValue?.swingBefore - 0.2 &&
+          upperStructurePhysicsValue?.truckImpactImpulse > 0.04 &&
+          upperStructurePhysicsValue?.truckPenetration > 0.02 &&
+          upperStructurePhysicsValue?.objectHit &&
+          upperStructurePhysicsValue?.objectTravel > 0.01 &&
+          upperStructurePhysicsValue?.objectImpulse > 0.02 &&
+          upperStructurePhysicsValue?.movedMass > 1 &&
+          upperStructurePhysicsValue?.pressure > 0.25 &&
+          upperStructurePhysicsValue?.collisionCount > 0,
       ],
       [
         "truck collision blocks arm and bucket joints",
@@ -1128,6 +1149,7 @@ async function main() {
           deepExcavation: deepExcavationValue,
           truckCollision: truckCollisionValue,
           truckImpactPhysics: truckImpactPhysicsValue,
+          upperStructurePhysics: upperStructurePhysicsValue,
           armTruckCollision: armTruckCollisionValue,
           armSubsoilResistance: armSubsoilResistanceValue,
           armWorldObjectPhysics: armWorldObjectPhysicsValue,
