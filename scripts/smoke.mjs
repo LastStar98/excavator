@@ -606,9 +606,10 @@ async function main() {
         "playable bucket cuts soil through resistance",
         playableDigValue?.removed > 0.015 &&
           playableDigValue?.afterHeight < playableDigValue?.beforeHeight - 0.008 &&
+          playableDigValue?.bucketLoad > 0.015 &&
           (playableDigValue?.bucketLoad ?? 0) + (playableDigValue?.bucketTransitLoad ?? 0) > 0.01 &&
           !playableDigValue?.blocked &&
-          Math.abs(playableDigValue?.velocityAfter ?? 0) > 0.05 &&
+          Math.abs(playableDigValue?.velocityAfter ?? 0) > 0.25 &&
           playableDigValue?.pressure > 0.2,
       ],
       [

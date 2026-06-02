@@ -3972,7 +3972,7 @@ class Simulator {
       0,
       1,
     );
-    const drag = clamp(1 - severity * (bucketCuttingMotion ? 0.34 : 0.58), bucketCuttingMotion ? 0.56 : 0.32, 0.9);
+    const drag = clamp(1 - severity * (bucketCuttingMotion ? 0.025 : 0.16), bucketCuttingMotion ? 0.95 : 0.8, 0.995);
     const chain = new Set<ActionName>();
     if (affected.has("boom")) {
       chain.add("boom");
@@ -4088,10 +4088,10 @@ class Simulator {
         0.1,
         1.35,
       );
-      const drag = clamp(1 - resistance * (0.1 + tipSpeed * 0.055), 0.22, 0.95);
+      const drag = clamp(1 - resistance * (0.01 + tipSpeed * 0.006), 0.9, 0.995);
       this.velocities.boom *= drag;
       this.velocities.stick *= drag;
-      const bucketDrag = clamp(1 - resistance * (0.032 + tipSpeed * 0.022), 0.58, 0.995);
+      const bucketDrag = clamp(1 - resistance * (0.004 + tipSpeed * 0.003), 0.95, 0.999);
       this.velocities.bucket *= bucketDrag;
       this.pressure = Math.max(this.pressure, clamp(resistance / 1.25, 0, 1));
     }
@@ -4126,8 +4126,14 @@ class Simulator {
       if (removed > 0) {
         this.pressure = Math.max(this.pressure, clamp(0.42 + removed * 1.8 + contactRatio * 0.22, 0, 1));
         if (bucketAccepted > 0.001) {
-          this.bucketTransitLoad += bucketAccepted;
-          this.spawnCuttingFlow(edgePoints, pocket, bucketAccepted);
+          const directCaptureRatio = clamp(0.42 + attackEfficiency * 0.22 + curlInSpeed * 0.08 + contactRatio * 0.08, 0.38, 0.72);
+          const directCapture = Math.min(bucketAccepted, bucketAccepted * directCaptureRatio);
+          const flowVolume = bucketAccepted - directCapture;
+          this.bucketLoad += directCapture;
+          if (flowVolume > 0.001) {
+            this.bucketTransitLoad += flowVolume;
+            this.spawnCuttingFlow(edgePoints, pocket, flowVolume);
+          }
         } else {
           this.bucketLoad += bucketAccepted;
         }
