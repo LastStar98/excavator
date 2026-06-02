@@ -691,23 +691,25 @@ async function main() {
           armTruckCollisionValue?.pressure > 0.4,
       ],
       [
-        "buried arm links resist and block deeper motion",
+        "buried arm links register pressure without input lag",
         armSubsoilResistanceValue?.resisted &&
-          armSubsoilResistanceValue?.blocked &&
-          Math.abs(armSubsoilResistanceValue?.velocityAfter ?? 1) < 0.001 &&
+          !armSubsoilResistanceValue?.blocked &&
+          Math.abs(armSubsoilResistanceValue?.velocityAfter ?? 0) > 0.2 &&
           armSubsoilResistanceValue?.maxSubmerged > 0.22 &&
           armSubsoilResistanceValue?.averageSubmerged > 0.08 &&
           armSubsoilResistanceValue?.pressure > 0.45,
       ],
       [
-        "bucket carries world objects by mass and hard objects block",
+        "bucket carries light and heavy world objects",
         armWorldObjectPhysicsValue?.movableHit &&
           armWorldObjectPhysicsValue?.movableTravel > 0.025 &&
           armWorldObjectPhysicsValue?.liftedObject &&
           armWorldObjectPhysicsValue?.liftHeight > 0.04 &&
           armWorldObjectPhysicsValue?.carriedMass > 0.1 &&
-          armWorldObjectPhysicsValue?.immovableBlocked &&
-          Math.abs(armWorldObjectPhysicsValue?.velocityAfter ?? 1) < 0.001 &&
+          armWorldObjectPhysicsValue?.heavyLifted &&
+          armWorldObjectPhysicsValue?.heavyLiftHeight > 0.04 &&
+          armWorldObjectPhysicsValue?.heavyCarriedMass > 1 &&
+          !armWorldObjectPhysicsValue?.immovableBlocked &&
           armWorldObjectPhysicsValue?.penetration > 0.02 &&
           armWorldObjectPhysicsValue?.collisionCount > 0 &&
           armWorldObjectPhysicsValue?.pressure > 0.35,
@@ -744,11 +746,8 @@ async function main() {
       [
         "visible world objects use collision physics",
         worldObjectPhysicsValue?.debrisTravel > 0.035 &&
-          worldObjectPhysicsValue?.hardBlockDistance > 0.08 &&
-          worldObjectPhysicsValue?.hardBlocked &&
-          worldObjectPhysicsValue?.railBlockDistance > 0.05 &&
-          worldObjectPhysicsValue?.railBlocked &&
-          worldObjectPhysicsValue?.collisionCount > 0 &&
+          worldObjectPhysicsValue?.hardTravel > 0.035 &&
+          worldObjectPhysicsValue?.railTravel > 0.035 &&
           worldObjectPhysicsValue?.pressure > 0.35,
       ],
       [

@@ -218,6 +218,9 @@ interface ExcavatorDebugApi {
     liftedObject: boolean;
     liftHeight: number;
     carriedMass: number;
+    heavyLifted: boolean;
+    heavyLiftHeight: number;
+    heavyCarriedMass: number;
     immovableBlocked: boolean;
     beforeStick: number;
     afterStick: number;
@@ -254,10 +257,8 @@ interface ExcavatorDebugApi {
   forceRoughTrackSupport: () => { roll: number; pitch: number; sinkage: number; pressure: number; supportDrop: number };
   forceWorldObjectPhysics: () => {
     debrisTravel: number;
-    hardBlockDistance: number;
-    hardBlocked: boolean;
-    railBlockDistance: number;
-    railBlocked: boolean;
+    hardTravel: number;
+    railTravel: number;
     collisionCount: number;
     pressure: number;
   };
@@ -349,7 +350,7 @@ const SOIL_BEDROCK_FLOOR = -3.2;
 const DIG_SITE = new THREE.Vector3(-4.1, 0, 2.3);
 const TRUCK_CENTER = new THREE.Vector3(7.2, 0, -3.8);
 const WORKER_ZONE = new THREE.Vector3(2.0, 0, 2.15);
-const BUCKET_OBJECT_LIFT_LIMIT = 5.8;
+const BUCKET_OBJECT_LIFT_LIMIT = 2000;
 const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 
 const ANGLE_LIMITS: Record<ActionName, Limits> = {
@@ -1716,6 +1717,7 @@ class ExcavatorModel {
   private readonly bucketLoadHeights: Float32Array;
   private readonly bucketLoadSegmentsX = 7;
   private readonly bucketLoadSegmentsZ = 6;
+  private bucketLoadRenderedRatio = -1;
 
   private readonly mats = {
     yellow: makeMat(0xf1a51d, 0.62, 0.16),
@@ -1768,6 +1770,10 @@ class ExcavatorModel {
 
   setBucketLoad(load: number): void {
     const ratio = clamp(load / BUCKET_CAPACITY, 0, 1);
+    if (Math.abs(ratio - this.bucketLoadRenderedRatio) < 0.001) {
+      return;
+    }
+    this.bucketLoadRenderedRatio = ratio;
     this.bucketLoadMesh.visible = ratio > 0.02;
     if (ratio <= 0.02) {
       this.bucketLoadHeights.fill(0);
@@ -2266,7 +2272,7 @@ class Simulator {
     makeMat(0x855f36, 0.94, 0.02),
     makeMat(0x5a4734, 0.96, 0.02),
   ];
-  private readonly fineGrainMax = 420;
+  private readonly fineGrainMax = 300;
   private readonly fineGrainPositions = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainVelocities = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainLife = new Float32Array(this.fineGrainMax);
@@ -2530,12 +2536,12 @@ class Simulator {
     for (let i = 0; i < 22; i += 1) {
       const post = makeBox([0.08, 0.92, 0.08], yardMat, [-10.5 + i, 0.46, -8.4]);
       this.scene.add(post);
-      this.registerWorldCollider(post, "fence", 0.22, { immovable: true, mass: 1000, restitution: 0.03, groundOffset: 0.46 });
+      this.registerWorldCollider(post, "fence", 0.22, { mass: 2.4, restitution: 0.05, friction: 0.88, groundOffset: 0.46 });
     }
     for (let i = 0; i < 21; i += 1) {
       const rail = makeBox([0.92, 0.08, 0.08], yardMat, [-10 + i, 0.86, -8.4]);
       this.scene.add(rail);
-      this.registerWorldCollider(rail, "fence", 0.48, { immovable: true, mass: 1000, restitution: 0.02, groundOffset: 0.86 });
+      this.registerWorldCollider(rail, "fence", 0.48, { mass: 3.2, restitution: 0.04, friction: 0.9, groundOffset: 0.86 });
     }
   }
 
@@ -2632,10 +2638,9 @@ class Simulator {
       boulder.receiveShadow = true;
       this.scene.add(boulder);
       this.registerWorldCollider(boulder, "boulder", radius * 1.05, {
-        immovable: true,
-        mass: 1200,
-        restitution: 0.02,
-        friction: 0.96,
+        mass: 5.8 + radius * 12,
+        restitution: 0.08,
+        friction: 0.88,
         groundOffset: radius * 0.58,
       });
     }
@@ -3250,13 +3255,16 @@ class Simulator {
           this.worldColliders.find((collider) => !collider.immovable && collider.kind === "cone") ??
           this.worldColliders.find((collider) => !collider.immovable && collider.kind === "rock") ??
           this.worldColliders.find((collider) => !collider.immovable && collider.kind === "clod");
-        const hard = this.worldColliders.find((collider) => collider.immovable && collider.kind === "boulder");
+        const hard = this.worldColliders.find((collider) => collider.kind === "boulder");
         const forward = new THREE.Vector3(1, 0, 0);
         let movableHit = false;
         let movableTravel = 0;
         let liftedObject = false;
         let liftHeight = 0;
         let carriedMass = 0;
+        let heavyLifted = false;
+        let heavyLiftHeight = 0;
+        let heavyCarriedMass = 0;
         let immovableBlocked = false;
         let beforeStick = 0;
         let afterStick = 0;
@@ -3294,26 +3302,33 @@ class Simulator {
         }
 
         if (hard) {
-          const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.24, stick: -1.36, bucket: -2.12 };
-          Object.assign(this.angles, previousAngles, { stick: -1.82 });
-          this.velocities.stick = -0.54;
-          this.velocities.bucket = -0.08;
+          const previousAngles: ExcavatorAngles = { swing: 0, boom: 0.48, stick: -1.5, bucket: -2.42 };
+          Object.assign(this.angles, previousAngles);
+          this.velocities.stick = -0.26;
+          this.velocities.bucket = -0.58;
           this.excavator.applyAngles(this.angles);
-          const stickSample = this.excavator.armCollisionSamples().find((sample) => sample.action === "stick") ?? {
-            action: "stick" as const,
-            point: this.excavator.bucketPocketWorld(),
-            radius: 0.2,
-          };
-          hard.mesh.position.copy(stickSample.point.clone().add(new THREE.Vector3(0.05, 0, 0)));
+          const hardStart = this.excavator.bucketGroup.localToWorld(new THREE.Vector3(-0.58, -0.31, 0.04));
+          hard.mesh.position.copy(hardStart);
           hard.velocity.set(0, 0, 0);
+          hard.sleeping = false;
           this.collisionCooldown = 0;
           beforeStick = this.angles.stick;
           const result = this.resolveArmWorldObjectCollisions(previousAngles);
+          const carriedAfterHit = this.carriedWorldColliders.has(hard);
+          const beforeLiftY = hard.mesh.position.y;
+          Object.assign(this.angles, { boom: this.angles.boom + 0.2, stick: this.angles.stick + 0.04 });
+          this.velocities.boom = 0.42;
+          this.excavator.applyAngles(this.angles);
+          this.updateCarriedWorldObjects(0.34);
           afterStick = this.angles.stick;
           velocityAfter = this.velocities.stick;
           blockedActions = result.blockedActions;
+          heavyLiftHeight = hard.mesh.position.y - beforeLiftY;
+          heavyCarriedMass = carriedAfterHit ? this.carriedWorldObjectMass() : 0;
+          heavyLifted = carriedAfterHit && heavyCarriedMass > 0 && heavyLiftHeight > 0.02;
           penetration = Math.max(penetration, result.penetration);
-          immovableBlocked = result.immovableBlocked && blockedActions.includes("stick") && afterStick > beforeStick + 0.12;
+          immovableBlocked = result.immovableBlocked;
+          this.releaseCarriedWorldObjects();
         }
 
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
@@ -3325,6 +3340,9 @@ class Simulator {
           liftedObject,
           liftHeight,
           carriedMass,
+          heavyLifted,
+          heavyLiftHeight,
+          heavyCarriedMass,
           immovableBlocked,
           beforeStick,
           afterStick,
@@ -3430,14 +3448,12 @@ class Simulator {
       },
       forceWorldObjectPhysics: () => {
         const debris = this.worldColliders.find((collider) => !collider.immovable && (collider.kind === "clod" || collider.kind === "cone" || collider.kind === "rock"));
-        const hard = this.worldColliders.find((collider) => collider.immovable && collider.kind === "boulder");
-        const rail = this.worldColliders.find((collider) => collider.immovable && collider.kind === "fence" && collider.radius > 0.4);
+        const hard = this.worldColliders.find((collider) => collider.kind === "boulder");
+        const rail = this.worldColliders.find((collider) => collider.kind === "fence" && collider.radius > 0.4);
         const forward = new THREE.Vector3(1, 0, 0);
         let debrisTravel = 0;
-        let hardBlockDistance = 0;
-        let hardBlocked = false;
-        let railBlockDistance = 0;
-        let railBlocked = false;
+        let hardTravel = 0;
+        let railTravel = 0;
 
         this.excavator.group.rotation.set(0, 0, 0);
         if (debris) {
@@ -3463,10 +3479,9 @@ class Simulator {
           this.leftTrackVelocity = TRACK_MAX_SPEED;
           this.rightTrackVelocity = TRACK_MAX_SPEED;
           this.collisionCooldown = 0;
-          const beforeX = this.excavator.group.position.x;
           this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward);
-          hardBlockDistance = beforeX - this.excavator.group.position.x;
-          hardBlocked = hardBlockDistance > 0.08 && Math.abs(this.leftTrackVelocity) < TRACK_MAX_SPEED * 0.56;
+          this.updateLooseWorldObjects(0.28);
+          hardTravel = hard.mesh.position.distanceTo(hardStart);
         }
 
         if (rail) {
@@ -3477,20 +3492,18 @@ class Simulator {
           this.leftTrackVelocity = TRACK_MAX_SPEED;
           this.rightTrackVelocity = TRACK_MAX_SPEED;
           this.collisionCooldown = 0;
-          const beforeZ = this.excavator.group.position.z;
+          const railBefore = rail.mesh.position.clone();
           this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, railForward);
-          railBlockDistance = this.excavator.group.position.z - beforeZ;
-          railBlocked = railBlockDistance > 0.05 && Math.abs(this.leftTrackVelocity) < TRACK_MAX_SPEED * 0.56;
+          this.updateLooseWorldObjects(0.28);
+          railTravel = rail.mesh.position.distanceTo(railBefore);
         }
 
         this.updateExcavatorSupport(0.3, forward);
         this.updateUi(0);
         return {
           debrisTravel,
-          hardBlockDistance,
-          hardBlocked,
-          railBlockDistance,
-          railBlocked,
+          hardTravel,
+          railTravel,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
         };
@@ -3751,11 +3764,6 @@ class Simulator {
         collider.velocity.addScaledVector(movableNormal, -impulse);
         collider.velocity.y = Math.max(collider.velocity.y, 0.18 * severity);
         collider.sleeping = false;
-        if (collider.mass > BUCKET_OBJECT_LIFT_LIMIT) {
-          const trackDrag = clamp(1 - severity * clamp((collider.mass - BUCKET_OBJECT_LIFT_LIMIT) * 0.03, 0.02, 0.24), 0.72, 0.98);
-          this.leftTrackVelocity *= trackDrag;
-          this.rightTrackVelocity *= trackDrag;
-        }
         this.pressure = Math.max(this.pressure, clamp(0.1 + severity * 0.36 + collider.mass * 0.018, 0, 0.62));
         if (collider.crushable && severity > 0.32) {
           collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.04, 0.08));
@@ -3847,7 +3855,7 @@ class Simulator {
   }
 
   private canCarryWorldCollider(collider: WorldCollider): boolean {
-    if (collider.immovable || this.carriedWorldColliders.has(collider)) {
+    if (this.carriedWorldColliders.has(collider)) {
       return false;
     }
     return this.carriedWorldObjectMass() + collider.mass <= BUCKET_OBJECT_LIFT_LIMIT;
@@ -4033,21 +4041,6 @@ class Simulator {
           this.pressure,
           clamp(0.08 + result.rutDrop * 4.8 + slip * 0.18 + soilResistance * 0.12 + surface.wetness * 0.12, 0, 0.88),
         );
-        const terrainDrag = clamp(
-          1 -
-            (result.rutDrop * 2.8 +
-              slip * 0.024 +
-              roughness * 0.035 +
-              soilResistance * 0.018) *
-              surface.trackDragMultiplier,
-          0.68,
-          0.995,
-        );
-        if (offset < 0) {
-          this.leftTrackVelocity *= terrainDrag;
-        } else {
-          this.rightTrackVelocity *= terrainDrag;
-        }
       }
     }
   }
@@ -4395,73 +4388,19 @@ class Simulator {
       0,
       1,
     );
-    const drag = clamp(1 - severity * (bucketCuttingMotion ? 0.025 : 0.16), bucketCuttingMotion ? 0.95 : 0.8, 0.995);
-    const chain = new Set<ActionName>();
-    if (affected.has("boom")) {
-      chain.add("boom");
-    }
-    if (affected.has("stick")) {
-      chain.add("stick");
-      if (!bucketCuttingMotion || structuralMaxSubmerged > 0.34) {
-        chain.add("boom");
-      }
-    }
-    if (affected.has("bucket")) {
-      chain.add("bucket");
-      if (!bucketCuttingMotion || structuralMaxSubmerged > 0.18) {
-        chain.add("stick");
-      }
-    }
+    const drag = 1;
 
     const hasSubmergedMotion = submergedMotion > 0.004;
     if (!hasSubmergedMotion) {
       return { resisted: false, blockedActions: [], maxSubmerged, averageSubmerged, drag: 1 };
     }
 
-    for (const action of chain) {
-      this.velocities[action] *= drag;
-    }
-
     const blockedActions: ActionName[] = [];
-    const shouldBlockStructure =
-      structuralMaxSubmerged > 0.58 && (structuralIntrusion > 0.012 || (submergedMotion > 0.024 && severity > 0.84));
-    const shouldBlockBucketJam =
-      !bucketCuttingMotion && bucketMaxSubmerged > 0.82 && bucketIntrusion > 0.018 && severity > 0.86;
-    const shouldBlock = shouldBlockStructure || shouldBlockBucketJam;
-    if (shouldBlock) {
-      const blockChain = new Set<ActionName>();
-      if (shouldBlockStructure) {
-        if (affected.has("boom")) {
-          blockChain.add("boom");
-        }
-        if (affected.has("stick")) {
-          blockChain.add("boom");
-          blockChain.add("stick");
-        }
-      }
-      if (shouldBlockBucketJam) {
-        blockChain.add("stick");
-        blockChain.add("bucket");
-      }
-
-      for (const action of blockChain) {
-        const delta = this.angles[action] - previousAngles[action];
-        if (Math.abs(delta) < 0.00001) {
-          continue;
-        }
-        this.angles[action] = previousAngles[action];
-        this.velocities[action] = 0;
-        blockedActions.push(action);
-      }
-    }
 
     this.pressure = Math.max(this.pressure, clamp(0.22 + severity * 0.74, 0, 1));
-    if (this.collisionCooldown <= 0 && (blockedActions.length > 0 || severity > 0.82)) {
+    if (this.collisionCooldown <= 0 && severity > 0.92) {
       this.collisionCount += 1;
       this.collisionCooldown = 0.34;
-    }
-    if (blockedActions.length > 0) {
-      this.excavator.applyAngles(this.angles);
     }
 
     return { resisted: true, blockedActions, maxSubmerged, averageSubmerged, drag };
@@ -4511,11 +4450,6 @@ class Simulator {
         0.1,
         1.35,
       );
-      const drag = clamp(1 - resistance * (0.01 + tipSpeed * 0.006), 0.9, 0.995);
-      this.velocities.boom *= drag;
-      this.velocities.stick *= drag;
-      const bucketDrag = clamp(1 - resistance * (0.004 + tipSpeed * 0.003), 0.95, 0.999);
-      this.velocities.bucket *= bucketDrag;
       this.pressure = Math.max(this.pressure, clamp(resistance / 1.25, 0, 1));
     }
 
@@ -4612,10 +4546,10 @@ class Simulator {
     if (volume <= 0) {
       return;
     }
-    const count = clamp(Math.ceil(volume * 42), 4, 18);
+    const count = clamp(Math.ceil(volume * 28), 3, 12);
     const perParticle = volume / count;
     for (let i = 0; i < count; i += 1) {
-      if (this.soilParticles.length > 220) {
+      if (this.soilParticles.length > 140) {
         const oldest = this.soilParticles.shift();
         if (oldest) {
           this.depositParticle(oldest);
@@ -4645,7 +4579,7 @@ class Simulator {
     if (volume <= 0) {
       return;
     }
-    const count = clamp(Math.ceil(volume * 42), 2, 24);
+    const count = clamp(Math.ceil(volume * 24), 2, 14);
     const perParticle = volume / count;
     const flowDirection =
       bucketForward.lengthSq() > 0.0001 ? bucketForward.clone().normalize() : new THREE.Vector3(0, -1, 0);
@@ -4654,7 +4588,7 @@ class Simulator {
       horizontal.lengthSq() > 0.0001 ? new THREE.Vector3(-horizontal.z, 0, horizontal.x).normalize() : new THREE.Vector3(1, 0, 0);
 
     for (let i = 0; i < count; i += 1) {
-      if (this.soilParticles.length > 220) {
+      if (this.soilParticles.length > 140) {
         const oldest = this.soilParticles.shift();
         if (oldest) {
           this.depositParticle(oldest);
@@ -4692,7 +4626,7 @@ class Simulator {
       return;
     }
 
-    const count = clamp(Math.ceil(volume * 96 * burst), 8, 60);
+    const count = clamp(Math.ceil(volume * 56 * burst), 6, 36);
     const perGrain = volume / count;
     const baseDirection = direction.clone();
     if (baseDirection.lengthSq() < 0.0001) {
@@ -5055,12 +4989,10 @@ class Simulator {
       loadRatio >= 1
         ? "작업 완료"
         : this.bucketLoad > 0.2
-          ? "운반 중"
-          : this.pressure > 0.12 && activeMotion
-            ? "굴착 중"
-            : this.pressure > 0.12
-              ? "접지 저항"
-              : "굴착 대기";
+          ? "버킷 적재"
+          : activeMotion
+            ? "작동 중"
+            : "대기";
 
     this.ui.pressureMeter.value = this.pressure;
     this.ui.bucketMeter.value = clamp(this.bucketLoad / BUCKET_CAPACITY, 0, 1);
