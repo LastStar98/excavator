@@ -58,6 +58,7 @@ interface SoilParticle {
   mesh: THREE.Mesh;
   velocity: THREE.Vector3;
   volume: number;
+  radius: number;
   life: number;
   settles: boolean;
   target?: THREE.Vector3;
@@ -171,6 +172,9 @@ interface ExcavatorDebugApi {
     activeAfter: number;
     gravityDelta: number;
     terrainGain: number;
+    soilTruckPenetrationBefore: number;
+    soilTruckPenetrationAfter: number;
+    soilObjectImpulse: number;
   };
   forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
   forceCuttingFlowPhysics: () => {
@@ -3067,6 +3071,39 @@ class Simulator {
           this.updateFineGrains(1 / 60);
         }
         const dumped = this.truckLoad - beforeTruck;
+        let soilTruckPenetrationBefore = 0;
+        let soilTruckPenetrationAfter = 0;
+        let soilObjectImpulse = 0;
+        const testRadius = 0.08;
+        const testMesh = this.acquireSoilParticleMesh(testRadius, this.looseSoilMats[0], 991);
+        const testParticle: SoilParticle = {
+          mesh: testMesh,
+          velocity: new THREE.Vector3(-0.42, -0.18, 0.12),
+          volume: 0.035,
+          radius: testRadius,
+          life: 0,
+          settles: true,
+        };
+        const truckProbe = this.truck.group.localToWorld(new THREE.Vector3(-2.12, 1.03, 0));
+        testMesh.position.copy(truckProbe);
+        soilTruckPenetrationBefore = this.truck.resolveSolidCollision(testMesh.position, testRadius)?.penetration ?? 0;
+        this.resolveSoilParticleCollisions(testParticle);
+        soilTruckPenetrationAfter = this.truck.resolveSolidCollision(testMesh.position, testRadius)?.penetration ?? 0;
+
+        const hard = this.worldColliders.find((collider) => collider.kind === "boulder");
+        if (hard) {
+          const target = new THREE.Vector3(2.25, 0, 3.1);
+          target.y = this.terrain.getHeightAt(target.x, target.z) + Math.max(hard.groundOffset, testRadius) + 0.08;
+          const overlap = Math.max(0.06, (hard.radius + testRadius) * 0.46);
+          testMesh.position.copy(target);
+          testParticle.velocity.set(0.62, -0.08, 0);
+          hard.mesh.position.set(target.x + overlap, target.y, target.z);
+          hard.velocity.set(0, 0, 0);
+          hard.sleeping = false;
+          this.resolveSoilParticleCollisions(testParticle);
+          soilObjectImpulse = hard.velocity.length();
+        }
+        this.recycleSoilParticle(testParticle);
         this.excavator.setBucketLoad(this.bucketLoad);
         this.truck.updateLoad(this.truckLoad);
         this.updateUi(0);
@@ -3078,6 +3115,9 @@ class Simulator {
           activeAfter: this.soilParticles.length + this.fineGrainCount(),
           gravityDelta,
           terrainGain: this.terrain.terrainVolumeDelta() - beforeTerrain,
+          soilTruckPenetrationBefore,
+          soilTruckPenetrationAfter,
+          soilObjectImpulse,
         };
       },
       forceFullBucketPush: () => {
@@ -4859,7 +4899,7 @@ class Simulator {
         .sub(source)
         .divideScalar(flightTime)
         .add(new THREE.Vector3((Math.random() - 0.5) * 0.18, 0.5 * 9.81 * flightTime, (Math.random() - 0.5) * 0.18));
-      this.soilParticles.push({ mesh, velocity, volume: perParticle, life: 0, settles: false, target, toBucket: true });
+      this.soilParticles.push({ mesh, velocity, volume: perParticle, radius, life: 0, settles: false, target, toBucket: true });
     }
   }
 
@@ -4896,7 +4936,7 @@ class Simulator {
         .multiplyScalar(0.24 + openFactor * 0.76)
         .addScaledVector(sideways, (Math.random() - 0.5) * 0.8)
         .add(new THREE.Vector3(0, -0.45 - openFactor * 1.15, 0));
-      this.soilParticles.push({ mesh, velocity, volume: perParticle, life: 0, settles: true });
+      this.soilParticles.push({ mesh, velocity, volume: perParticle, radius, life: 0, settles: true });
     }
   }
 
@@ -4987,6 +5027,10 @@ class Simulator {
       this.fineGrainPositions[p + 1] += this.fineGrainVelocities[p + 1] * dt;
       this.fineGrainPositions[p + 2] += this.fineGrainVelocities[p + 2] * dt;
       changed = true;
+
+      if (settles && this.resolveFineGrainCollisions(i, 0.026)) {
+        changed = true;
+      }
 
       const ground = this.terrain.getHeightAt(this.fineGrainPositions[p], this.fineGrainPositions[p + 2]);
       const inTruck =
@@ -5092,6 +5136,7 @@ class Simulator {
         particle.mesh.rotation.z -= particle.velocity.x * dt * 3.2;
         if (!particle.toBucket) {
           particle.mesh.scale.multiplyScalar(1 - Math.min(dt * 1.5, 0.055));
+          this.resolveSoilParticleCollisions(particle);
         }
         const pos = particle.mesh.position;
         const ground = this.terrain.getHeightAt(pos.x, pos.z);
@@ -5122,6 +5167,7 @@ class Simulator {
       particle.mesh.position.addScaledVector(particle.velocity, dt);
       particle.mesh.rotation.x += particle.velocity.z * dt;
       particle.mesh.rotation.z -= particle.velocity.x * dt;
+      this.resolveSoilParticleCollisions(particle);
 
       const pos = particle.mesh.position;
       const ground = this.terrain.getHeightAt(pos.x, pos.z);
@@ -5141,6 +5187,139 @@ class Simulator {
         this.recycleSoilParticle(particle);
       }
     }
+  }
+
+  private resolveFineGrainCollisions(i: number, radius: number): boolean {
+    const p = i * 3;
+    const pos = new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2]);
+    const velocity = new THREE.Vector3(this.fineGrainVelocities[p], this.fineGrainVelocities[p + 1], this.fineGrainVelocities[p + 2]);
+    let collided = false;
+
+    if (!this.truck.containsWorldPoint(pos)) {
+      const truckHit = this.truck.resolveSolidCollision(pos, radius);
+      if (truckHit) {
+        pos.addScaledVector(truckHit.normal, truckHit.penetration + 0.002);
+        const normalSpeed = velocity.dot(truckHit.normal);
+        if (normalSpeed < 0) {
+          velocity.addScaledVector(truckHit.normal, -(1.18 * normalSpeed));
+          velocity.multiplyScalar(0.62);
+        }
+        collided = true;
+      }
+    }
+
+    for (const collider of this.worldColliders) {
+      if (this.carriedWorldColliders.has(collider)) {
+        continue;
+      }
+      const dx = pos.x - collider.mesh.position.x;
+      const dy = pos.y - collider.mesh.position.y;
+      const dz = pos.z - collider.mesh.position.z;
+      const combined = radius + collider.radius;
+      const distanceSq = dx * dx + dy * dy + dz * dz;
+      if (distanceSq >= combined * combined) {
+        continue;
+      }
+      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+      const normal = new THREE.Vector3(dx / distance, dy / distance, dz / distance);
+      const penetration = combined - distance;
+      pos.addScaledVector(normal, penetration + 0.002);
+      const closingSpeed = velocity.dot(normal);
+      if (closingSpeed < 0) {
+        const impulse = -closingSpeed * 0.035;
+        velocity.addScaledVector(normal, -closingSpeed * (1.08 + collider.restitution));
+        collider.velocity.addScaledVector(normal, -impulse / Math.max(collider.mass, 0.1));
+        collider.sleeping = false;
+      }
+      collided = true;
+      break;
+    }
+
+    if (collided) {
+      this.fineGrainPositions[p] = pos.x;
+      this.fineGrainPositions[p + 1] = pos.y;
+      this.fineGrainPositions[p + 2] = pos.z;
+      this.fineGrainVelocities[p] = velocity.x;
+      this.fineGrainVelocities[p + 1] = velocity.y;
+      this.fineGrainVelocities[p + 2] = velocity.z;
+    }
+    return collided;
+  }
+
+  private resolveSoilParticleCollisions(particle: SoilParticle): boolean {
+    const radius = Math.max(0.018, particle.radius);
+    const pos = particle.mesh.position;
+    let collided = false;
+
+    if (!this.truck.containsWorldPoint(pos)) {
+      for (let pass = 0; pass < 3; pass += 1) {
+        const truckHit = this.truck.resolveSolidCollision(pos, radius);
+        if (!truckHit) {
+          break;
+        }
+        pos.addScaledVector(truckHit.normal, truckHit.penetration + 0.004);
+        const normalSpeed = particle.velocity.dot(truckHit.normal);
+        const tangent = particle.velocity.clone().addScaledVector(truckHit.normal, -normalSpeed);
+        if (normalSpeed < 0) {
+          particle.velocity.copy(tangent.multiplyScalar(0.68)).addScaledVector(truckHit.normal, -normalSpeed * 0.22);
+        } else {
+          particle.velocity.copy(tangent.multiplyScalar(0.78)).addScaledVector(truckHit.normal, normalSpeed);
+        }
+        collided = true;
+      }
+    }
+
+    const soilMass = Math.max(0.025, particle.volume * 1.8);
+    for (const collider of this.worldColliders) {
+      if (this.carriedWorldColliders.has(collider)) {
+        continue;
+      }
+      const dx = pos.x - collider.mesh.position.x;
+      const dy = pos.y - collider.mesh.position.y;
+      const dz = pos.z - collider.mesh.position.z;
+      const combined = radius + collider.radius;
+      const distanceSq = dx * dx + dy * dy + dz * dz;
+      if (distanceSq >= combined * combined) {
+        continue;
+      }
+
+      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+      const normal = new THREE.Vector3(dx / distance, dy / distance, dz / distance);
+      const penetration = combined - distance;
+      const invSoil = 1 / soilMass;
+      const invObject = collider.immovable ? 0 : 1 / Math.max(collider.mass, 0.05);
+      const totalInvMass = invSoil + invObject;
+      if (totalInvMass <= 0) {
+        continue;
+      }
+
+      const correction = Math.min(penetration * 0.9, 0.22);
+      pos.addScaledVector(normal, correction * (invSoil / totalInvMass));
+      collider.mesh.position.addScaledVector(normal, -correction * (invObject / totalInvMass));
+
+      const relativeVelocity = particle.velocity.clone().sub(collider.velocity);
+      const closingSpeed = relativeVelocity.dot(normal);
+      if (closingSpeed < 0) {
+        const restitution = Math.min(0.18, collider.restitution + 0.04);
+        const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
+        particle.velocity.addScaledVector(normal, impulse * invSoil);
+        collider.velocity.addScaledVector(normal, -impulse * invObject);
+      }
+
+      const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
+      if (tangent.lengthSq() > 0.000001) {
+        tangent.normalize().multiplyScalar(clamp(collider.friction * 0.08, 0.035, 0.12));
+        particle.velocity.addScaledVector(tangent, -invSoil / totalInvMass);
+        collider.velocity.addScaledVector(tangent, invObject / totalInvMass);
+      }
+
+      collider.sleeping = false;
+      this.pressure = Math.max(this.pressure, clamp(0.08 + penetration * 0.92, 0, 0.42));
+      collided = true;
+      break;
+    }
+
+    return collided;
   }
 
   private isBucketParticleCaptured(particle: SoilParticle): boolean {

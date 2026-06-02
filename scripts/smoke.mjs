@@ -626,7 +626,10 @@ async function main() {
           Math.abs((soilAfterDumpValue?.truckLoad ?? 0) - (soilDumpValue?.dumped ?? -1)) < 0.002 &&
           (soilAfterDumpValue?.bucketLoad ?? 1) < 0.002 &&
           soilDumpValue?.activeAfter === 0 &&
-          soilDumpValue?.gravityDelta > 0.08,
+          soilDumpValue?.gravityDelta > 0.08 &&
+          soilDumpValue?.soilTruckPenetrationBefore > soilDumpValue?.soilTruckPenetrationAfter &&
+          soilDumpValue?.soilTruckPenetrationAfter < 0.035 &&
+          soilDumpValue?.soilObjectImpulse > 0.002,
       ],
       ["bucket load surface clears after dumping", (soilAfterDumpValue?.bucketVisualLoad ?? 1) < 0.01],
       [
