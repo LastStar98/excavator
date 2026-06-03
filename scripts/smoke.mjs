@@ -871,7 +871,7 @@ async function main() {
           soilPushValue?.bucketLoad > 1.5,
       ],
       [
-        "cutting flow particles use physics before entering bucket",
+        "cutting flow enters bucket without dynamic collision drag",
         cuttingFlowPhysicsValue?.spawnedVolume > 0.12 &&
           cuttingFlowPhysicsValue?.capturedVolume > 0.12 &&
           Math.abs(cuttingFlowPhysicsValue?.transitRemaining ?? 1) < 0.003 &&
@@ -880,9 +880,9 @@ async function main() {
           cuttingFlowPhysicsValue?.excavatorSoilPenetrationAfter < 0.025 &&
           cuttingFlowPhysicsValue?.excavatorSoilTravel > 0.015 &&
           cuttingFlowPhysicsValue?.excavatorSoilVelocity > 0.006 &&
-          cuttingFlowPhysicsValue?.collisionReleasedVolume > 0.08 &&
-          cuttingFlowPhysicsValue?.obstacleImpulse > 0.015 &&
-          cuttingFlowPhysicsValue?.obstacleTravel > 0.002 &&
+          cuttingFlowPhysicsValue?.collisionReleasedVolume === 0 &&
+          cuttingFlowPhysicsValue?.obstacleImpulse === 0 &&
+          cuttingFlowPhysicsValue?.obstacleTravel === 0 &&
           cuttingFlowPhysicsValue?.activeFlowAfter === 0,
       ],
       [
@@ -1161,8 +1161,8 @@ async function main() {
         lagFreeSoilCycleValue?.terrainDrag === 1 &&
           lagFreeSoilCycleValue?.soilPairCollisionsEnabled === false &&
           lagFreeSoilCycleValue?.fineGrainPairCollisionsEnabled === false &&
-          lagFreeSoilCycleValue?.soilDynamicCollisionBudget <= 1 &&
-          lagFreeSoilCycleValue?.fineGrainDynamicCollisionBudget <= 1 &&
+          lagFreeSoilCycleValue?.soilDynamicCollisionBudget === 0 &&
+          lagFreeSoilCycleValue?.fineGrainDynamicCollisionBudget === 0 &&
           lagFreeSoilCycleValue?.particleCount <= 12 &&
           lagFreeSoilCycleValue?.fineGrainCount <= 40 &&
           lagFreeSoilCycleValue?.nearbyCandidates < lagFreeSoilCycleValue?.worldColliderCount * 0.45 &&

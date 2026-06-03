@@ -884,12 +884,10 @@ const SOIL_PARTICLE_SOFT_LIMIT = 4;
 const SOIL_PARTICLE_HARD_LIMIT = 6;
 const SOIL_PARTICLE_COLLISION_QUERY_PADDING = 0.28;
 const FINE_GRAIN_COLLISION_QUERY_PADDING = 0.18;
-const SOIL_DYNAMIC_COLLISION_BUDGET = 1;
-const FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 1;
+const SOIL_DYNAMIC_COLLISION_BUDGET = 0;
+const FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 0;
 const MOBILE_SOIL_DYNAMIC_COLLISION_BUDGET = 0;
 const MOBILE_FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 0;
-const BUCKET_LOAD_SLUMP_INTERVAL = 1 / 12;
-const BUCKET_LOAD_SLUMP_MAX_DT = 1 / 10;
 const SOIL_PAIR_COLLISIONS_ENABLED = false;
 const FINE_GRAIN_PAIR_COLLISIONS_ENABLED = false;
 const SOIL_PAIR_GRID_SIZE = 0.34;
@@ -8679,8 +8677,8 @@ class Simulator {
       targetPressure = Math.max(targetPressure, Math.abs(this.targetActions[action]));
     }
 
-    const loadFactor = clamp(this.bucketLoad / BUCKET_CAPACITY + (this.carriedWorldObjectMass() / BUCKET_OBJECT_LOAD_REFERENCE) * 0.38, 0, 1.4);
-    this.pressure = smoothTo(this.pressure, clamp(targetPressure * (0.55 + loadFactor * 0.45), 0, 1), 3.8, dt);
+    const carriedLoadFactor = clamp((this.carriedWorldObjectMass() / BUCKET_OBJECT_LOAD_REFERENCE) * 0.38, 0, 1.4);
+    this.pressure = smoothTo(this.pressure, clamp(targetPressure * (0.55 + carriedLoadFactor * 0.45), 0, 1), 3.8, dt);
     if (targetPressure < 0.03) {
       this.idleSeconds += dt;
     }
@@ -11340,22 +11338,8 @@ class Simulator {
     this.excavator.setBucketLoad(this.bucketLoad);
     const openFactor = clamp((this.angles.bucket + 0.58) / (ANGLE_LIMITS.bucket.max + 0.58), 0, 1);
     const dumpIntent = openFactor > 0.02 || this.velocities.bucket > 0.12;
-    this.bucketLoadSlumpAccumulator = this.bucketLoad > 0.002 ? this.bucketLoadSlumpAccumulator + dt : 0;
-    let bucketLoadSlumpMoved = 0;
-    const slumpInterval = dumpIntent ? BUCKET_LOAD_SLUMP_INTERVAL * 0.6 : BUCKET_LOAD_SLUMP_INTERVAL;
-    if (this.bucketLoadSlumpAccumulator >= slumpInterval) {
-      const slumpDt = Math.min(this.bucketLoadSlumpAccumulator, BUCKET_LOAD_SLUMP_MAX_DT);
-      this.bucketLoadSlumpAccumulator = 0;
-      bucketLoadSlumpMoved = this.excavator.slumpBucketLoadUnderGravity(
-        slumpDt,
-        0.72 + Math.abs(this.velocities.bucket) * 0.52 + clamp(tipSpeed * 0.1, 0, 0.4),
-      );
-    }
-    if (bucketLoadSlumpMoved > 0.0005) {
-      this.pressure = Math.max(this.pressure, clamp(0.08 + bucketLoadSlumpMoved * 0.42, 0, 0.34));
-    }
-    const bucketLoadStats = this.excavator.bucketLoadDistributionStats();
-    const lipDumpBias = clamp((bucketLoadStats.lipRatio - 0.24) * 0.9 + Math.max(0, -bucketLoadStats.centerX - 0.56) * 0.36, 0, 0.58);
+    this.bucketLoadSlumpAccumulator = 0;
+    const lipDumpBias = 0;
     if ((openFactor > 0.08 || this.velocities.bucket > 0.18) && this.carriedWorldColliders.size > 0) {
       const releaseVelocity = forward
         .clone()
@@ -11391,27 +11375,24 @@ class Simulator {
       return { spilledVolume: 0, heightRemoved: 0, worldPoint: this.excavator.bucketPocketWorld() };
     }
 
-    const spill = this.excavator.spillBucketLoadOverLip(
-      dt,
-      intensity,
-      this.bucketLoad,
-      Math.min(this.bucketLoad, maxVolume),
-      lipBias,
-    );
-    if (spill.spilledVolume <= 0) {
-      return { spilledVolume: 0, heightRemoved: 0, worldPoint: spill.worldPoint };
+    const openDump = clamp(lipBias, 0, 1.2);
+    const spillRate = Math.min(maxVolume, Math.max(0, (0.36 + openDump * 1.15) * Math.max(intensity, 0.2) * dt));
+    const spilledVolume = Math.min(this.bucketLoad, maxVolume, spillRate);
+    if (spilledVolume <= 0.001) {
+      return { spilledVolume: 0, heightRemoved: 0, worldPoint: this.excavator.bucketTipWorld() };
     }
 
-    const spilledVolume = Math.min(this.bucketLoad, spill.spilledVolume);
     this.bucketLoad = Math.max(0, this.bucketLoad - spilledVolume);
-    const direction = spill.worldPoint.clone().sub(this.excavator.bucketPocketWorld());
-    const forward = direction.lengthSq() > 0.0001 ? direction.normalize() : this.excavator.bucketForwardWorld();
-    const openness = clamp(lipBias, 0, 1.2);
+    this.excavator.setBucketLoad(this.bucketLoad);
+    const forward = this.excavator.bucketForwardWorld();
+    const side = this.excavator.bucketSidewaysWorld();
+    const worldPoint = this.excavator.bucketTipWorld().addScaledVector(forward, 0.08 + openDump * 0.18).addScaledVector(side, (Math.random() - 0.5) * 0.18);
+    const openness = openDump;
     const fineVolume = spilledVolume * clamp(0.018 + openness * 0.026, 0.018, 0.055);
     const coarseVolume = Math.max(0, spilledVolume - fineVolume);
-    this.spawnSoilParticles(spill.worldPoint, coarseVolume, forward, openness);
-    this.spawnFineGrains(spill.worldPoint, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openness, 0)), true, 1.05 + openness);
-    return { spilledVolume, heightRemoved: spill.heightRemoved, worldPoint: spill.worldPoint };
+    this.spawnSoilParticles(worldPoint, coarseVolume, forward, openness);
+    this.spawnFineGrains(worldPoint, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openness, 0)), true, 1.05 + openness);
+    return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint };
   }
 
   private spawnCuttingFlow(edgePoints: THREE.Vector3[], pocket: THREE.Vector3, volume: number): void {
