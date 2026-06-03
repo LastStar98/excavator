@@ -409,6 +409,11 @@ interface ExcavatorDebugApi {
     objectTravel: number;
     objectImpulse: number;
     movedMass: number;
+    upperSampleCount: number;
+    exhaustSamplePresent: boolean;
+    exhaustObjectHit: boolean;
+    exhaustObjectTravel: number;
+    exhaustObjectImpulse: number;
     pressure: number;
     collisionCount: number;
   };
@@ -3147,6 +3152,9 @@ class ExcavatorModel {
       sample("cab-low", 0.52, 0.62, -0.46, 0.34),
       sample("cab-roof", 0.55, 1.04, -0.46, 0.28),
       sample("front-service", 0.88, 0.34, 0.24, 0.32),
+      sample("exhaust-base", -1.1, 0.74, 0.47, 0.105),
+      sample("exhaust-mid", -1.1, 0.96, 0.47, 0.105),
+      sample("exhaust-top", -1.1, 1.18, 0.47, 0.105),
     ];
   }
 
@@ -5824,6 +5832,11 @@ class Simulator {
         let objectTravel = 0;
         let objectImpulse = 0;
         let movedMass = 0;
+        let upperSampleCount = 0;
+        let exhaustSamplePresent = false;
+        let exhaustObjectHit = false;
+        let exhaustObjectTravel = 0;
+        let exhaustObjectImpulse = 0;
         const obstacle =
           this.worldColliders.find((collider) => collider.kind === "boulder") ??
           this.worldColliders.find((collider) => collider.kind === "rock");
@@ -5864,6 +5877,51 @@ class Simulator {
           this.worldColliderGridDirty = true;
         }
 
+        const exhaustObstacle =
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "cone") ??
+          this.worldColliders.find((collider) => !collider.immovable && collider.kind === "rock");
+        if (exhaustObstacle) {
+          const savedPosition = exhaustObstacle.mesh.position.clone();
+          const savedQuaternion = exhaustObstacle.mesh.quaternion.clone();
+          const savedVelocity = exhaustObstacle.velocity.clone();
+          const savedAngularVelocity = exhaustObstacle.angularVelocity.clone();
+          const savedSleeping = exhaustObstacle.sleeping;
+          const previousExhaustAngles: ExcavatorAngles = { swing: -0.28, boom: 0.36, stick: -1.24, bucket: -1.2 };
+          const exhaustAngles: ExcavatorAngles = { ...previousExhaustAngles, swing: 0.28 };
+          Object.assign(this.angles, exhaustAngles);
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+          this.excavator.applyAngles(this.angles);
+          const upperSamples = this.excavator.upperCollisionSamples();
+          upperSampleCount = upperSamples.length;
+          const exhaustSample = upperSamples.find((sample) => sample.key === "exhaust-mid");
+          exhaustSamplePresent = Boolean(exhaustSample);
+          if (exhaustSample) {
+            const overlap = Math.max(0.035, (exhaustSample.radius + exhaustObstacle.radius) * 0.42);
+            exhaustObstacle.mesh.position.copy(exhaustSample.point).add(new THREE.Vector3(overlap, 0, 0));
+            exhaustObstacle.velocity.set(0, 0, 0);
+            exhaustObstacle.angularVelocity.set(0, 0, 0);
+            exhaustObstacle.sleeping = false;
+            this.worldColliderGridDirty = true;
+            this.velocities.swing = 0.78;
+            this.collisionCooldown = 0;
+            const exhaustBefore = exhaustObstacle.mesh.position.clone();
+            const exhaustResult = this.resolveUpperWorldObjectCollisions(previousExhaustAngles);
+            this.updateLooseWorldObjects(0.18);
+            exhaustObjectHit = exhaustResult.movableHit;
+            exhaustObjectTravel = exhaustObstacle.mesh.position.distanceTo(exhaustBefore);
+            exhaustObjectImpulse = exhaustResult.objectImpulse;
+          }
+          exhaustObstacle.mesh.position.copy(savedPosition);
+          exhaustObstacle.mesh.quaternion.copy(savedQuaternion);
+          exhaustObstacle.velocity.copy(savedVelocity);
+          exhaustObstacle.angularVelocity.copy(savedAngularVelocity);
+          exhaustObstacle.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        } else {
+          upperSampleCount = this.excavator.upperCollisionSamples().length;
+          exhaustSamplePresent = this.excavator.upperCollisionSamples().some((sample) => sample.key === "exhaust-mid");
+        }
+
         this.updateUi(0);
         return {
           truckCollided: truckResult.collided,
@@ -5877,6 +5935,11 @@ class Simulator {
           objectTravel,
           objectImpulse,
           movedMass,
+          upperSampleCount,
+          exhaustSamplePresent,
+          exhaustObjectHit,
+          exhaustObjectTravel,
+          exhaustObjectImpulse,
           pressure: this.pressure,
           collisionCount: this.collisionCount,
         };

@@ -986,6 +986,11 @@ async function main() {
           upperStructurePhysicsValue?.objectTravel > 0.01 &&
           upperStructurePhysicsValue?.objectImpulse > 0.02 &&
           upperStructurePhysicsValue?.movedMass > 1 &&
+          upperStructurePhysicsValue?.upperSampleCount >= 12 &&
+          upperStructurePhysicsValue?.exhaustSamplePresent &&
+          upperStructurePhysicsValue?.exhaustObjectHit &&
+          upperStructurePhysicsValue?.exhaustObjectTravel > 0.006 &&
+          upperStructurePhysicsValue?.exhaustObjectImpulse > 0.015 &&
           upperStructurePhysicsValue?.pressure > 0.25 &&
           upperStructurePhysicsValue?.collisionCount > 0,
       ],
