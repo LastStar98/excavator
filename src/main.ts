@@ -502,6 +502,10 @@ interface ExcavatorDebugApi {
     groundDrop: number;
     fallDistance: number;
     liftDelta: number;
+    capsuleTerrainPenetrationBefore: number;
+    capsuleTerrainPenetrationAfter: number;
+    capsuleTerrainLift: number;
+    capsuleTerrainSlopeKick: number;
     finalSleeping: boolean;
     pressure: number;
   };
@@ -3426,8 +3430,8 @@ class Simulator {
       collider.velocity.set(0, 0, 0);
       collider.sleeping = !collider.immovable;
       if (!collider.immovable) {
-        const ground = this.terrain.getHeightAt(collider.mesh.position.x, collider.mesh.position.z);
-        collider.mesh.position.y = ground + collider.groundOffset;
+        const support = this.worldColliderTerrainSupport(collider);
+        collider.mesh.position.y += support.supportDelta;
       }
     }
     this.worldColliderGridDirty = true;
@@ -3528,13 +3532,10 @@ class Simulator {
         continue;
       }
 
-      const supportY = this.terrain.getHeightAt(pos.x, pos.z) + collider.groundOffset;
-      const buriedDepth = supportY - pos.y;
-      const unsupportedDrop = pos.y - supportY;
-      const sample = Math.max(0.24, collider.radius * 2.2);
-      const hx = this.terrain.getHeightAt(pos.x + sample, pos.z) - this.terrain.getHeightAt(pos.x - sample, pos.z);
-      const hz = this.terrain.getHeightAt(pos.x, pos.z + sample) - this.terrain.getHeightAt(pos.x, pos.z - sample);
-      const slope = Math.hypot(hx, hz) / Math.max(sample * 2, 0.001);
+      const support = this.worldColliderTerrainSupport(collider);
+      const buriedDepth = support.penetration;
+      const unsupportedDrop = support.unsupportedDrop;
+      const slope = support.slope;
       const shouldWake = collider.sleeping || buriedDepth > 0.004 || unsupportedDrop > 0.012 || slope > 0.08;
       if (!shouldWake) {
         continue;
@@ -3545,14 +3546,14 @@ class Simulator {
       }
       collider.sleeping = false;
       if (buriedDepth > 0.004) {
-        pos.y = supportY + 0.002;
-        collider.velocity.y = Math.max(collider.velocity.y, clamp(0.08 + buriedDepth * 3.2, 0.08, 1.15));
+        pos.addScaledVector(support.normal, Math.min(buriedDepth + 0.002, 0.38));
+        collider.velocity.addScaledVector(support.normal, clamp(0.08 + buriedDepth * 3.2, 0.08, 1.15));
       } else if (unsupportedDrop > 0.012) {
         collider.velocity.y = Math.min(collider.velocity.y, -0.04);
       }
       if (slope > 0.08) {
-        collider.velocity.x += (-hx / Math.max(sample * 2, 0.001)) * clamp(slope * 0.18, 0.012, 0.12);
-        collider.velocity.z += (-hz / Math.max(sample * 2, 0.001)) * clamp(slope * 0.18, 0.012, 0.12);
+        collider.velocity.x += -support.slopeX * clamp(slope * 0.18, 0.012, 0.12);
+        collider.velocity.z += -support.slopeZ * clamp(slope * 0.18, 0.012, 0.12);
       }
       this.pressure = Math.max(this.pressure, clamp(0.06 + Math.max(buriedDepth, unsupportedDrop, slope) * 0.22, 0, 0.5));
     }
@@ -5825,6 +5826,7 @@ class Simulator {
           this.worldColliders.find((candidate) => candidate.kind === "boulder") ??
           this.worldColliders.find((candidate) => candidate.kind === "rock") ??
           this.worldColliders.find((candidate) => candidate.kind === "clod");
+        const capsuleCollider = this.worldColliders.find((candidate) => candidate.kind === "pipe" && candidate.capsule);
         if (!collider) {
           return {
             sleptBefore: false,
@@ -5833,6 +5835,10 @@ class Simulator {
             groundDrop: 0,
             fallDistance: 0,
             liftDelta: 0,
+            capsuleTerrainPenetrationBefore: 0,
+            capsuleTerrainPenetrationAfter: 0,
+            capsuleTerrainLift: 0,
+            capsuleTerrainSlopeKick: 0,
             finalSleeping: false,
             pressure: this.pressure,
           };
@@ -5844,6 +5850,11 @@ class Simulator {
         const savedVelocity = collider.velocity.clone();
         const savedSleeping = collider.sleeping;
         const savedPressure = this.pressure;
+        const savedCapsulePosition = capsuleCollider?.mesh.position.clone();
+        const savedCapsuleQuaternion = capsuleCollider?.mesh.quaternion.clone();
+        const savedCapsuleScale = capsuleCollider?.mesh.scale.clone();
+        const savedCapsuleVelocity = capsuleCollider?.velocity.clone();
+        const savedCapsuleSleeping = capsuleCollider?.sleeping;
         const testPoint = new THREE.Vector3(24.5, 0, -16.5);
         const beforeGround = this.terrain.getHeightAt(testPoint.x, testPoint.z);
         collider.mesh.position.set(testPoint.x, beforeGround + collider.groundOffset, testPoint.z);
@@ -5874,12 +5885,53 @@ class Simulator {
         const afterRaiseY = collider.mesh.position.y;
         const finalSleeping = collider.sleeping;
         const pressure = this.pressure;
+        let capsuleTerrainPenetrationBefore = 0;
+        let capsuleTerrainPenetrationAfter = 0;
+        let capsuleTerrainLift = 0;
+        let capsuleTerrainSlopeKick = 0;
+
+        if (capsuleCollider?.capsule) {
+          const axis = new THREE.Vector3(1, 0, 0);
+          const halfLength = capsuleCollider.capsule.localA.distanceTo(capsuleCollider.capsule.localB) * 0.5;
+          const capsuleCenter = new THREE.Vector3(27.6, 0, -18.4);
+          const capsuleGround = this.terrain.getHeightAt(capsuleCenter.x, capsuleCenter.z);
+          capsuleCollider.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+          capsuleCollider.mesh.position.set(capsuleCenter.x, capsuleGround + capsuleCollider.groundOffset, capsuleCenter.z);
+          capsuleCollider.velocity.set(0, 0, 0);
+          capsuleCollider.sleeping = false;
+          this.worldColliderGridDirty = true;
+
+          const endPoint = capsuleCenter.clone().addScaledVector(axis, halfLength);
+          this.terrain.raiseAt(endPoint, 0.48, 0.42, 0);
+          capsuleTerrainPenetrationBefore = this.worldColliderTerrainSupport(capsuleCollider).penetration;
+          const beforeCapsuleY = capsuleCollider.mesh.position.y;
+          for (let i = 0; i < 3; i += 1) {
+            this.updateLooseWorldObjects(1 / 60);
+          }
+          capsuleTerrainPenetrationAfter = this.worldColliderTerrainSupport(capsuleCollider).penetration;
+          capsuleTerrainLift = capsuleCollider.mesh.position.y - beforeCapsuleY;
+          capsuleTerrainSlopeKick = Math.hypot(capsuleCollider.velocity.x, capsuleCollider.velocity.z);
+        }
 
         collider.mesh.position.copy(savedPosition);
         collider.mesh.quaternion.copy(savedQuaternion);
         collider.mesh.scale.copy(savedScale);
         collider.velocity.copy(savedVelocity);
         collider.sleeping = savedSleeping;
+        if (
+          capsuleCollider &&
+          savedCapsulePosition &&
+          savedCapsuleQuaternion &&
+          savedCapsuleScale &&
+          savedCapsuleVelocity &&
+          savedCapsuleSleeping !== undefined
+        ) {
+          capsuleCollider.mesh.position.copy(savedCapsulePosition);
+          capsuleCollider.mesh.quaternion.copy(savedCapsuleQuaternion);
+          capsuleCollider.mesh.scale.copy(savedCapsuleScale);
+          capsuleCollider.velocity.copy(savedCapsuleVelocity);
+          capsuleCollider.sleeping = savedCapsuleSleeping;
+        }
         this.pressure = Math.max(savedPressure, pressure);
         this.worldColliderGridDirty = true;
         this.updateUi(0);
@@ -5891,6 +5943,10 @@ class Simulator {
           groundDrop: beforeGround - afterCutGround,
           fallDistance: beforeGround + collider.groundOffset - afterFallY,
           liftDelta: afterRaiseY - beforeRaiseY,
+          capsuleTerrainPenetrationBefore,
+          capsuleTerrainPenetrationAfter,
+          capsuleTerrainLift,
+          capsuleTerrainSlopeKick,
           finalSleeping,
           pressure,
         };
@@ -6864,6 +6920,59 @@ class Simulator {
     return samples;
   }
 
+  private worldColliderTerrainSupport(collider: WorldCollider): {
+    supportDelta: number;
+    penetration: number;
+    unsupportedDrop: number;
+    slopeX: number;
+    slopeZ: number;
+    slope: number;
+    normal: THREE.Vector3;
+    point: THREE.Vector3;
+  } {
+    const samples = this.worldColliderShapeSamples(collider);
+    let supportDelta = -Infinity;
+    let supportPoint = collider.mesh.position.clone();
+    let slopeX = 0;
+    let slopeZ = 0;
+
+    for (const sample of samples) {
+      const supportY = this.terrain.getHeightAt(sample.point.x, sample.point.z) + collider.groundOffset;
+      const delta = supportY - sample.point.y;
+      if (delta > supportDelta) {
+        supportDelta = delta;
+        supportPoint = sample.point.clone();
+      }
+
+      const span = Math.max(0.24, sample.radius * 2.2);
+      slopeX +=
+        (this.terrain.getHeightAt(sample.point.x + span, sample.point.z) -
+          this.terrain.getHeightAt(sample.point.x - span, sample.point.z)) /
+        Math.max(span * 2, 0.001);
+      slopeZ +=
+        (this.terrain.getHeightAt(sample.point.x, sample.point.z + span) -
+          this.terrain.getHeightAt(sample.point.x, sample.point.z - span)) /
+        Math.max(span * 2, 0.001);
+    }
+
+    const count = Math.max(samples.length, 1);
+    slopeX /= count;
+    slopeZ /= count;
+    const slope = Math.hypot(slopeX, slopeZ);
+    const normal = new THREE.Vector3(-slopeX, 1, -slopeZ).normalize();
+    const resolvedDelta = Number.isFinite(supportDelta) ? supportDelta : 0;
+    return {
+      supportDelta: resolvedDelta,
+      penetration: Math.max(0, resolvedDelta),
+      unsupportedDrop: Math.max(0, -resolvedDelta),
+      slopeX,
+      slopeZ,
+      slope,
+      normal,
+      point: supportPoint,
+    };
+  }
+
   private resolveWorldColliderShapeHit(
     collider: WorldCollider,
     resolver: (point: THREE.Vector3, radius: number) => { normal: THREE.Vector3; penetration: number } | null,
@@ -7263,13 +7372,11 @@ class Simulator {
       }
       collider.sleeping = false;
 
-      const sample = Math.max(0.24, collider.radius * 2.2);
-      const hx = this.terrain.getHeightAt(pos.x + sample, pos.z) - this.terrain.getHeightAt(pos.x - sample, pos.z);
-      const hz = this.terrain.getHeightAt(pos.x, pos.z + sample) - this.terrain.getHeightAt(pos.x, pos.z - sample);
-      const slopeAccel = clamp(Math.hypot(hx, hz) / Math.max(sample * 2, 0.001), 0, 0.9) * 3.4;
+      const slopeSupport = this.worldColliderTerrainSupport(collider);
+      const slopeAccel = clamp(slopeSupport.slope, 0, 0.9) * 3.4;
       if (slopeAccel > 0.02) {
-        collider.velocity.x += (-hx / Math.max(sample * 2, 0.001)) * slopeAccel * dt;
-        collider.velocity.z += (-hz / Math.max(sample * 2, 0.001)) * slopeAccel * dt;
+        collider.velocity.x += -slopeSupport.slopeX * slopeAccel * dt;
+        collider.velocity.z += -slopeSupport.slopeZ * slopeAccel * dt;
       }
 
       collider.velocity.y -= 9.81 * dt;
@@ -7280,17 +7387,17 @@ class Simulator {
       const previousZ = pos.z;
       pos.addScaledVector(collider.velocity, dt);
 
-      const ground = this.terrain.getHeightAt(pos.x, pos.z) + collider.groundOffset;
-      if (pos.y <= ground) {
-        pos.y = ground;
-        if (collider.velocity.y < -0.05) {
-          collider.velocity.y = -collider.velocity.y * collider.restitution;
-        } else {
-          collider.velocity.y = 0;
-        }
+      const groundSupport = this.worldColliderTerrainSupport(collider);
+      if (groundSupport.penetration > 0) {
+        pos.addScaledVector(groundSupport.normal, Math.min(groundSupport.penetration + 0.0015, 0.34));
+        const normalSpeed = collider.velocity.dot(groundSupport.normal);
+        const tangent = collider.velocity.clone().addScaledVector(groundSupport.normal, -normalSpeed);
         const groundFriction = 1 - Math.min(dt * (1.2 + collider.friction * 3.4), 0.32);
-        collider.velocity.x *= groundFriction;
-        collider.velocity.z *= groundFriction;
+        if (normalSpeed < -0.05) {
+          collider.velocity.copy(tangent.multiplyScalar(groundFriction)).addScaledVector(groundSupport.normal, -normalSpeed * collider.restitution);
+        } else {
+          collider.velocity.copy(tangent.multiplyScalar(groundFriction));
+        }
       }
 
       if (this.resolveLooseObjectTruckCollision(collider)) {
@@ -7308,7 +7415,8 @@ class Simulator {
         collider.mesh.rotation.x += collider.velocity.z * dt * 1.7;
         collider.mesh.rotation.z -= collider.velocity.x * dt * 1.7;
       }
-      if (pos.y <= ground + 0.001 && horizontalSpeed < 0.008 && Math.abs(collider.velocity.y) < 0.008) {
+      const settledSupport = this.worldColliderTerrainSupport(collider);
+      if (settledSupport.penetration < 0.004 && settledSupport.unsupportedDrop < 0.002 && horizontalSpeed < 0.008 && Math.abs(collider.velocity.y) < 0.008) {
         collider.velocity.set(0, 0, 0);
         collider.sleeping = true;
       }

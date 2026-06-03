@@ -1112,6 +1112,10 @@ async function main() {
           terrainWakePhysicsValue?.fallDistance > 0.08 &&
           terrainWakePhysicsValue?.wokeFromRaise >= 1 &&
           terrainWakePhysicsValue?.liftDelta > 0.035 &&
+          terrainWakePhysicsValue?.capsuleTerrainPenetrationBefore > terrainWakePhysicsValue?.capsuleTerrainPenetrationAfter + 0.04 &&
+          terrainWakePhysicsValue?.capsuleTerrainPenetrationAfter < 0.025 &&
+          terrainWakePhysicsValue?.capsuleTerrainLift > 0.04 &&
+          terrainWakePhysicsValue?.capsuleTerrainSlopeKick > 0.002 &&
           terrainWakePhysicsValue?.pressure > 0.05,
       ],
       [
