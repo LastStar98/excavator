@@ -1102,6 +1102,9 @@ async function main() {
         worldObjectPhysicsValue?.debrisTravel > 0.035 &&
           worldObjectPhysicsValue?.hardTravel > 0.035 &&
           worldObjectPhysicsValue?.railTravel > 0.035 &&
+          worldObjectPhysicsValue?.debrisAngularSpeed > 0.01 &&
+          worldObjectPhysicsValue?.hardAngularSpeed > 0.01 &&
+          worldObjectPhysicsValue?.railAngularSpeed > 0.01 &&
           worldObjectPhysicsValue?.trackContactCount >= 2 &&
           worldObjectPhysicsValue?.cornerContacts >= 1 &&
           worldObjectPhysicsValue?.movedMass > 6 &&
@@ -1125,6 +1128,7 @@ async function main() {
           worldObjectPhysicsValue?.truckPenetrationBefore > worldObjectPhysicsValue?.truckPenetrationAfter &&
           worldObjectPhysicsValue?.truckPenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.pairDistanceAfter > worldObjectPhysicsValue?.pairDistanceBefore &&
+          worldObjectPhysicsValue?.pairAngularSpeed > 0.01 &&
           worldObjectPhysicsValue?.pressure > 0.35,
       ],
       [

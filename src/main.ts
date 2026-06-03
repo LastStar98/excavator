@@ -86,6 +86,7 @@ interface WorldCollider {
   friction: number;
   groundOffset: number;
   velocity: THREE.Vector3;
+  angularVelocity: THREE.Vector3;
   sleeping: boolean;
   initialPosition: THREE.Vector3;
   initialQuaternion: THREE.Quaternion;
@@ -479,6 +480,9 @@ interface ExcavatorDebugApi {
     debrisTravel: number;
     hardTravel: number;
     railTravel: number;
+    debrisAngularSpeed: number;
+    hardAngularSpeed: number;
+    railAngularSpeed: number;
     excavatorPenetrationBefore: number;
     excavatorPenetrationAfter: number;
     excavatorObjectTravel: number;
@@ -505,6 +509,7 @@ interface ExcavatorDebugApi {
     truckPenetrationAfter: number;
     pairDistanceBefore: number;
     pairDistanceAfter: number;
+    pairAngularSpeed: number;
     collisionCount: number;
     pressure: number;
   };
@@ -3458,6 +3463,7 @@ class Simulator {
       friction: options.friction ?? 0.82,
       groundOffset: options.groundOffset ?? radius * 0.45,
       velocity: new THREE.Vector3(),
+      angularVelocity: new THREE.Vector3(),
       sleeping: !(options.immovable ?? false),
       initialPosition: mesh.position.clone(),
       initialQuaternion: mesh.quaternion.clone(),
@@ -3479,6 +3485,7 @@ class Simulator {
       collider.mesh.quaternion.copy(collider.initialQuaternion);
       collider.mesh.scale.copy(collider.initialScale);
       collider.velocity.set(0, 0, 0);
+      collider.angularVelocity.set(0, 0, 0);
       collider.sleeping = !collider.immovable;
       if (!collider.immovable) {
         const support = this.worldColliderTerrainSupport(collider);
@@ -4467,6 +4474,7 @@ class Simulator {
           const savedPosition = obstacle.mesh.position.clone();
           const savedQuaternion = obstacle.mesh.quaternion.clone();
           const savedVelocity = obstacle.velocity.clone();
+          const savedAngularVelocity = obstacle.angularVelocity.clone();
           const savedSleeping = obstacle.sleeping;
           const source = this.excavator.bucketCuttingEdgeWorld()[0].clone();
           const target = this.excavator.bucketPocketWorld().clone();
@@ -4476,6 +4484,7 @@ class Simulator {
           const radius = 0.09;
           obstacle.mesh.position.copy(collisionPoint);
           obstacle.velocity.set(0, 0, 0);
+          obstacle.angularVelocity.set(0, 0, 0);
           obstacle.sleeping = false;
           this.worldColliderGridDirty = true;
           const mesh = this.acquireSoilParticleMesh(radius, this.looseSoilMats[0], 2401);
@@ -4515,6 +4524,7 @@ class Simulator {
           obstacle.mesh.position.copy(savedPosition);
           obstacle.mesh.quaternion.copy(savedQuaternion);
           obstacle.velocity.copy(savedVelocity);
+          obstacle.angularVelocity.copy(savedAngularVelocity);
           obstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         }
@@ -4648,12 +4658,14 @@ class Simulator {
             const savedQuaternion = obstacle.mesh.quaternion.clone();
             const savedScale = obstacle.mesh.scale.clone();
             const savedVelocity = obstacle.velocity.clone();
+            const savedAngularVelocity = obstacle.angularVelocity.clone();
             const savedSleeping = obstacle.sleeping;
             const refreshedSurface = this.excavator.bucketLoadSurfaceAtWorld(probe) ?? surface;
             const objectLocal = this.excavator.bucketGroup.worldToLocal(refreshedSurface.point.clone());
             objectLocal.y += obstacle.radius - 0.075;
             obstacle.mesh.position.copy(this.excavator.bucketGroup.localToWorld(objectLocal));
             obstacle.velocity.copy(refreshedSurface.normal).multiplyScalar(-0.36);
+            obstacle.angularVelocity.set(0, 0, 0);
             obstacle.sleeping = false;
             this.worldColliderGridDirty = true;
             objectPenetrationBefore = this.excavator.resolveBucketLoadCollision(obstacle.mesh.position, obstacle.radius)?.penetration ?? 0;
@@ -4666,6 +4678,7 @@ class Simulator {
             obstacle.mesh.quaternion.copy(savedQuaternion);
             obstacle.mesh.scale.copy(savedScale);
             obstacle.velocity.copy(savedVelocity);
+            obstacle.angularVelocity.copy(savedAngularVelocity);
             obstacle.sleeping = savedSleeping;
             this.worldColliderGridDirty = true;
           }
@@ -4719,10 +4732,12 @@ class Simulator {
           const savedQuaternion = obstacle.mesh.quaternion.clone();
           const savedScale = obstacle.mesh.scale.clone();
           const savedVelocity = obstacle.velocity.clone();
+          const savedAngularVelocity = obstacle.angularVelocity.clone();
           const savedSleeping = obstacle.sleeping;
 
           obstacle.mesh.position.copy(this.excavator.bucketGroup.localToWorld(local.clone()));
           obstacle.velocity.set(0, 0, 0);
+          obstacle.angularVelocity.set(0, 0, 0);
           obstacle.sleeping = false;
           this.worldColliderGridDirty = true;
           const before = this.resolveLooseObjectExcavatorHit(obstacle)?.penetration ?? 0;
@@ -4735,6 +4750,7 @@ class Simulator {
           obstacle.mesh.quaternion.copy(savedQuaternion);
           obstacle.mesh.scale.copy(savedScale);
           obstacle.velocity.copy(savedVelocity);
+          obstacle.angularVelocity.copy(savedAngularVelocity);
           obstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
           return { before, after, travel };
@@ -4793,10 +4809,13 @@ class Simulator {
           this.worldColliders.find((collider) => !collider.immovable && collider.kind === "clod");
         if (objectSample && obstacle) {
           const savedPosition = obstacle.mesh.position.clone();
+          const savedQuaternion = obstacle.mesh.quaternion.clone();
           const savedVelocity = obstacle.velocity.clone();
+          const savedAngularVelocity = obstacle.angularVelocity.clone();
           const savedSleeping = obstacle.sleeping;
           obstacle.mesh.position.copy(objectSample.point);
           obstacle.velocity.set(0, 0, 0);
+          obstacle.angularVelocity.set(0, 0, 0);
           obstacle.sleeping = false;
           this.worldColliderGridDirty = true;
           this.collisionCooldown = 0;
@@ -4810,7 +4829,9 @@ class Simulator {
           objectVelocity = obstacle.velocity.length();
           movableHit = objectResult.movableHit;
           obstacle.mesh.position.copy(savedPosition);
+          obstacle.mesh.quaternion.copy(savedQuaternion);
           obstacle.velocity.copy(savedVelocity);
+          obstacle.angularVelocity.copy(savedAngularVelocity);
           obstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         }
@@ -5020,19 +5041,24 @@ class Simulator {
           this.worldColliders.find((collider) => collider.kind === "rock");
         if (obstacle) {
           const savedPosition = obstacle.mesh.position.clone();
+          const savedQuaternion = obstacle.mesh.quaternion.clone();
           const savedVelocity = obstacle.velocity.clone();
+          const savedAngularVelocity = obstacle.angularVelocity.clone();
           const savedSleeping = obstacle.sleeping;
           const probe = this.truck.group.localToWorld(new THREE.Vector3(-2.12, 1.03, 0.0));
           obstacle.mesh.position.copy(probe);
           const hit = this.truck.resolveSolidCollision(obstacle.mesh.position, obstacle.radius);
           obstacle.velocity.copy(hit?.normal ?? new THREE.Vector3(1, 0, 0)).multiplyScalar(-1.15);
+          obstacle.angularVelocity.set(0, 0, 0);
           obstacle.sleeping = false;
           const beforeObjectImpact = this.truck.physicsState().impactImpulse;
           this.resolveLooseObjectTruckCollision(obstacle);
           objectImpactImpulse = Math.max(0, this.truck.physicsState().impactImpulse - beforeObjectImpact);
           this.truck.updatePhysics(this.terrain, this.truckLoad, 0.08, false);
           obstacle.mesh.position.copy(savedPosition);
+          obstacle.mesh.quaternion.copy(savedQuaternion);
           obstacle.velocity.copy(savedVelocity);
+          obstacle.angularVelocity.copy(savedAngularVelocity);
           obstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         }
@@ -5095,11 +5121,14 @@ class Simulator {
           this.worldColliders.find((collider) => !collider.immovable && collider.kind === "boulder");
         if (obstacle) {
           const savedPosition = obstacle.mesh.position.clone();
+          const savedQuaternion = obstacle.mesh.quaternion.clone();
           const savedVelocity = obstacle.velocity.clone();
+          const savedAngularVelocity = obstacle.angularVelocity.clone();
           const savedSleeping = obstacle.sleeping;
           obstacle.mesh.position.copy(wheelProbe);
           const hit = this.truck.resolveWheelCollision(obstacle.mesh.position, obstacle.radius);
           obstacle.velocity.copy(hit?.normal ?? new THREE.Vector3(0, 0, -1)).multiplyScalar(-0.72);
+          obstacle.angularVelocity.set(0, 0, 0);
           obstacle.sleeping = false;
           const beforeObject = obstacle.mesh.position.clone();
           const beforeImpact = this.truck.physicsState().impactImpulse;
@@ -5109,7 +5138,9 @@ class Simulator {
           objectVelocity = obstacle.velocity.length();
           objectImpulse = Math.max(0, this.truck.physicsState().impactImpulse - beforeImpact);
           obstacle.mesh.position.copy(savedPosition);
+          obstacle.mesh.quaternion.copy(savedQuaternion);
           obstacle.velocity.copy(savedVelocity);
+          obstacle.angularVelocity.copy(savedAngularVelocity);
           obstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         }
@@ -5182,7 +5213,9 @@ class Simulator {
           this.worldColliders.find((collider) => collider.kind === "rock");
         if (obstacle) {
           const savedPosition = obstacle.mesh.position.clone();
+          const savedQuaternion = obstacle.mesh.quaternion.clone();
           const savedVelocity = obstacle.velocity.clone();
+          const savedAngularVelocity = obstacle.angularVelocity.clone();
           const savedSleeping = obstacle.sleeping;
           const previousObjectAngles: ExcavatorAngles = { swing: -0.35, boom: 0.36, stick: -1.24, bucket: -1.2 };
           const objectAngles: ExcavatorAngles = { ...previousObjectAngles, swing: 0.35 };
@@ -5195,6 +5228,7 @@ class Simulator {
           const overlap = Math.max(0.04, (objectSample.radius + obstacle.radius) * 0.42);
           obstacle.mesh.position.copy(objectSample.point).add(new THREE.Vector3(overlap, 0, 0));
           obstacle.velocity.set(0, 0, 0);
+          obstacle.angularVelocity.set(0, 0, 0);
           obstacle.sleeping = false;
           this.worldColliderGridDirty = true;
           this.velocities.swing = 0.9;
@@ -5207,7 +5241,9 @@ class Simulator {
           objectImpulse = objectResult.objectImpulse;
           movedMass = objectResult.movedMass;
           obstacle.mesh.position.copy(savedPosition);
+          obstacle.mesh.quaternion.copy(savedQuaternion);
           obstacle.velocity.copy(savedVelocity);
+          obstacle.angularVelocity.copy(savedAngularVelocity);
           obstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         }
@@ -5360,6 +5396,7 @@ class Simulator {
           const debrisStart = this.excavator.bucketGroup.localToWorld(new THREE.Vector3(-0.56, -0.3, 0));
           debris.mesh.position.copy(debrisStart);
           debris.velocity.set(0, 0, 0);
+          debris.angularVelocity.set(0, 0, 0);
           debris.sleeping = false;
           this.collisionCooldown = 0;
           const result = this.resolveArmWorldObjectCollisions(previousAngles);
@@ -5380,6 +5417,7 @@ class Simulator {
           park.y = this.terrain.getHeightAt(park.x, park.z) + debris.groundOffset;
           debris.mesh.position.copy(park);
           debris.velocity.set(0, 0, 0);
+          debris.angularVelocity.set(0, 0, 0);
           debris.sleeping = true;
         }
 
@@ -5392,6 +5430,7 @@ class Simulator {
           const hardStart = this.excavator.bucketGroup.localToWorld(new THREE.Vector3(-0.58, -0.31, 0.04));
           hard.mesh.position.copy(hardStart);
           hard.velocity.set(0, 0, 0);
+          hard.angularVelocity.set(0, 0, 0);
           hard.sleeping = false;
           this.collisionCooldown = 0;
           beforeStick = this.angles.stick;
@@ -5431,6 +5470,7 @@ class Simulator {
           this.excavator.applyAngles(this.angles);
           debris.mesh.position.copy(truckTarget);
           debris.velocity.set(0, 0, 0);
+          debris.angularVelocity.set(0, 0, 0);
           debris.sleeping = false;
           this.carryWorldColliderAt(debris, local, truckTarget.clone().add(new THREE.Vector3(-0.42, 0, 0)));
           this.collisionCooldown = 0;
@@ -5459,6 +5499,8 @@ class Simulator {
           hard.mesh.position.set(target.x + overlap, target.y, target.z);
           debris.velocity.set(0, 0, 0);
           hard.velocity.set(0, 0, 0);
+          debris.angularVelocity.set(0, 0, 0);
+          hard.angularVelocity.set(0, 0, 0);
           debris.sleeping = false;
           hard.sleeping = false;
           this.carryWorldColliderAt(debris, local, target.clone().add(new THREE.Vector3(-0.36, 0, 0)));
@@ -5535,13 +5577,16 @@ class Simulator {
           loadSurfaceHeight = loadSurface.loadHeight;
           loadSurfaceNormalY = loadSurface.normal.y;
           const savedPosition = loadObstacle.mesh.position.clone();
+          const savedQuaternion = loadObstacle.mesh.quaternion.clone();
           const savedVelocity = loadObstacle.velocity.clone();
+          const savedAngularVelocity = loadObstacle.angularVelocity.clone();
           const savedSleeping = loadObstacle.sleeping;
           const targetPenetration = clamp(loadObstacle.radius * 0.42, 0.08, 0.18);
           const loadLocal = this.truck.group.worldToLocal(loadSurface.point.clone());
           loadLocal.y += loadObstacle.radius - targetPenetration;
           loadObstacle.mesh.position.copy(this.truck.group.localToWorld(loadLocal));
           loadObstacle.velocity.copy(loadSurface.normal).multiplyScalar(-0.7);
+          loadObstacle.angularVelocity.set(0, 0, 0);
           loadObstacle.sleeping = false;
           loadSurfacePenetrationBefore = this.truck.resolveLoadCollision(loadObstacle.mesh.position, loadObstacle.radius)?.penetration ?? 0;
           const beforePosition = loadObstacle.mesh.position.clone();
@@ -5552,7 +5597,9 @@ class Simulator {
           loadSurfaceObjectVelocity = loadObstacle.velocity.length();
           loadSurfaceObjectImpulse = Math.max(0, this.truck.physicsState().impactImpulse - beforeImpact);
           loadObstacle.mesh.position.copy(savedPosition);
+          loadObstacle.mesh.quaternion.copy(savedQuaternion);
           loadObstacle.velocity.copy(savedVelocity);
+          loadObstacle.angularVelocity.copy(savedAngularVelocity);
           loadObstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         }
@@ -5670,6 +5717,7 @@ class Simulator {
           const local = new THREE.Vector3(-0.62, -0.28, 0);
           heavy.mesh.position.copy(this.excavator.bucketGroup.localToWorld(local.clone()));
           heavy.velocity.set(0, 0, 0);
+          heavy.angularVelocity.set(0, 0, 0);
           this.carryWorldColliderAt(heavy, local, heavy.mesh.position);
           carriedMass = this.carriedWorldObjectMass();
         }
@@ -5713,6 +5761,9 @@ class Simulator {
         let debrisTravel = 0;
         let hardTravel = 0;
         let railTravel = 0;
+        let debrisAngularSpeed = 0;
+        let hardAngularSpeed = 0;
+        let railAngularSpeed = 0;
         let excavatorPenetrationBefore = 0;
         let excavatorPenetrationAfter = 0;
         let excavatorObjectTravel = 0;
@@ -5733,6 +5784,7 @@ class Simulator {
         let truckPenetrationAfter = 0;
         let pairDistanceBefore = 0;
         let pairDistanceAfter = 0;
+        let pairAngularSpeed = 0;
         let trackContactCount = 0;
         let cornerContacts = 0;
         let movedMass = 0;
@@ -5754,6 +5806,7 @@ class Simulator {
           debrisStart.y = this.terrain.getHeightAt(debrisStart.x, debrisStart.z) + debris.groundOffset;
           debris.mesh.position.copy(debrisStart);
           debris.velocity.set(0, 0, 0);
+          debris.angularVelocity.set(0, 0, 0);
           debris.sleeping = false;
           this.worldColliderGridDirty = true;
           this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
@@ -5763,6 +5816,7 @@ class Simulator {
           collectObjectContact(this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward).objectContact);
           this.updateLooseWorldObjects(0.28);
           debrisTravel = debris.mesh.position.distanceTo(debrisStart);
+          debrisAngularSpeed = debris.angularVelocity.length();
         }
 
         if (hard) {
@@ -5770,6 +5824,7 @@ class Simulator {
           hardStart.y = this.terrain.getHeightAt(hardStart.x, hardStart.z) + hard.groundOffset;
           hard.mesh.position.copy(hardStart);
           hard.velocity.set(0, 0, 0);
+          hard.angularVelocity.set(0, 0, 0);
           hard.sleeping = false;
           this.worldColliderGridDirty = true;
           this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
@@ -5779,6 +5834,7 @@ class Simulator {
           collectObjectContact(this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, forward).objectContact);
           this.updateLooseWorldObjects(0.28);
           hardTravel = hard.mesh.position.distanceTo(hardStart);
+          hardAngularSpeed = hard.angularVelocity.length();
         }
 
         if (rail) {
@@ -5788,6 +5844,7 @@ class Simulator {
           rail.mesh.position.copy(railStart);
           rail.mesh.rotation.set(0, 0, 0);
           rail.velocity.set(0, 0, 0);
+          rail.angularVelocity.set(0, 0, 0);
           this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
           this.excavator.group.rotation.set(0, 0, 0);
           this.leftTrackVelocity = TRACK_MAX_SPEED;
@@ -5799,12 +5856,14 @@ class Simulator {
           collectObjectContact(this.resolveWorldCollisions(TRACK_MAX_SPEED, 0, railForward).objectContact);
           this.updateLooseWorldObjects(0.28);
           railTravel = rail.mesh.position.distanceTo(railBefore);
+          railAngularSpeed = rail.angularVelocity.length();
         }
 
         if (debris) {
           const truckProbe = this.truck.group.localToWorld(new THREE.Vector3(-2.12, 1.03, 0));
           debris.mesh.position.copy(truckProbe);
           debris.velocity.set(-0.45, -0.2, 0.12);
+          debris.angularVelocity.set(0, 0, 0);
           debris.sleeping = false;
           truckPenetrationBefore = this.truck.resolveSolidCollision(debris.mesh.position, debris.radius)?.penetration ?? 0;
           for (let i = 0; i < 4; i += 1) {
@@ -5824,6 +5883,7 @@ class Simulator {
           trackPoint.y = base.y + 0.34;
           debris.mesh.position.copy(trackPoint).addScaledVector(normal, TRACK_WIDTH * 0.72 + debris.radius - 0.16);
           debris.velocity.copy(normal).multiplyScalar(-0.72);
+          debris.angularVelocity.set(0, 0, 0);
           debris.sleeping = false;
           this.worldColliderGridDirty = true;
           excavatorPenetrationBefore = this.resolveLooseObjectExcavatorHit(debris)?.penetration ?? 0;
@@ -5863,6 +5923,7 @@ class Simulator {
               const falsePairProbe = midpoint.clone().addScaledVector(side, capsule.radius + debris.radius + 0.08);
               debris.mesh.position.copy(falsePairProbe);
               debris.velocity.set(0, 0, 0);
+              debris.angularVelocity.set(0, 0, 0);
               debris.sleeping = false;
               pipe.sleeping = false;
               this.worldColliderGridDirty = true;
@@ -5873,6 +5934,8 @@ class Simulator {
               debris.mesh.position.copy(hitPairProbe);
               debris.velocity.copy(side).multiplyScalar(-0.2);
               pipe.velocity.set(0, 0, 0);
+              debris.angularVelocity.set(0, 0, 0);
+              pipe.angularVelocity.set(0, 0, 0);
               debris.sleeping = false;
               pipe.sleeping = false;
               this.worldColliderGridDirty = true;
@@ -5887,6 +5950,7 @@ class Simulator {
               pipe.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pipeAxis);
               pipe.mesh.position.copy(endpoint).addScaledVector(pipeAxis, -pipeHalfLength);
               pipe.velocity.set(0, 0, 0);
+              pipe.angularVelocity.set(0, 0, 0);
               pipe.sleeping = false;
               this.worldColliderGridDirty = true;
             };
@@ -5929,12 +5993,15 @@ class Simulator {
           hard.mesh.position.set(pairBase.x + overlapDistance, sharedY, pairBase.z);
           debris.velocity.set(0.25, 0, 0);
           hard.velocity.set(-0.12, 0, 0);
+          debris.angularVelocity.set(0, 0, 0);
+          hard.angularVelocity.set(0, 0, 0);
           debris.sleeping = false;
           hard.sleeping = false;
           this.worldColliderGridDirty = true;
           pairDistanceBefore = debris.mesh.position.distanceTo(hard.mesh.position);
           this.resolveLooseObjectPairCollisions();
           pairDistanceAfter = debris.mesh.position.distanceTo(hard.mesh.position);
+          pairAngularSpeed = debris.angularVelocity.length() + hard.angularVelocity.length();
         }
 
         this.updateExcavatorSupport(0.3, forward);
@@ -5943,6 +6010,9 @@ class Simulator {
           debrisTravel,
           hardTravel,
           railTravel,
+          debrisAngularSpeed,
+          hardAngularSpeed,
+          railAngularSpeed,
           excavatorPenetrationBefore,
           excavatorPenetrationAfter,
           excavatorObjectTravel,
@@ -5969,6 +6039,7 @@ class Simulator {
           truckPenetrationAfter,
           pairDistanceBefore,
           pairDistanceAfter,
+          pairAngularSpeed,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
         };
@@ -6000,17 +6071,20 @@ class Simulator {
         const savedQuaternion = collider.mesh.quaternion.clone();
         const savedScale = collider.mesh.scale.clone();
         const savedVelocity = collider.velocity.clone();
+        const savedAngularVelocity = collider.angularVelocity.clone();
         const savedSleeping = collider.sleeping;
         const savedPressure = this.pressure;
         const savedCapsulePosition = capsuleCollider?.mesh.position.clone();
         const savedCapsuleQuaternion = capsuleCollider?.mesh.quaternion.clone();
         const savedCapsuleScale = capsuleCollider?.mesh.scale.clone();
         const savedCapsuleVelocity = capsuleCollider?.velocity.clone();
+        const savedCapsuleAngularVelocity = capsuleCollider?.angularVelocity.clone();
         const savedCapsuleSleeping = capsuleCollider?.sleeping;
         const testPoint = new THREE.Vector3(24.5, 0, -16.5);
         const beforeGround = this.terrain.getHeightAt(testPoint.x, testPoint.z);
         collider.mesh.position.set(testPoint.x, beforeGround + collider.groundOffset, testPoint.z);
         collider.velocity.set(0, 0, 0);
+        collider.angularVelocity.set(0, 0, 0);
         collider.sleeping = true;
         this.worldColliderGridDirty = true;
 
@@ -6026,6 +6100,7 @@ class Simulator {
         const afterFallY = collider.mesh.position.y;
 
         collider.velocity.set(0, 0, 0);
+        collider.angularVelocity.set(0, 0, 0);
         collider.sleeping = true;
         this.worldColliderGridDirty = true;
         const beforeRaiseY = collider.mesh.position.y;
@@ -6050,6 +6125,7 @@ class Simulator {
           capsuleCollider.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
           capsuleCollider.mesh.position.set(capsuleCenter.x, capsuleGround + capsuleCollider.groundOffset, capsuleCenter.z);
           capsuleCollider.velocity.set(0, 0, 0);
+          capsuleCollider.angularVelocity.set(0, 0, 0);
           capsuleCollider.sleeping = false;
           this.worldColliderGridDirty = true;
 
@@ -6069,6 +6145,7 @@ class Simulator {
         collider.mesh.quaternion.copy(savedQuaternion);
         collider.mesh.scale.copy(savedScale);
         collider.velocity.copy(savedVelocity);
+        collider.angularVelocity.copy(savedAngularVelocity);
         collider.sleeping = savedSleeping;
         if (
           capsuleCollider &&
@@ -6076,12 +6153,14 @@ class Simulator {
           savedCapsuleQuaternion &&
           savedCapsuleScale &&
           savedCapsuleVelocity &&
+          savedCapsuleAngularVelocity &&
           savedCapsuleSleeping !== undefined
         ) {
           capsuleCollider.mesh.position.copy(savedCapsulePosition);
           capsuleCollider.mesh.quaternion.copy(savedCapsuleQuaternion);
           capsuleCollider.mesh.scale.copy(savedCapsuleScale);
           capsuleCollider.velocity.copy(savedCapsuleVelocity);
+          capsuleCollider.angularVelocity.copy(savedCapsuleAngularVelocity);
           capsuleCollider.sleeping = savedCapsuleSleeping;
         }
         this.pressure = Math.max(savedPressure, pressure);
@@ -6119,6 +6198,7 @@ class Simulator {
           const objectQuaternion = collider.mesh.quaternion.clone();
           const objectScale = collider.mesh.scale.clone();
           const objectVelocity = collider.velocity.clone();
+          const objectAngularVelocity = collider.angularVelocity.clone();
           const objectSleeping = collider.sleeping;
 
           this.carriedWorldColliders.delete(collider);
@@ -6132,6 +6212,7 @@ class Simulator {
           const bucketLocal = new THREE.Vector3(-0.58, -0.32, 0.02);
           collider.mesh.position.copy(this.excavator.bucketGroup.localToWorld(bucketLocal.clone()));
           collider.velocity.set(0, 0, 0);
+          collider.angularVelocity.set(0, 0, 0);
           collider.sleeping = false;
           this.worldColliderGridDirty = true;
           const captured = this.tryCarryWorldCollider(collider);
@@ -6150,6 +6231,7 @@ class Simulator {
           collider.mesh.quaternion.copy(objectQuaternion);
           collider.mesh.scale.copy(objectScale);
           collider.velocity.copy(objectVelocity);
+          collider.angularVelocity.copy(objectAngularVelocity);
           collider.sleeping = objectSleeping;
           this.worldColliderGridDirty = true;
           return { lifted, liftHeight };
@@ -6163,6 +6245,7 @@ class Simulator {
           const objectQuaternion = collider.mesh.quaternion.clone();
           const objectScale = collider.mesh.scale.clone();
           const objectVelocity = collider.velocity.clone();
+          const objectAngularVelocity = collider.angularVelocity.clone();
           const objectSleeping = collider.sleeping;
 
           this.carriedWorldColliders.delete(collider);
@@ -6185,6 +6268,7 @@ class Simulator {
           const endpointOffset = collider.capsule.localB.clone().applyQuaternion(collider.mesh.quaternion);
           collider.mesh.position.copy(endpointWorld).sub(endpointOffset);
           collider.velocity.set(0, 0, 0);
+          collider.angularVelocity.set(0, 0, 0);
           collider.sleeping = false;
           this.worldColliderGridDirty = true;
 
@@ -6206,6 +6290,7 @@ class Simulator {
           collider.mesh.quaternion.copy(objectQuaternion);
           collider.mesh.scale.copy(objectScale);
           collider.velocity.copy(objectVelocity);
+          collider.angularVelocity.copy(objectAngularVelocity);
           collider.sleeping = objectSleeping;
           this.worldColliderGridDirty = true;
           return { lifted, liftHeight, centerOffset };
@@ -6374,6 +6459,7 @@ class Simulator {
           const savedQuaternion = fineTarget.mesh.quaternion.clone();
           const savedScale = fineTarget.mesh.scale.clone();
           const savedVelocity = fineTarget.velocity.clone();
+          const savedAngularVelocity = fineTarget.angularVelocity.clone();
           const savedSleeping = fineTarget.sleeping;
           const radius = 0.026;
           const idx = this.fineGrainCursor;
@@ -6391,6 +6477,7 @@ class Simulator {
           this.fineGrainMaxLife[idx] = 1;
           this.fineGrainSettles[idx] = 1;
           fineTarget.velocity.set(0, 0, 0);
+          fineTarget.angularVelocity.set(0, 0, 0);
           fineTarget.sleeping = false;
           this.worldColliderGridDirty = true;
           fineObjectPenetrationBefore =
@@ -6409,6 +6496,7 @@ class Simulator {
           fineTarget.mesh.quaternion.copy(savedQuaternion);
           fineTarget.mesh.scale.copy(savedScale);
           fineTarget.velocity.copy(savedVelocity);
+          fineTarget.angularVelocity.copy(savedAngularVelocity);
           fineTarget.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         }
@@ -6993,6 +7081,12 @@ class Simulator {
       collider.mesh.position.addScaledVector(correctionNormal, -correction);
       collider.velocity.addScaledVector(correctionNormal, -impulse);
       collider.velocity.y = Math.max(collider.velocity.y, 0.08 + 0.18 * colliderSeverity);
+      this.applyWorldColliderAngularImpulse(
+        collider,
+        collider.mesh.position.clone().addScaledVector(correctionNormal, collider.radius),
+        correctionNormal.clone().multiplyScalar(-impulse * collider.mass),
+        0.34,
+      );
       collider.sleeping = false;
       result.movedCount += 1;
       result.movedMass += collider.mass;
@@ -7056,6 +7150,74 @@ class Simulator {
     if (this.collisionCooldown <= 0 && collisionSeverity > 0.08) {
       this.collisionCount += 1;
       this.collisionCooldown = 0.34;
+    }
+  }
+
+  private worldColliderInertia(collider: WorldCollider): number {
+    if (collider.capsule) {
+      const length = collider.capsule.localA.distanceTo(collider.capsule.localB);
+      const radius = Math.max(collider.capsule.radius, 0.035);
+      return Math.max(0.025, collider.mass * (length * length / 12 + radius * radius * 0.5));
+    }
+    return Math.max(0.025, collider.mass * Math.max(collider.radius * collider.radius * 0.4, 0.006));
+  }
+
+  private clampWorldColliderAngularVelocity(collider: WorldCollider): void {
+    const maxSpin = collider.capsule ? 9.5 : 13.5;
+    const spin = collider.angularVelocity.length();
+    if (spin > maxSpin) {
+      collider.angularVelocity.multiplyScalar(maxSpin / spin);
+    }
+  }
+
+  private applyWorldColliderAngularImpulse(
+    collider: WorldCollider,
+    contactPoint: THREE.Vector3,
+    impulseVector: THREE.Vector3,
+    scale = 1,
+  ): void {
+    if (collider.immovable) {
+      return;
+    }
+    const lever = contactPoint.clone().sub(collider.mesh.position);
+    if (lever.lengthSq() < 0.000001 || impulseVector.lengthSq() < 0.000001) {
+      return;
+    }
+    const torque = lever.cross(impulseVector);
+    collider.angularVelocity.addScaledVector(torque, scale / this.worldColliderInertia(collider));
+    this.clampWorldColliderAngularVelocity(collider);
+  }
+
+  private applyWorldColliderRollingSpin(collider: WorldCollider, groundNormal: THREE.Vector3, dt: number): void {
+    const horizontal = new THREE.Vector3(collider.velocity.x, 0, collider.velocity.z);
+    const speed = horizontal.length();
+    if (speed <= 0.01) {
+      return;
+    }
+    const up = groundNormal.clone().normalize();
+    const axis = up.cross(horizontal);
+    if (axis.lengthSq() < 0.000001) {
+      return;
+    }
+    axis.normalize();
+    const targetSpin = axis.multiplyScalar(speed / Math.max(collider.radius, collider.capsule?.radius ?? 0.08, 0.08));
+    collider.angularVelocity.lerp(targetSpin, clamp(dt * (1.55 + collider.friction * 2.1), 0, 0.34));
+    this.clampWorldColliderAngularVelocity(collider);
+  }
+
+  private integrateWorldColliderAngularMotion(collider: WorldCollider, dt: number): void {
+    const spin = collider.angularVelocity.length();
+    if (spin > 0.0001) {
+      const delta = new THREE.Quaternion().setFromAxisAngle(
+        collider.angularVelocity.clone().divideScalar(spin),
+        Math.min(spin * dt, 0.42),
+      );
+      collider.mesh.quaternion.premultiply(delta).normalize();
+    }
+    const damping = 1 - Math.min(dt * (0.46 + collider.friction * 0.7), 0.16);
+    collider.angularVelocity.multiplyScalar(damping);
+    if (collider.angularVelocity.lengthSq() < 0.000025) {
+      collider.angularVelocity.set(0, 0, 0);
     }
   }
 
@@ -7261,7 +7423,10 @@ class Simulator {
     };
   }
 
-  private resolveWorldColliderPairHit(a: WorldCollider, b: WorldCollider): { normal: THREE.Vector3; penetration: number } | null {
+  private resolveWorldColliderPairHit(
+    a: WorldCollider,
+    b: WorldCollider,
+  ): { normal: THREE.Vector3; penetration: number; pointA: THREE.Vector3; pointB: THREE.Vector3 } | null {
     const capsuleA = this.worldColliderCapsuleWorld(a);
     const capsuleB = this.worldColliderCapsuleWorld(b);
     let pointA: THREE.Vector3;
@@ -7300,13 +7465,15 @@ class Simulator {
       } else {
         fallback.set(1, 0, 0);
       }
-      return { normal: fallback, penetration: combinedRadius };
+      return { normal: fallback, penetration: combinedRadius, pointA: pointA.clone(), pointB: pointB.clone() };
     }
 
     const distance = Math.sqrt(distanceSq);
     return {
       normal: delta.divideScalar(distance),
       penetration: combinedRadius - distance,
+      pointA: pointA.clone(),
+      pointB: pointB.clone(),
     };
   }
 
@@ -7439,6 +7606,7 @@ class Simulator {
     this.carriedWorldLocalQuaternions.set(collider, this.bucketLocalQuaternionFor(collider));
     collider.mesh.position.copy(world);
     collider.velocity.set(0, 0, 0);
+    collider.angularVelocity.set(0, 0, 0);
     collider.sleeping = false;
     this.worldColliderGridDirty = true;
   }
@@ -7506,12 +7674,18 @@ class Simulator {
       const normalSpeed = collider.velocity.dot(normal);
       const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed).multiplyScalar(0.72);
       const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.08, 0.08, 0.42) : normalSpeed;
+      const truckImpulse = clamp(
+        0.12 + maxPenetration * 2.2 + Math.max(0, -normalSpeed) * collider.mass * 0.045 + collider.mass * 0.015,
+        0.05,
+        3.2,
+      );
       this.truck.applyImpact(
         truckHit.point,
         normal,
-        clamp(0.12 + maxPenetration * 2.2 + Math.max(0, -normalSpeed) * collider.mass * 0.045 + collider.mass * 0.015, 0.05, 3.2),
+        truckImpulse,
       );
       collider.velocity.copy(tangent).addScaledVector(normal, bounceSpeed);
+      this.applyWorldColliderAngularImpulse(collider, truckHit.point, normal.clone().multiplyScalar(truckImpulse * collider.mass), 0.2);
       this.releaseCarriedWorldCollider(collider);
       this.pressure = Math.max(this.pressure, clamp(0.42 + maxPenetration * 1.6 + collider.mass * 0.008, 0, 1));
       if (this.collisionCooldown <= 0 && maxPenetration > 0.018) {
@@ -7553,6 +7727,7 @@ class Simulator {
         const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
         collider.velocity.addScaledVector(normal, impulse * invMassA);
         other.velocity.addScaledVector(normal, -impulse * invMassB);
+        this.applyWorldColliderAngularImpulse(other, hit.pointB, normal.clone().multiplyScalar(-impulse), 0.28);
       }
 
       const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
@@ -7560,6 +7735,7 @@ class Simulator {
         tangent.normalize().multiplyScalar(clamp((collider.friction + other.friction) * 0.06, 0.035, 0.14));
         collider.velocity.addScaledVector(tangent, -invMassA / totalInvMass);
         other.velocity.addScaledVector(tangent, invMassB / totalInvMass);
+        this.applyWorldColliderAngularImpulse(other, hit.pointB, tangent.clone().multiplyScalar(invMassB / totalInvMass), 0.2);
       }
 
       other.sleeping = false;
@@ -7611,10 +7787,11 @@ class Simulator {
       const dyBucket = pos.y - bucket.y;
       const dzBucket = pos.z - bucket.z;
       const speedSq = collider.velocity.lengthSq();
+      const angularSpeedSq = collider.angularVelocity.lengthSq();
       const bucketWakeRadius = collider.radius + 1.28;
       const nearActiveBucket = dxBucket * dxBucket + dyBucket * dyBucket + dzBucket * dzBucket < bucketWakeRadius * bucketWakeRadius;
       const nearCrawlerBody = dxMachine * dxMachine + dzMachine * dzMachine < 5.8;
-      if (collider.sleeping && speedSq < 0.0004 && !nearActiveBucket && !nearCrawlerBody) {
+      if (collider.sleeping && speedSq < 0.0004 && angularSpeedSq < 0.0004 && !nearActiveBucket && !nearCrawlerBody) {
         continue;
       }
       collider.sleeping = false;
@@ -7642,9 +7819,16 @@ class Simulator {
         const groundFriction = 1 - Math.min(dt * (1.2 + collider.friction * 3.4), 0.32);
         if (normalSpeed < -0.05) {
           collider.velocity.copy(tangent.multiplyScalar(groundFriction)).addScaledVector(groundSupport.normal, -normalSpeed * collider.restitution);
+          this.applyWorldColliderAngularImpulse(
+            collider,
+            groundSupport.point,
+            groundSupport.normal.clone().multiplyScalar(Math.max(0, -normalSpeed) * collider.mass * (1 + collider.restitution)),
+            0.16,
+          );
         } else {
           collider.velocity.copy(tangent.multiplyScalar(groundFriction));
         }
+        this.applyWorldColliderRollingSpin(collider, groundSupport.normal, dt);
       }
 
       if (this.resolveLooseObjectTruckCollision(collider)) {
@@ -7658,13 +7842,17 @@ class Simulator {
       }
 
       const horizontalSpeed = Math.hypot(collider.velocity.x, collider.velocity.z);
-      if (horizontalSpeed > 0.01) {
-        collider.mesh.rotation.x += collider.velocity.z * dt * 1.7;
-        collider.mesh.rotation.z -= collider.velocity.x * dt * 1.7;
-      }
+      this.integrateWorldColliderAngularMotion(collider, dt);
       const settledSupport = this.worldColliderTerrainSupport(collider);
-      if (settledSupport.penetration < 0.004 && settledSupport.unsupportedDrop < 0.002 && horizontalSpeed < 0.008 && Math.abs(collider.velocity.y) < 0.008) {
+      if (
+        settledSupport.penetration < 0.004 &&
+        settledSupport.unsupportedDrop < 0.002 &&
+        horizontalSpeed < 0.008 &&
+        Math.abs(collider.velocity.y) < 0.008 &&
+        collider.angularVelocity.lengthSq() < 0.00008
+      ) {
         collider.velocity.set(0, 0, 0);
+        collider.angularVelocity.set(0, 0, 0);
         collider.sleeping = true;
       }
       if (Math.abs(pos.x - previousX) + Math.abs(pos.y - previousY) + Math.abs(pos.z - previousZ) > 0.00001) {
@@ -7689,6 +7877,12 @@ class Simulator {
     const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed);
     const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.02, 0.04, 0.24) : normalSpeed;
     collider.velocity.copy(tangent.multiplyScalar(0.72)).addScaledVector(normal, bounceSpeed);
+    this.applyWorldColliderAngularImpulse(
+      collider,
+      hit.point,
+      normal.clone().multiplyScalar((Math.max(0, -normalSpeed) + hit.penetration * 1.6) * collider.mass),
+      0.18,
+    );
     collider.sleeping = false;
     this.worldColliderGridDirty = true;
     this.pressure = Math.max(this.pressure, clamp(0.18 + hit.penetration * 0.9 + collider.mass * 0.006, 0, 0.62));
@@ -7715,6 +7909,12 @@ class Simulator {
       clamp(0.08 + hit.penetration * 2.0 + Math.max(0, -normalSpeed) * collider.mass * 0.04 + collider.mass * 0.012, 0.035, 2.8),
     );
     collider.velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(normal, bounceSpeed);
+    this.applyWorldColliderAngularImpulse(
+      collider,
+      hit.point,
+      normal.clone().multiplyScalar((Math.max(0, -normalSpeed) + hit.penetration * 1.8) * collider.mass),
+      0.2,
+    );
     collider.sleeping = false;
     this.pressure = Math.max(this.pressure, clamp(0.34 + hit.penetration * 1.8 + collider.mass * 0.008, 0, 0.9));
     if (this.collisionCooldown <= 0 && hit.penetration > 0.025) {
@@ -7819,6 +8019,12 @@ class Simulator {
     const tangentDamping = 1 - clamp(0.08 + collider.friction * 0.2, 0.08, 0.34);
     const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.04, 0.06, 0.42) : Math.max(normalSpeed, 0);
     collider.velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(responseNormal, bounceSpeed);
+    this.applyWorldColliderAngularImpulse(
+      collider,
+      collider.mesh.position.clone().addScaledVector(responseNormal, collider.radius),
+      responseNormal.clone().multiplyScalar((Math.max(0, -normalSpeed) + maxPenetration * 1.6) * collider.mass),
+      0.22,
+    );
     collider.sleeping = false;
     this.worldColliderGridDirty = true;
 
@@ -7896,6 +8102,8 @@ class Simulator {
           const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
           a.velocity.addScaledVector(normal, impulse * invMassA);
           b.velocity.addScaledVector(normal, -impulse * invMassB);
+          this.applyWorldColliderAngularImpulse(a, hit.pointA, normal.clone().multiplyScalar(impulse), 0.32);
+          this.applyWorldColliderAngularImpulse(b, hit.pointB, normal.clone().multiplyScalar(-impulse), 0.32);
         }
 
         const tangent = relVelocity.addScaledVector(normal, -closingSpeed);
@@ -7905,6 +8113,8 @@ class Simulator {
           tangent.normalize().multiplyScalar(friction);
           a.velocity.addScaledVector(tangent, -invMassA / totalInvMass);
           b.velocity.addScaledVector(tangent, invMassB / totalInvMass);
+          this.applyWorldColliderAngularImpulse(a, hit.pointA, tangent.clone().multiplyScalar(-invMassA / totalInvMass), 0.24);
+          this.applyWorldColliderAngularImpulse(b, hit.pointB, tangent.clone().multiplyScalar(invMassB / totalInvMass), 0.24);
         }
 
         a.sleeping = false;
@@ -8194,6 +8404,12 @@ class Simulator {
         collider.mesh.position.addScaledVector(horizontal, -correction);
         collider.velocity.addScaledVector(horizontal, -impulse);
         collider.velocity.y = Math.max(collider.velocity.y, 0.045 + severity * 0.16);
+        this.applyWorldColliderAngularImpulse(
+          collider,
+          sample.point,
+          horizontal.clone().multiplyScalar(-impulse * collider.mass),
+          0.3,
+        );
         collider.sleeping = false;
         objectImpulse += impulse;
         this.worldColliderGridDirty = true;
@@ -8417,6 +8633,12 @@ class Simulator {
         collider.velocity.x -= pushX * impulse;
         collider.velocity.z -= pushZ * impulse;
         collider.velocity.y = Math.max(collider.velocity.y, 0.06 + severity * 0.2);
+        this.applyWorldColliderAngularImpulse(
+          collider,
+          sample.point,
+          new THREE.Vector3(-pushX * impulse * collider.mass, -normalY * impulse * collider.mass * 0.35, -pushZ * impulse * collider.mass),
+          0.32,
+        );
         collider.sleeping = false;
         this.worldColliderGridDirty = true;
         this.pressure = Math.max(this.pressure, clamp(0.08 + severity * 0.26 + collider.mass * 0.01, 0, 0.55));
@@ -9252,6 +9474,7 @@ class Simulator {
         const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
         velocity.addScaledVector(normal, impulse * invFine);
         collider.velocity.addScaledVector(normal, -impulse * invObject);
+        this.applyWorldColliderAngularImpulse(collider, pos, normal.clone().multiplyScalar(-impulse), 0.18);
       }
 
       const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
@@ -9259,6 +9482,7 @@ class Simulator {
         tangent.normalize().multiplyScalar(clamp(collider.friction * 0.055, 0.018, 0.08));
         velocity.addScaledVector(tangent, -invFine / totalInvMass);
         collider.velocity.addScaledVector(tangent, invObject / totalInvMass);
+        this.applyWorldColliderAngularImpulse(collider, pos, tangent.clone().multiplyScalar(invObject / totalInvMass), 0.12);
         velocity.multiplyScalar(1 - Math.min(collider.friction * 0.04, 0.08));
       }
       collider.sleeping = false;
@@ -9354,6 +9578,7 @@ class Simulator {
         const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
         particle.velocity.addScaledVector(normal, impulse * invSoil);
         collider.velocity.addScaledVector(normal, -impulse * invObject);
+        this.applyWorldColliderAngularImpulse(collider, pos, normal.clone().multiplyScalar(-impulse), 0.2);
       }
 
       const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
@@ -9361,6 +9586,7 @@ class Simulator {
         tangent.normalize().multiplyScalar(clamp(collider.friction * 0.08, 0.035, 0.12));
         particle.velocity.addScaledVector(tangent, -invSoil / totalInvMass);
         collider.velocity.addScaledVector(tangent, invObject / totalInvMass);
+        this.applyWorldColliderAngularImpulse(collider, pos, tangent.clone().multiplyScalar(invObject / totalInvMass), 0.14);
       }
 
       collider.sleeping = false;
