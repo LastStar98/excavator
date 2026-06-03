@@ -189,6 +189,9 @@ interface TrackTractionState {
   rightTraction: number;
   leftSlip: number;
   rightSlip: number;
+  lateralSlope: number;
+  lateralSlipSpeed: number;
+  lateralSlipDistance: number;
   leftGroundSpeed: number;
   rightGroundSpeed: number;
   leftRoughness: number;
@@ -675,6 +678,10 @@ interface ExcavatorDebugApi {
     rightRoughness: number;
     leftSlip: number;
     rightSlip: number;
+    lateralSlope: number;
+    lateralSlipSpeed: number;
+    lateralSlipDistance: number;
+    lateralTravel: number;
     leftMotorVelocity: number;
     rightMotorVelocity: number;
     leftGroundSpeed: number;
@@ -4208,6 +4215,9 @@ class Simulator {
     rightTraction: 1,
     leftSlip: 0,
     rightSlip: 0,
+    lateralSlope: 0,
+    lateralSlipSpeed: 0,
+    lateralSlipDistance: 0,
     leftGroundSpeed: 0,
     rightGroundSpeed: 0,
     leftRoughness: 0,
@@ -7690,6 +7700,9 @@ class Simulator {
         this.leftTrackVelocity = TRACK_MAX_SPEED * 0.85;
         this.rightTrackVelocity = TRACK_MAX_SPEED * 0.65;
         this.updateTrackSoilInteraction(0.42, forward);
+        const beforeLateral = this.excavator.group.position.clone();
+        const lateralSlipDistance = this.applyTrackLateralSlip(0.42, forward);
+        const lateralTravel = this.excavator.group.position.distanceTo(beforeLateral);
         this.updateExcavatorSupport(0.65, forward);
         const leftCenter = this.excavator.group.position.clone().addScaledVector(side, -0.72);
         const rightCenter = this.excavator.group.position.clone().addScaledVector(side, 0.72);
@@ -7709,6 +7722,10 @@ class Simulator {
           rightRoughness: this.trackTraction.rightRoughness,
           leftSlip: this.trackTraction.leftSlip,
           rightSlip: this.trackTraction.rightSlip,
+          lateralSlope: this.trackTraction.lateralSlope,
+          lateralSlipSpeed: this.trackTraction.lateralSlipSpeed,
+          lateralSlipDistance,
+          lateralTravel,
           leftMotorVelocity: this.leftTrackVelocity,
           rightMotorVelocity: this.rightTrackVelocity,
           leftGroundSpeed: this.trackTraction.leftGroundSpeed,
@@ -9093,6 +9110,9 @@ class Simulator {
       rightTraction: 1,
       leftSlip: 0,
       rightSlip: 0,
+      lateralSlope: 0,
+      lateralSlipSpeed: 0,
+      lateralSlipDistance: 0,
       leftGroundSpeed: this.leftTrackVelocity,
       rightGroundSpeed: this.rightTrackVelocity,
       leftRoughness: 0,
@@ -9112,9 +9132,15 @@ class Simulator {
       const surface = this.terrain.getSurfaceConditionAt(center.x, center.z);
       const front = center.clone().addScaledVector(forward, TRACK_LENGTH * 0.42);
       const rear = center.clone().addScaledVector(forward, -TRACK_LENGTH * 0.42);
+      const sideProbe = TRACK_WIDTH * 0.82;
+      const plusSide = center.clone().addScaledVector(side, sideProbe);
+      const minusSide = center.clone().addScaledVector(side, -sideProbe);
       const frontHeight = this.terrain.getHeightAt(front.x, front.z);
       const rearHeight = this.terrain.getHeightAt(rear.x, rear.z);
       const grade = (frontHeight - rearHeight) / Math.max(TRACK_LENGTH * 0.84, 0.001);
+      const lateralGrade =
+        (this.terrain.getHeightAt(plusSide.x, plusSide.z) - this.terrain.getHeightAt(minusSide.x, minusSide.z)) /
+        Math.max(sideProbe * 2, 0.001);
       const driveDirection = Math.sign(motorVelocity || 1);
       const uphillGrade = Math.max(0, grade * driveDirection);
       const roughness = clamp((support.highHeight - support.lowHeight) * 0.95 + support.disturbedDepth * 0.28, 0, 0.85);
@@ -9128,16 +9154,31 @@ class Simulator {
       const slip = clamp(1 - traction + roughness * 0.18 + surface.wetness * 0.08 + uphillGrade * 0.08, 0, 1);
       const speedLoss = clamp((1 - traction) * 0.08 + uphillGrade * 0.02, 0, 0.09);
       const groundSpeed = motorVelocity * (1 - speedLoss);
-      return { traction, slip, groundSpeed, roughness, grade };
+      return { traction, slip, groundSpeed, roughness, grade, lateralGrade, supportHeight: support.supportHeight, wetness: surface.wetness };
     };
 
     const left = evaluate(-0.72, this.leftTrackVelocity);
     const right = evaluate(0.72, this.rightTrackVelocity);
+    const averageSlip = (left.slip + right.slip) * 0.5;
+    const averageRoughness = (left.roughness + right.roughness) * 0.5;
+    const averageWetness = (left.wetness + right.wetness) * 0.5;
+    const averageMotorSpeed = (Math.abs(this.leftTrackVelocity) + Math.abs(this.rightTrackVelocity)) * 0.5;
+    const lateralSlope = clamp(
+      ((right.supportHeight - left.supportHeight) / Math.max(TRACK_GAUGE, 0.001)) * 0.8 + (left.lateralGrade + right.lateralGrade) * 0.1,
+      -1.25,
+      1.25,
+    );
+    const lateralGripLoss = clamp(0.14 + averageWetness * 0.34 + averageRoughness * 0.3 + averageSlip * 0.24, 0.05, 0.84);
+    const lateralDriveFactor = clamp(0.34 + (averageMotorSpeed / Math.max(TRACK_MAX_SPEED, 0.001)) * 0.66, 0.34, 1);
+    const lateralSlipSpeed = clamp(-lateralSlope * lateralGripLoss * lateralDriveFactor * 1.2, -0.3, 0.3);
     return {
       leftTraction: left.traction,
       rightTraction: right.traction,
       leftSlip: left.slip,
       rightSlip: right.slip,
+      lateralSlope,
+      lateralSlipSpeed,
+      lateralSlipDistance: 0,
       leftGroundSpeed: left.groundSpeed,
       rightGroundSpeed: right.groundSpeed,
       leftRoughness: left.roughness,
@@ -9172,10 +9213,29 @@ class Simulator {
     forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
     const move = forwardSpeed * dt;
     this.excavator.group.position.addScaledVector(forward, move);
+    const lateralMove = this.applyTrackLateralSlip(dt, forward);
     this.resolveWorldCollisions(forwardSpeed, turnRate, forward);
-    this.travelDistance += Math.abs(move);
+    this.travelDistance += Math.abs(move) + Math.abs(lateralMove) * 0.35;
     this.updateTrackSoilInteraction(dt, forward);
     this.updateExcavatorSupport(dt, forward);
+  }
+
+  private applyTrackLateralSlip(dt: number, forward: THREE.Vector3): number {
+    const lateralSlipSpeed = this.trackTraction.lateralSlipSpeed;
+    if (dt <= 0 || Math.abs(lateralSlipSpeed) < 0.001) {
+      this.trackTraction.lateralSlipDistance = 0;
+      return 0;
+    }
+
+    const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    const distance = lateralSlipSpeed * dt;
+    this.excavator.group.position.addScaledVector(side, distance);
+    this.trackTraction.lateralSlipDistance = distance;
+    this.pressure = Math.max(
+      this.pressure,
+      clamp(0.05 + Math.abs(distance) * 7.8 + Math.abs(this.trackTraction.lateralSlope) * 0.16, 0, 0.42),
+    );
+    return distance;
   }
 
   private emptyTruckCrawlerContact(): TruckCrawlerContactResult {
@@ -10886,7 +10946,9 @@ class Simulator {
   private updateTrackSoilInteraction(dt: number, forward: THREE.Vector3): void {
     const base = this.excavator.group.position;
     const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    const previousLateralSlipDistance = this.trackTraction.lateralSlipDistance;
     this.trackTraction = this.computeTrackTraction(forward);
+    this.trackTraction.lateralSlipDistance = previousLateralSlipDistance;
     for (const [offset, velocity, contactSlip] of [
       [-0.72, this.leftTrackVelocity, this.trackTraction.leftSlip],
       [0.72, this.rightTrackVelocity, this.trackTraction.rightSlip],

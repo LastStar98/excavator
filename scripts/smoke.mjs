@@ -1287,6 +1287,10 @@ async function main() {
           Math.abs(roughTrackValue?.supportHeightDelta ?? 0) > 0.08 &&
           Math.max(roughTrackValue?.leftRoughness ?? 0, roughTrackValue?.rightRoughness ?? 0) > 0.12 &&
           Math.max(roughTrackValue?.leftSlip ?? 0, roughTrackValue?.rightSlip ?? 0) > 0.04 &&
+          Math.abs(roughTrackValue?.lateralSlope ?? 0) > 0.025 &&
+          Math.abs(roughTrackValue?.lateralSlipSpeed ?? 0) > 0.004 &&
+          Math.abs(roughTrackValue?.lateralSlipDistance ?? 0) > 0.0015 &&
+          roughTrackValue?.lateralTravel > 0.0015 &&
           Math.abs(roughTrackValue?.leftMotorVelocity ?? 0) > Math.abs(roughTrackValue?.leftGroundSpeed ?? 0) &&
           Math.abs(roughTrackValue?.rightMotorVelocity ?? 0) > Math.abs(roughTrackValue?.rightGroundSpeed ?? 0) &&
           Math.abs(roughTrackValue?.leftGroundSpeed ?? 0) > 0.55 &&
