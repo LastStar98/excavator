@@ -326,11 +326,17 @@ interface ExcavatorDebugApi {
   forceHydraulicLinkagePhysics: () => {
     sampleCount: number;
     subsoilSampleCount: number;
+    pinSampleCount: number;
     movableHit: boolean;
+    pinObjectHit: boolean;
     objectPenetrationBefore: number;
     objectPenetrationAfter: number;
     objectTravel: number;
     objectVelocity: number;
+    pinObjectPenetrationBefore: number;
+    pinObjectPenetrationAfter: number;
+    pinObjectTravel: number;
+    pinObjectVelocity: number;
     pressure: number;
     collisionCount: number;
     subsoilResisted: boolean;
@@ -3067,8 +3073,32 @@ class ExcavatorModel {
       ...this.bucketCuttingEdgeWorld().map((point) => ({ action: "bucket" as const, point, radius: 0.16 })),
     );
     samples.push(...this.bucketShellCollisionSamples(1));
+    samples.push(...this.visualPinCollisionSamples(1));
     samples.push(...this.hydraulicCollisionSamples());
     return samples;
+  }
+
+  visualPinCollisionSamples(radiusScale = 1): ArmCollisionSample[] {
+    const sample = (
+      key: string,
+      action: "boom" | "stick" | "bucket",
+      point: THREE.Vector3,
+      radius: number,
+    ): ArmCollisionSample => ({
+      key,
+      action,
+      point,
+      radius: radius * radiusScale,
+    });
+
+    return [
+      sample("boom-root-pin", "boom", this.boomGroup.localToWorld(new THREE.Vector3(0, 0, 0)), 0.22),
+      sample("boom-tip-pin", "boom", this.boomGroup.localToWorld(new THREE.Vector3(BOOM_LEN, 0, 0)), 0.2),
+      sample("stick-root-pin", "stick", this.stickGroup.localToWorld(new THREE.Vector3(0, 0, 0)), 0.18),
+      sample("stick-tip-pin", "stick", this.stickGroup.localToWorld(new THREE.Vector3(STICK_LEN, 0, 0)), 0.17),
+      sample("stick-link-pin", "stick", this.stickGroup.localToWorld(new THREE.Vector3(STICK_LEN - 0.36, 0.24, 0)), 0.13),
+      sample("bucket-ear-pin", "bucket", this.bucketGroup.localToWorld(new THREE.Vector3(-0.18, -0.18, 0)), 0.11),
+    ];
   }
 
   bucketShellCollisionSamples(radiusScale = 1): ArmCollisionSample[] {
@@ -3188,6 +3218,14 @@ class ExcavatorModel {
       { key: "bucket-pin", action: "bucket", point: this.bucketPinWorld(), radius: 0.2 },
       { key: "bucket-pocket", action: "bucket", point: this.bucketPocketWorld(), radius: 0.3 },
     );
+    for (const sample of this.visualPinCollisionSamples(0.9)) {
+      samples.push({
+        key: sample.key ?? `pin-${samples.length}`,
+        action: sample.action,
+        point: sample.point,
+        radius: sample.radius,
+      });
+    }
     for (const sample of this.hydraulicCollisionSamples()) {
       samples.push({
         key: sample.key ?? `hydraulic-${samples.length}`,
@@ -5405,7 +5443,9 @@ class Simulator {
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
 
         const samples = this.excavator.hydraulicCollisionSamples();
+        const pinSamples = this.excavator.visualPinCollisionSamples();
         const objectSample = samples.find((sample) => sample.key === "stick-cylinder-0.50") ?? samples.find((sample) => sample.action === "stick") ?? samples[0];
+        const pinObjectSample = pinSamples.find((sample) => sample.key === "stick-link-pin") ?? pinSamples.find((sample) => sample.action === "stick") ?? pinSamples[0];
         const subsoilSamples = this.excavator.armSubsoilSamples().filter((sample) =>
           sample.key?.includes("cylinder") || sample.key?.includes("rocker") || sample.key?.includes("link"),
         );
@@ -5413,7 +5453,12 @@ class Simulator {
         let objectPenetrationAfter = 0;
         let objectTravel = 0;
         let objectVelocity = 0;
+        let pinObjectPenetrationBefore = 0;
+        let pinObjectPenetrationAfter = 0;
+        let pinObjectTravel = 0;
+        let pinObjectVelocity = 0;
         let movableHit = false;
+        let pinObjectHit = false;
         const obstacle =
           this.worldColliders.find((collider) => !collider.immovable && collider.kind === "rock") ??
           this.worldColliders.find((collider) => !collider.immovable && collider.kind === "clod");
@@ -5446,6 +5491,41 @@ class Simulator {
           this.worldColliderGridDirty = true;
         }
 
+        if (pinObjectSample && obstacle) {
+          const savedPosition = obstacle.mesh.position.clone();
+          const savedQuaternion = obstacle.mesh.quaternion.clone();
+          const savedVelocity = obstacle.velocity.clone();
+          const savedAngularVelocity = obstacle.angularVelocity.clone();
+          const savedSleeping = obstacle.sleeping;
+          obstacle.mesh.position.copy(pinObjectSample.point);
+          obstacle.velocity.set(0, 0, 0);
+          obstacle.angularVelocity.set(0, 0, 0);
+          obstacle.sleeping = false;
+          this.worldColliderGridDirty = true;
+          this.collisionCooldown = 0;
+          pinObjectPenetrationBefore = Math.max(
+            0,
+            pinObjectSample.radius + obstacle.radius - pinObjectSample.point.distanceTo(obstacle.mesh.position),
+          );
+          const beforePosition = obstacle.mesh.position.clone();
+          const pinObjectResult = this.resolveArmWorldObjectCollisions(previousAngles);
+          const afterPinSample =
+            this.excavator.visualPinCollisionSamples().find((sample) => sample.key === pinObjectSample.key) ?? pinObjectSample;
+          pinObjectPenetrationAfter = Math.max(
+            0,
+            afterPinSample.radius + obstacle.radius - afterPinSample.point.distanceTo(obstacle.mesh.position),
+          );
+          pinObjectTravel = obstacle.mesh.position.distanceTo(beforePosition);
+          pinObjectVelocity = obstacle.velocity.length();
+          pinObjectHit = pinObjectResult.movableHit;
+          obstacle.mesh.position.copy(savedPosition);
+          obstacle.mesh.quaternion.copy(savedQuaternion);
+          obstacle.velocity.copy(savedVelocity);
+          obstacle.angularVelocity.copy(savedAngularVelocity);
+          obstacle.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        }
+
         const subsoilTarget =
           subsoilSamples.find((sample) => sample.key === "bucket-link-left-0.50") ??
           subsoilSamples.find((sample) => sample.key?.startsWith("bucket-link")) ??
@@ -5461,11 +5541,17 @@ class Simulator {
         return {
           sampleCount: samples.length,
           subsoilSampleCount: subsoilSamples.length,
+          pinSampleCount: pinSamples.length,
           movableHit,
+          pinObjectHit,
           objectPenetrationBefore,
           objectPenetrationAfter,
           objectTravel,
           objectVelocity,
+          pinObjectPenetrationBefore,
+          pinObjectPenetrationAfter,
+          pinObjectTravel,
+          pinObjectVelocity,
           pressure: this.pressure,
           collisionCount: this.collisionCount,
           subsoilResisted: subsoilResult.resisted,

@@ -895,11 +895,17 @@ async function main() {
         "hydraulic cylinders and bucket links participate in physics",
         hydraulicLinkagePhysicsValue?.sampleCount >= 18 &&
           hydraulicLinkagePhysicsValue?.subsoilSampleCount >= hydraulicLinkagePhysicsValue?.sampleCount &&
+          hydraulicLinkagePhysicsValue?.pinSampleCount >= 6 &&
           hydraulicLinkagePhysicsValue?.movableHit &&
+          hydraulicLinkagePhysicsValue?.pinObjectHit &&
           hydraulicLinkagePhysicsValue?.objectPenetrationBefore > 0.05 &&
           hydraulicLinkagePhysicsValue?.objectPenetrationAfter < hydraulicLinkagePhysicsValue?.objectPenetrationBefore - 0.015 &&
           hydraulicLinkagePhysicsValue?.objectTravel > 0.01 &&
           hydraulicLinkagePhysicsValue?.objectVelocity > 0.005 &&
+          hydraulicLinkagePhysicsValue?.pinObjectPenetrationBefore > 0.05 &&
+          hydraulicLinkagePhysicsValue?.pinObjectPenetrationAfter < hydraulicLinkagePhysicsValue?.pinObjectPenetrationBefore - 0.015 &&
+          hydraulicLinkagePhysicsValue?.pinObjectTravel > 0.01 &&
+          hydraulicLinkagePhysicsValue?.pinObjectVelocity > 0.005 &&
           hydraulicLinkagePhysicsValue?.subsoilResisted &&
           hydraulicLinkagePhysicsValue?.subsoilMaxSubmerged > 0.05 &&
           hydraulicLinkagePhysicsValue?.subsoilAverageSubmerged > 0.01 &&
