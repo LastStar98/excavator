@@ -1318,6 +1318,10 @@ async function main() {
           worldObjectPhysicsValue?.debrisAngularSpeed > 0.01 &&
           worldObjectPhysicsValue?.hardAngularSpeed > 0.01 &&
           worldObjectPhysicsValue?.railAngularSpeed > 0.01 &&
+          worldObjectPhysicsValue?.slopeRollSlope > 0.035 &&
+          worldObjectPhysicsValue?.slopeRollTravel > 0.006 &&
+          worldObjectPhysicsValue?.slopeRollVelocity > 0.015 &&
+          worldObjectPhysicsValue?.slopeRollAngularAfter > worldObjectPhysicsValue?.slopeRollAngularBefore + 0.02 &&
           worldObjectPhysicsValue?.trackContactCount >= 2 &&
           worldObjectPhysicsValue?.cornerContacts >= 1 &&
           worldObjectPhysicsValue?.movedMass > 6 &&

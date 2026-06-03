@@ -710,6 +710,11 @@ interface ExcavatorDebugApi {
     debrisAngularSpeed: number;
     hardAngularSpeed: number;
     railAngularSpeed: number;
+    slopeRollSlope: number;
+    slopeRollTravel: number;
+    slopeRollVelocity: number;
+    slopeRollAngularBefore: number;
+    slopeRollAngularAfter: number;
     excavatorPenetrationBefore: number;
     excavatorPenetrationAfter: number;
     excavatorObjectTravel: number;
@@ -7883,6 +7888,11 @@ class Simulator {
         let debrisAngularSpeed = 0;
         let hardAngularSpeed = 0;
         let railAngularSpeed = 0;
+        let slopeRollSlope = 0;
+        let slopeRollTravel = 0;
+        let slopeRollVelocity = 0;
+        let slopeRollAngularBefore = 0;
+        let slopeRollAngularAfter = 0;
         let excavatorPenetrationBefore = 0;
         let excavatorPenetrationAfter = 0;
         let excavatorObjectTravel = 0;
@@ -8005,6 +8015,48 @@ class Simulator {
           this.updateLooseWorldObjects(0.28);
           railTravel = rail.mesh.position.distanceTo(railBefore);
           railAngularSpeed = rail.angularVelocity.length();
+        }
+
+        const slopeRollTarget = this.worldColliders.find((collider) => !collider.immovable && collider.kind === "rock") ?? debris;
+        if (slopeRollTarget) {
+          const savedPosition = slopeRollTarget.mesh.position.clone();
+          const savedQuaternion = slopeRollTarget.mesh.quaternion.clone();
+          const savedScale = slopeRollTarget.mesh.scale.clone();
+          const savedVelocity = slopeRollTarget.velocity.clone();
+          const savedAngularVelocity = slopeRollTarget.angularVelocity.clone();
+          const savedSleeping = slopeRollTarget.sleeping;
+          const savedGroundLoadCooldown = slopeRollTarget.groundLoadCooldown;
+          const slopeBase = new THREE.Vector3(58.0, 0, 2.5);
+          this.raiseTerrainWithWake(slopeBase.clone().add(new THREE.Vector3(-0.72, 0, 0)), 0.82, 0.42, 0);
+          this.terrain.lowerAt(slopeBase.clone().add(new THREE.Vector3(0.72, 0, 0)), 0.82, 0.28);
+          const slopeGround = this.terrain.getHeightAt(slopeBase.x, slopeBase.z);
+          slopeRollTarget.mesh.position.set(slopeBase.x, slopeGround + slopeRollTarget.groundOffset, slopeBase.z);
+          slopeRollTarget.velocity.set(0, 0, 0);
+          slopeRollTarget.angularVelocity.set(0, 0, 0);
+          slopeRollTarget.sleeping = false;
+          slopeRollTarget.groundLoadCooldown = 0.5;
+          this.worldColliderGridDirty = true;
+          const slopeSupportBefore = this.worldColliderTerrainSupport(slopeRollTarget);
+          slopeRollSlope = slopeSupportBefore.slope;
+          slopeRollAngularBefore = slopeRollTarget.angularVelocity.length();
+          const slopeStart = slopeRollTarget.mesh.position.clone();
+          for (let i = 0; i < 18; i += 1) {
+            this.updateLooseWorldObjects(1 / 60);
+          }
+          slopeRollTravel = Math.hypot(
+            slopeRollTarget.mesh.position.x - slopeStart.x,
+            slopeRollTarget.mesh.position.z - slopeStart.z,
+          );
+          slopeRollVelocity = Math.hypot(slopeRollTarget.velocity.x, slopeRollTarget.velocity.z);
+          slopeRollAngularAfter = slopeRollTarget.angularVelocity.length();
+          slopeRollTarget.mesh.position.copy(savedPosition);
+          slopeRollTarget.mesh.quaternion.copy(savedQuaternion);
+          slopeRollTarget.mesh.scale.copy(savedScale);
+          slopeRollTarget.velocity.copy(savedVelocity);
+          slopeRollTarget.angularVelocity.copy(savedAngularVelocity);
+          slopeRollTarget.sleeping = savedSleeping;
+          slopeRollTarget.groundLoadCooldown = savedGroundLoadCooldown;
+          this.worldColliderGridDirty = true;
         }
 
         if (debris) {
@@ -8278,6 +8330,11 @@ class Simulator {
           debrisAngularSpeed,
           hardAngularSpeed,
           railAngularSpeed,
+          slopeRollSlope,
+          slopeRollTravel,
+          slopeRollVelocity,
+          slopeRollAngularBefore,
+          slopeRollAngularAfter,
           excavatorPenetrationBefore,
           excavatorPenetrationAfter,
           excavatorObjectTravel,
@@ -9753,6 +9810,34 @@ class Simulator {
     this.clampWorldColliderAngularVelocity(collider);
   }
 
+  private applyWorldColliderSlopeRollingTorque(
+    collider: WorldCollider,
+    groundNormal: THREE.Vector3,
+    downhill: THREE.Vector3,
+    gravityAlongSlope: number,
+    rollingShare: number,
+    dt: number,
+  ): void {
+    if (collider.immovable || gravityAlongSlope <= 0.01 || rollingShare <= 0.01) {
+      return;
+    }
+    const rollAxis = groundNormal.clone().normalize().cross(downhill);
+    if (rollAxis.lengthSq() < 0.000001) {
+      return;
+    }
+    rollAxis.normalize();
+    const rollingRadius = Math.max(collider.capsule?.radius ?? collider.radius, collider.radius * 0.62, 0.08);
+    const inertiaRatio = clamp(
+      this.worldColliderInertia(collider) / Math.max(collider.mass * rollingRadius * rollingRadius, 0.001),
+      0.28,
+      4.0,
+    );
+    const shapeGrip = collider.kind === "cone" ? 0.62 : collider.capsule ? 0.82 : 1;
+    const angularAccel = (gravityAlongSlope * rollingShare * shapeGrip) / (rollingRadius * (1 + inertiaRatio));
+    collider.angularVelocity.addScaledVector(rollAxis, angularAccel * dt);
+    this.clampWorldColliderAngularVelocity(collider);
+  }
+
   private integrateWorldColliderAngularMotion(collider: WorldCollider, dt: number): void {
     const spin = collider.angularVelocity.length();
     if (spin > 0.0001) {
@@ -10465,10 +10550,32 @@ class Simulator {
       collider.sleeping = false;
 
       const slopeSupport = this.worldColliderTerrainSupport(collider);
-      const slopeAccel = clamp(slopeSupport.slope, 0, 0.9) * 3.4;
-      if (slopeAccel > 0.02) {
-        collider.velocity.x += -slopeSupport.slopeX * slopeAccel * dt;
-        collider.velocity.z += -slopeSupport.slopeZ * slopeAccel * dt;
+      const slopeGradient = clamp(slopeSupport.slope, 0, 0.9);
+      const nearSlopeGround =
+        slopeSupport.penetration > 0 || slopeSupport.unsupportedDrop < Math.max(0.06, collider.radius * 0.45);
+      if (slopeGradient > 0.012 && nearSlopeGround) {
+        const downhill = new THREE.Vector3(-slopeSupport.slopeX, 0, -slopeSupport.slopeZ);
+        if (downhill.lengthSq() > 0.000001) {
+          downhill.normalize();
+          const gravityAlongSlope = (9.81 * slopeGradient) / Math.sqrt(1 + slopeGradient * slopeGradient);
+          const rollingRadius = Math.max(collider.capsule?.radius ?? collider.radius, collider.radius * 0.62, 0.08);
+          const inertiaRatio = clamp(
+            this.worldColliderInertia(collider) / Math.max(collider.mass * rollingRadius * rollingRadius, 0.001),
+            0.28,
+            4.0,
+          );
+          const rollingShare = clamp(0.34 + collider.friction * 0.46, 0.28, 0.92);
+          const linearAccel = gravityAlongSlope / (1 + inertiaRatio * rollingShare);
+          collider.velocity.addScaledVector(downhill, linearAccel * dt);
+          this.applyWorldColliderSlopeRollingTorque(
+            collider,
+            slopeSupport.normal,
+            downhill,
+            gravityAlongSlope,
+            rollingShare,
+            dt,
+          );
+        }
       }
 
       collider.velocity.y -= 9.81 * dt;
