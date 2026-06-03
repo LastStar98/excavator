@@ -336,6 +336,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const bucketDirectionalDigPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceBucketDirectionalDigPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const bucketShellPhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceBucketShellPhysics()`,
       returnByValue: true,
@@ -669,6 +674,7 @@ async function main() {
     const cuttingFlowPhysicsValue = cuttingFlowPhysics.result.value;
     const bucketKinematicsValue = bucketKinematics.result.value;
     const bucketLoadSurfacePhysicsValue = bucketLoadSurfacePhysics.result.value;
+    const bucketDirectionalDigPhysicsValue = bucketDirectionalDigPhysics.result.value;
     const bucketShellPhysicsValue = bucketShellPhysics.result.value;
     const hydraulicLinkagePhysicsValue = hydraulicLinkagePhysics.result.value;
     const trackPassValue = trackPass.result.value;
@@ -908,6 +914,17 @@ async function main() {
           bucketLoadSurfacePhysicsValue?.spillHeightDrop > 0.002 &&
           bucketLoadSurfacePhysicsValue?.spillVolumeConserved < 0.0005 &&
           bucketLoadSurfacePhysicsValue?.pressure > 0.1,
+      ],
+      [
+        "bucket only captures soil when curling toward the machine",
+        bucketDirectionalDigPhysicsValue?.scoopRemoved > 0.04 &&
+          bucketDirectionalDigPhysicsValue?.scoopBucketLoad > 0.035 &&
+          bucketDirectionalDigPhysicsValue?.scoopCaptureGate > 0.45 &&
+          bucketDirectionalDigPhysicsValue?.scoopHeightDrop > 0.008 &&
+          bucketDirectionalDigPhysicsValue?.reverseRemoved < 0.006 &&
+          bucketDirectionalDigPhysicsValue?.reverseBucketLoad < 0.006 &&
+          bucketDirectionalDigPhysicsValue?.reverseCaptureGate < 0.02 &&
+          bucketDirectionalDigPhysicsValue?.reversePressure > 0.08,
       ],
       [
         "empty bucket metal shell collides as a solid scoop",
@@ -1415,6 +1432,7 @@ async function main() {
           cuttingFlowPhysics: cuttingFlowPhysicsValue,
           bucketKinematics: bucketKinematicsValue,
           bucketLoadSurfacePhysics: bucketLoadSurfacePhysicsValue,
+          bucketDirectionalDigPhysics: bucketDirectionalDigPhysicsValue,
           bucketShellPhysics: bucketShellPhysicsValue,
           hydraulicLinkagePhysics: hydraulicLinkagePhysicsValue,
           trackPass: trackPassValue,

@@ -351,6 +351,19 @@ interface ExcavatorDebugApi {
     spillVolumeConserved: number;
     pressure: number;
   };
+  forceBucketDirectionalDigPhysics: () => {
+    scoopRemoved: number;
+    scoopBucketLoad: number;
+    scoopPocketPull: number;
+    scoopCaptureGate: number;
+    scoopHeightDrop: number;
+    reverseRemoved: number;
+    reverseBucketLoad: number;
+    reversePocketPull: number;
+    reverseCaptureGate: number;
+    reverseHeightDrop: number;
+    reversePressure: number;
+  };
   forceBucketShellPhysics: () => {
     bucketSampleCount: number;
     floorPenetrationBefore: number;
@@ -5845,6 +5858,123 @@ class Simulator {
           pressure: this.pressure,
         };
       },
+      forceBucketDirectionalDigPhysics: () => {
+        const clearTransientSoil = () => {
+          for (const particle of [...this.soilParticles]) {
+            this.recycleSoilParticle(particle);
+          }
+          this.soilParticles.length = 0;
+          this.clearFineGrains();
+        };
+        const directionalGate = (
+          previousTip: THREE.Vector3,
+          currentTip: THREE.Vector3,
+          pocket: THREE.Vector3,
+          velocities: ExcavatorVelocities,
+          dt: number,
+        ) => {
+          const stroke = currentTip.clone().sub(previousTip);
+          const strokeDistance = stroke.length();
+          const tipSpeed = strokeDistance / Math.max(dt, 0.001);
+          const strokeDirection = strokeDistance > 0.0001 ? stroke.clone().divideScalar(strokeDistance) : new THREE.Vector3();
+          const pocketDirection = pocket.clone().sub(currentTip);
+          if (pocketDirection.lengthSq() > 0.000001) {
+            pocketDirection.normalize();
+          }
+          const pocketPull = strokeDistance > 0.0001 ? strokeDirection.dot(pocketDirection) : 0;
+          const curlInSpeed = Math.max(0, -velocities.bucket);
+          const stickPullSpeed = Math.max(0, -velocities.stick);
+          const openOutSpeed = Math.max(0, velocities.bucket);
+          const reverseAlignmentPenalty = Math.max(0, -pocketPull) * clamp(openOutSpeed * 1.2, 0, 0.5);
+          const rawGate = clamp(
+            0.2 +
+              curlInSpeed * 0.88 +
+              stickPullSpeed * 0.42 +
+              Math.max(0, pocketPull) * 0.38 -
+              reverseAlignmentPenalty -
+              openOutSpeed * 0.42,
+            0,
+            1.25,
+          );
+          const scooping =
+            curlInSpeed > 0.035 ||
+            stickPullSpeed > 0.035 ||
+            (tipSpeed > 0.08 && pocketPull > 0.18 && openOutSpeed < 0.08);
+          return { pocketPull, gate: scooping ? rawGate : 0 };
+        };
+        const runPass = (
+          site: THREE.Vector3,
+          previousAngles: ExcavatorAngles,
+          currentAngles: ExcavatorAngles,
+          velocities: ExcavatorVelocities,
+        ) => {
+          clearTransientSoil();
+          this.bucketLoad = 0;
+          this.bucketTransitLoad = 0;
+          this.pressure = 0;
+          this.excavator.setBucketLoad(this.bucketLoad);
+          const beforeHeight = this.terrain.getHeightAt(site.x, site.z);
+
+          Object.assign(this.angles, currentAngles);
+          this.excavator.group.rotation.set(0, 0, 0);
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+          this.excavator.applyAngles(this.angles);
+          const currentTipForPlacement = this.excavator.bucketTipWorld();
+          this.excavator.group.position.x += site.x - currentTipForPlacement.x;
+          this.excavator.group.position.z += site.z - currentTipForPlacement.z;
+          this.excavator.group.position.y += beforeHeight - 0.16 - currentTipForPlacement.y;
+
+          this.excavator.applyAngles(previousAngles);
+          const previousTip = this.excavator.bucketTipWorld();
+          this.previousBucketTip.copy(previousTip);
+          Object.assign(this.angles, currentAngles);
+          this.excavator.applyAngles(this.angles);
+          Object.assign(this.velocities, velocities);
+
+          const beforeTotal = this.totalExcavated;
+          this.updateSoil(0.14);
+          const currentTip = this.excavator.bucketTipWorld();
+          const pocket = this.excavator.bucketPocketWorld();
+          const gate = directionalGate(previousTip, currentTip, pocket, velocities, 0.14);
+
+          return {
+            removed: this.totalExcavated - beforeTotal,
+            bucketLoad: this.bucketLoad,
+            pocketPull: gate.pocketPull,
+            captureGate: gate.gate,
+            heightDrop: beforeHeight - this.terrain.getHeightAt(site.x, site.z),
+            pressure: this.pressure,
+          };
+        };
+
+        const scoop = runPass(
+          new THREE.Vector3(DIG_SITE.x, 0, DIG_SITE.z),
+          { swing: 0, boom: 0.24, stick: -1.52, bucket: -1.72 },
+          { swing: 0, boom: 0.22, stick: -1.82, bucket: -2.32 },
+          { swing: 0, boom: -0.04, stick: -0.34, bucket: -0.82 },
+        );
+        const reverse = runPass(
+          new THREE.Vector3(DIG_SITE.x + 2.35, 0, DIG_SITE.z + 1.7),
+          { swing: 0, boom: 0.2, stick: -1.86, bucket: -2.28 },
+          { swing: 0, boom: 0.27, stick: -1.36, bucket: -0.82 },
+          { swing: 0, boom: 0.05, stick: 0.34, bucket: 0.82 },
+        );
+
+        this.updateUi(0);
+        return {
+          scoopRemoved: scoop.removed,
+          scoopBucketLoad: scoop.bucketLoad,
+          scoopPocketPull: scoop.pocketPull,
+          scoopCaptureGate: scoop.captureGate,
+          scoopHeightDrop: scoop.heightDrop,
+          reverseRemoved: reverse.removed,
+          reverseBucketLoad: reverse.bucketLoad,
+          reversePocketPull: reverse.pocketPull,
+          reverseCaptureGate: reverse.captureGate,
+          reverseHeightDrop: reverse.heightDrop,
+          reversePressure: reverse.pressure,
+        };
+      },
       forceBucketShellPhysics: () => {
         const savedAngles = { ...this.angles };
         const savedMachinePosition = this.excavator.group.position.clone();
@@ -10981,8 +11111,16 @@ class Simulator {
     const sideways = this.excavator.bucketSidewaysWorld();
     const slope = this.terrain.getSlopeAt(tip.x, tip.z);
     const subsoilResistance = this.terrain.getSubsoilResistanceAt(tip.x, tip.z);
-    const tipSpeed = tip.distanceTo(this.previousBucketTip) / Math.max(dt, 0.001);
+    const stroke = tip.clone().sub(this.previousBucketTip);
+    const strokeDistance = stroke.length();
+    const tipSpeed = strokeDistance / Math.max(dt, 0.001);
     const forward = this.excavator.bucketForwardWorld();
+    const strokeDirection = strokeDistance > 0.0001 ? stroke.clone().divideScalar(strokeDistance) : new THREE.Vector3();
+    const pocketDirection = pocket.clone().sub(tip);
+    if (pocketDirection.lengthSq() > 0.000001) {
+      pocketDirection.normalize();
+    }
+    const pocketPullAlignment = strokeDistance > 0.0001 ? strokeDirection.dot(pocketDirection) : 0;
     let maxPenetration = 0;
     let contactCount = 0;
 
@@ -11000,12 +11138,26 @@ class Simulator {
     const attackEfficiency = clamp((attackAngle - 0.18) / 0.78, 0.08, 1);
     const curlInSpeed = Math.max(0, -this.velocities.bucket);
     const stickPullSpeed = Math.max(0, -this.velocities.stick);
+    const openOutSpeed = Math.max(0, this.velocities.bucket);
+    const reverseAlignmentPenalty = Math.max(0, -pocketPullAlignment) * clamp(openOutSpeed * 1.2, 0, 0.5);
+    const reversePushIntent =
+      tipSpeed > 0.05 && (openOutSpeed > 0.05 || this.velocities.stick > 0.05 || pocketPullAlignment < -0.08);
+    const captureGate = clamp(
+      0.2 +
+        curlInSpeed * 0.88 +
+        stickPullSpeed * 0.42 +
+        Math.max(0, pocketPullAlignment) * 0.38 -
+        reverseAlignmentPenalty -
+        openOutSpeed * 0.42,
+      0,
+      1.25,
+    );
     const isDiggingMotion =
       curlInSpeed > 0.035 ||
       stickPullSpeed > 0.035 ||
-      tipSpeed > 0.08;
+      (tipSpeed > 0.08 && pocketPullAlignment > 0.18 && openOutSpeed < 0.08);
 
-    if (contactRatio > 0 && isDiggingMotion) {
+    if (contactRatio > 0 && isDiggingMotion && captureGate > 0.14) {
       const penetration = clamp(maxPenetration, 0.01, 0.72);
       const loadRatio = this.bucketLoad / BUCKET_CAPACITY;
       const resistance = clamp(
@@ -11014,19 +11166,21 @@ class Simulator {
           slope * 0.36 +
           loadRatio * 0.34 +
           subsoilResistance * 0.42 +
-          (1 - attackEfficiency) * 0.22,
+          (1 - attackEfficiency) * 0.22 +
+          reverseAlignmentPenalty * 0.18,
         0.1,
         1.35,
       );
       this.pressure = Math.max(this.pressure, clamp(resistance / 1.25, 0, 1));
     }
 
-    if (contactRatio > 0 && isDiggingMotion && this.bucketLoad + this.bucketTransitLoad < BUCKET_CAPACITY) {
+    if (contactRatio > 0 && isDiggingMotion && captureGate > 0.14 && this.bucketLoad + this.bucketTransitLoad < BUCKET_CAPACITY) {
       const freeCapacity = BUCKET_CAPACITY - this.bucketLoad - this.bucketTransitLoad;
       const penetration = clamp(maxPenetration, 0.01, 0.9);
       const bite = clamp(
         (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.32 + 0.32) *
           attackEfficiency *
+          captureGate *
           (0.5 + contactRatio * 0.5),
         0.12,
         1.55,
@@ -11058,6 +11212,19 @@ class Simulator {
           this.spawnSoilParticles(pocket, spill, forward.clone().multiplyScalar(-0.25).add(new THREE.Vector3(0, -0.45, 0)), 0.28);
         }
       }
+    }
+
+    if (contactRatio > 0 && reversePushIntent && (!isDiggingMotion || captureGate <= 0.14)) {
+      const displacementDepth = clamp(maxPenetration * (0.02 + tipSpeed * 0.018), 0.002, 0.034);
+      const displaced = this.displaceTerrainWithWake(
+        this.previousBucketTip,
+        tip,
+        sideways,
+        1.08,
+        displacementDepth,
+        0.05 * (0.4 + contactRatio),
+      );
+      this.pressure = Math.max(this.pressure, clamp(0.24 + Math.max(displaced, maxPenetration * 0.02) * 2.2, 0, 0.68));
     }
 
     if (contactRatio > 0 && isDiggingMotion && this.bucketLoad + this.bucketTransitLoad >= BUCKET_CAPACITY * 0.985) {
