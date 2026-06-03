@@ -1048,6 +1048,9 @@ async function main() {
           armWorldObjectPhysicsValue?.carriedTerrainPenetrationBefore > armWorldObjectPhysicsValue?.carriedTerrainPenetrationAfter + 0.04 &&
           armWorldObjectPhysicsValue?.carriedTerrainPenetrationAfter < 0.035 &&
           armWorldObjectPhysicsValue?.carriedTerrainImpactSpeed > 0.02 &&
+          armWorldObjectPhysicsValue?.carriedTerrainSoftContactKept &&
+          armWorldObjectPhysicsValue?.carriedTerrainSoftPenetrationBefore > 0.025 &&
+          armWorldObjectPhysicsValue?.carriedTerrainSoftPenetrationAfter < armWorldObjectPhysicsValue?.carriedTerrainSoftPenetrationBefore &&
           armWorldObjectPhysicsValue?.carriedExcavatorReleased &&
           armWorldObjectPhysicsValue?.carriedExcavatorPenetrationBefore > armWorldObjectPhysicsValue?.carriedExcavatorPenetrationAfter + 0.04 &&
           armWorldObjectPhysicsValue?.carriedExcavatorPenetrationAfter < 0.04 &&
@@ -1076,11 +1079,13 @@ async function main() {
       [
         "soil and contact physics stay responsive without resistance drag",
         lagFreeSoilCycleValue?.terrainDrag === 1 &&
+          lagFreeSoilCycleValue?.soilPairCollisionsEnabled === false &&
+          lagFreeSoilCycleValue?.fineGrainPairCollisionsEnabled === false &&
           lagFreeSoilCycleValue?.particleCount <= 12 &&
           lagFreeSoilCycleValue?.fineGrainCount <= 40 &&
           lagFreeSoilCycleValue?.nearbyCandidates < lagFreeSoilCycleValue?.worldColliderCount * 0.45 &&
-          lagFreeSoilCycleValue?.averageStepMs < 5 &&
-          lagFreeSoilCycleValue?.maxStepMs < 25 &&
+          lagFreeSoilCycleValue?.averageStepMs < 4 &&
+          lagFreeSoilCycleValue?.maxStepMs < 16 &&
           lagFreeSoilCycleValue?.bucketLoad > 0.5,
       ],
       [
