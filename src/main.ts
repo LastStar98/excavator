@@ -199,6 +199,12 @@ interface TurntableCollisionShape {
   halfHeight: number;
 }
 
+interface LocalBoxCollisionShape {
+  key: string;
+  center: THREE.Vector3;
+  halfExtents: THREE.Vector3;
+}
+
 interface ArmTerrainResistanceSample extends ArmCollisionSample {
   key: string;
 }
@@ -556,6 +562,10 @@ interface ExcavatorDebugApi {
     turntablePenetrationAfter: number;
     turntableObjectTravel: number;
     turntableObjectVelocity: number;
+    lowerFramePenetrationBefore: number;
+    lowerFramePenetrationAfter: number;
+    lowerFrameObjectTravel: number;
+    lowerFrameObjectVelocity: number;
     pipeSphereFalsePenetration: number;
     pipeCapsuleFalsePenetration: number;
     pipeCapsuleHitBefore: number;
@@ -743,6 +753,10 @@ const TRACK_PAD_SPACING = 0.26;
 const TURNTABLE_RADIUS = 1.02;
 const TURNTABLE_HEIGHT = 0.24;
 const TURNTABLE_CENTER_Y = 0.74;
+const LOWER_DECK_SIZE = new THREE.Vector3(3.2, 0.28, 1.95);
+const LOWER_DECK_CENTER = new THREE.Vector3(0, 0.36, 0);
+const LOWER_TRACK_FRAME_SIZE = new THREE.Vector3(3.75, 0.52, 0.52);
+const LOWER_TRACK_FRAME_Y = 0.28;
 const SOIL_REPOSE_TAN = Math.tan(THREE.MathUtils.degToRad(34));
 const SOIL_BEDROCK_FLOOR = -5.2;
 const DIG_SITE = new THREE.Vector3(-4.1, 0, 2.3);
@@ -3209,6 +3223,26 @@ class ExcavatorModel {
     };
   }
 
+  lowerCollisionBoxes(): LocalBoxCollisionShape[] {
+    return [
+      {
+        key: "lower-deck",
+        center: LOWER_DECK_CENTER.clone(),
+        halfExtents: LOWER_DECK_SIZE.clone().multiplyScalar(0.5),
+      },
+      {
+        key: "left-track-frame",
+        center: new THREE.Vector3(0, LOWER_TRACK_FRAME_Y, -TRACK_GAUGE * 0.5),
+        halfExtents: LOWER_TRACK_FRAME_SIZE.clone().multiplyScalar(0.5),
+      },
+      {
+        key: "right-track-frame",
+        center: new THREE.Vector3(0, LOWER_TRACK_FRAME_Y, TRACK_GAUGE * 0.5),
+        halfExtents: LOWER_TRACK_FRAME_SIZE.clone().multiplyScalar(0.5),
+      },
+    ];
+  }
+
   armSubsoilSamples(): ArmTerrainResistanceSample[] {
     const samples: ArmTerrainResistanceSample[] = [];
     for (const t of [0.18, 0.38, 0.58, 0.78, 0.94]) {
@@ -3525,9 +3559,27 @@ class ExcavatorModel {
   private buildLower(): void {
     const trackMat = this.mats.dark;
     const padMat = makeMat(0x111412, 0.82, 0.24);
-    this.group.add(makeBox([3.2, 0.28, 1.95], trackMat, [0, 0.36, 0]));
-    this.group.add(makeBox([3.75, 0.52, 0.52], trackMat, [0, 0.28, -0.72]));
-    this.group.add(makeBox([3.75, 0.52, 0.52], trackMat, [0, 0.28, 0.72]));
+    this.group.add(
+      makeBox(
+        [LOWER_DECK_SIZE.x, LOWER_DECK_SIZE.y, LOWER_DECK_SIZE.z],
+        trackMat,
+        [LOWER_DECK_CENTER.x, LOWER_DECK_CENTER.y, LOWER_DECK_CENTER.z],
+      ),
+    );
+    this.group.add(
+      makeBox(
+        [LOWER_TRACK_FRAME_SIZE.x, LOWER_TRACK_FRAME_SIZE.y, LOWER_TRACK_FRAME_SIZE.z],
+        trackMat,
+        [0, LOWER_TRACK_FRAME_Y, -TRACK_GAUGE * 0.5],
+      ),
+    );
+    this.group.add(
+      makeBox(
+        [LOWER_TRACK_FRAME_SIZE.x, LOWER_TRACK_FRAME_SIZE.y, LOWER_TRACK_FRAME_SIZE.z],
+        trackMat,
+        [0, LOWER_TRACK_FRAME_Y, TRACK_GAUGE * 0.5],
+      ),
+    );
 
     for (let i = 0; i < TRACK_PAD_COUNT; i += 1) {
       const x = TRACK_PAD_START_X + i * TRACK_PAD_SPACING;
@@ -6655,6 +6707,10 @@ class Simulator {
         let turntablePenetrationAfter = 0;
         let turntableObjectTravel = 0;
         let turntableObjectVelocity = 0;
+        let lowerFramePenetrationBefore = 0;
+        let lowerFramePenetrationAfter = 0;
+        let lowerFrameObjectTravel = 0;
+        let lowerFrameObjectVelocity = 0;
         let pipeSphereFalsePenetration = 0;
         let pipeCapsuleFalsePenetration = 0;
         let pipeCapsuleHitBefore = 0;
@@ -6827,6 +6883,43 @@ class Simulator {
           turntablePenetrationAfter = this.resolveLooseObjectExcavatorHit(debris)?.penetration ?? 0;
           turntableObjectTravel = debris.mesh.position.distanceTo(beforePosition);
           turntableObjectVelocity = debris.velocity.length();
+          debris.mesh.position.copy(savedPosition);
+          debris.mesh.quaternion.copy(savedQuaternion);
+          debris.velocity.copy(savedVelocity);
+          debris.angularVelocity.copy(savedAngularVelocity);
+          debris.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+        }
+
+        if (debris) {
+          const savedPosition = debris.mesh.position.clone();
+          const savedQuaternion = debris.mesh.quaternion.clone();
+          const savedVelocity = debris.velocity.clone();
+          const savedAngularVelocity = debris.angularVelocity.clone();
+          const savedSleeping = debris.sleeping;
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+          this.excavator.group.rotation.set(0, 0, 0);
+          const lowerDeck =
+            this.excavator.lowerCollisionBoxes().find((shape) => shape.key === "lower-deck") ??
+            this.excavator.lowerCollisionBoxes()[0];
+          if (lowerDeck) {
+            const lowerCenter = this.excavator.group.localToWorld(lowerDeck.center.clone());
+            const normal = new THREE.Vector3(0, -1, 0).applyQuaternion(this.excavator.group.quaternion).normalize();
+            debris.mesh.position
+              .copy(lowerCenter)
+              .addScaledVector(normal, lowerDeck.halfExtents.y + debris.radius - 0.11);
+            debris.velocity.copy(normal).multiplyScalar(-0.58);
+            debris.angularVelocity.set(0, 0, 0);
+            debris.sleeping = false;
+            this.worldColliderGridDirty = true;
+            lowerFramePenetrationBefore = this.resolveLooseObjectExcavatorHit(debris)?.penetration ?? 0;
+            const beforePosition = debris.mesh.position.clone();
+            this.collisionCooldown = 0;
+            this.resolveLooseObjectExcavatorCollision(debris);
+            lowerFramePenetrationAfter = this.resolveLooseObjectExcavatorHit(debris)?.penetration ?? 0;
+            lowerFrameObjectTravel = debris.mesh.position.distanceTo(beforePosition);
+            lowerFrameObjectVelocity = debris.velocity.length();
+          }
           debris.mesh.position.copy(savedPosition);
           debris.mesh.quaternion.copy(savedQuaternion);
           debris.velocity.copy(savedVelocity);
@@ -7009,6 +7102,10 @@ class Simulator {
           turntablePenetrationAfter,
           turntableObjectTravel,
           turntableObjectVelocity,
+          lowerFramePenetrationBefore,
+          lowerFramePenetrationAfter,
+          lowerFrameObjectTravel,
+          lowerFrameObjectVelocity,
           pipeSphereFalsePenetration,
           pipeCapsuleFalsePenetration,
           pipeCapsuleHitBefore,
@@ -8887,12 +8984,12 @@ class Simulator {
     if (excavatorHit) {
       const responseNormal = excavatorHit.normal.clone().normalize();
       let maxPenetration = excavatorHit.penetration;
-      for (let pass = 0; pass < 4 && excavatorHit; pass += 1) {
+      for (let pass = 0; pass < 8 && excavatorHit; pass += 1) {
         const normal = excavatorHit.normal.clone().normalize();
         maxPenetration = Math.max(maxPenetration, excavatorHit.penetration);
-        collider.mesh.position.addScaledVector(normal, Math.min(excavatorHit.penetration + 0.005, 0.44));
+        collider.mesh.position.addScaledVector(normal, Math.min(excavatorHit.penetration + 0.008, 0.68));
         excavatorHit = this.resolveCarriedWorldObjectExcavatorHit(collider);
-        if (!excavatorHit || excavatorHit.penetration < 0.01) {
+        if (!excavatorHit || excavatorHit.penetration < 0.006) {
           break;
         }
       }
@@ -9191,6 +9288,7 @@ class Simulator {
     const yaw = this.excavator.group.rotation.y;
     const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw).normalize();
     const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+    const localPos = this.excavator.group.worldToLocal(pos.clone());
     let best: { normal: THREE.Vector3; penetration: number } | null = null;
 
     const considerHorizontal = (point: THREE.Vector3, sampleRadius: number): void => {
@@ -9269,6 +9367,49 @@ class Simulator {
       }
     };
 
+    const considerLocalBox = (shape: LocalBoxCollisionShape): void => {
+      const cx = shape.center.x;
+      const cy = shape.center.y;
+      const cz = shape.center.z;
+      const hx = shape.halfExtents.x;
+      const hy = shape.halfExtents.y;
+      const hz = shape.halfExtents.z;
+      const closest = new THREE.Vector3(
+        clamp(localPos.x, cx - hx, cx + hx),
+        clamp(localPos.y, cy - hy, cy + hy),
+        clamp(localPos.z, cz - hz, cz + hz),
+      );
+      const delta = localPos.clone().sub(closest);
+      const distanceSq = delta.lengthSq();
+      if (distanceSq > 0.000001) {
+        if (distanceSq >= radius * radius) {
+          return;
+        }
+        const distance = Math.sqrt(distanceSq);
+        const normal = delta.divideScalar(distance).applyQuaternion(this.excavator.group.quaternion).normalize();
+        const penetration = radius - distance;
+        if (!best || penetration > best.penetration) {
+          best = { normal, penetration };
+        }
+        return;
+      }
+
+      const clearances = [
+        { axis: "x" as const, value: hx - Math.abs(localPos.x - cx), sign: Math.sign(localPos.x - cx) || 1 },
+        { axis: "y" as const, value: hy - Math.abs(localPos.y - cy), sign: Math.sign(localPos.y - cy) || 1 },
+        { axis: "z" as const, value: hz - Math.abs(localPos.z - cz), sign: Math.sign(localPos.z - cz) || 1 },
+      ];
+      clearances.sort((a, b) => a.value - b.value);
+      const shallowest = clearances[0];
+      const localNormal = new THREE.Vector3();
+      localNormal[shallowest.axis] = shallowest.sign;
+      const normal = localNormal.applyQuaternion(this.excavator.group.quaternion).normalize();
+      const penetration = radius + Math.max(0, shallowest.value);
+      if (!best || penetration > best.penetration) {
+        best = { normal, penetration };
+      }
+    };
+
     for (const sample of [
       { x: TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.66 },
       { x: TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.66 },
@@ -9284,6 +9425,9 @@ class Simulator {
 
     const turntable = this.excavator.turntableCollisionShape();
     considerVerticalCylinder(turntable.center, turntable.radius, turntable.halfHeight);
+    for (const shape of this.excavator.lowerCollisionBoxes()) {
+      considerLocalBox(shape);
+    }
 
     const armSamples = excludeBucketSamples
       ? this.excavator.armCollisionSamples().filter((sample) => sample.action !== "bucket")

@@ -1162,6 +1162,10 @@ async function main() {
           worldObjectPhysicsValue?.turntablePenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.turntableObjectTravel > 0.03 &&
           worldObjectPhysicsValue?.turntableObjectVelocity > 0.01 &&
+          worldObjectPhysicsValue?.lowerFramePenetrationBefore > worldObjectPhysicsValue?.lowerFramePenetrationAfter &&
+          worldObjectPhysicsValue?.lowerFramePenetrationAfter < 0.04 &&
+          worldObjectPhysicsValue?.lowerFrameObjectTravel > 0.03 &&
+          worldObjectPhysicsValue?.lowerFrameObjectVelocity > 0.01 &&
           worldObjectPhysicsValue?.pipeSphereFalsePenetration > 0.04 &&
           worldObjectPhysicsValue?.pipeCapsuleFalsePenetration === 0 &&
           worldObjectPhysicsValue?.pipeCapsuleHitBefore > worldObjectPhysicsValue?.pipeCapsuleHitAfter &&
