@@ -157,6 +157,13 @@ interface TruckCrawlerContactResult {
   cornerContacts: number;
   maxPenetration: number;
   minApproachSpeed: number;
+  impactImpulse: number;
+  impactNormalX: number;
+  impactNormalZ: number;
+  impactLocalX: number;
+  impactLocalZ: number;
+  leftSpeedDrop: number;
+  rightSpeedDrop: number;
   leftSeverity: number;
   rightSeverity: number;
   leftBlocked: boolean;
@@ -9037,6 +9044,13 @@ class Simulator {
       cornerContacts: 0,
       maxPenetration: 0,
       minApproachSpeed: 0,
+      impactImpulse: 0,
+      impactNormalX: 0,
+      impactNormalZ: 0,
+      impactLocalX: 0,
+      impactLocalZ: 0,
+      leftSpeedDrop: 0,
+      rightSpeedDrop: 0,
       leftSeverity: 0,
       rightSeverity: 0,
       leftBlocked: false,
@@ -9090,6 +9104,8 @@ class Simulator {
     const correctionNormal = new THREE.Vector3();
     const impactPoint = new THREE.Vector3();
     let impactWeight = 0;
+    const leftSpeedBefore = this.leftTrackVelocity;
+    const rightSpeedBefore = this.rightTrackVelocity;
 
     for (const sample of samples) {
       const world = base
@@ -9151,9 +9167,16 @@ class Simulator {
     }
 
     const peakSeverity = Math.max(leftSeverity, rightSeverity, maxPenetration * 1.8);
+    let impactImpulse = 0;
+    let impactLocalX = 0;
+    let impactLocalZ = 0;
     if (impactWeight > 0) {
-      const truckImpact = clamp(0.28 + peakSeverity * 2.2 + Math.max(0, -minApproachSpeed) * 0.7, 0.04, 3.4);
-      this.truck.applyImpact(impactPoint.divideScalar(impactWeight), correctionNormal, truckImpact);
+      const weightedImpactPoint = impactPoint.divideScalar(impactWeight);
+      const localImpactPoint = this.truck.group.worldToLocal(weightedImpactPoint.clone());
+      impactLocalX = localImpactPoint.x;
+      impactLocalZ = localImpactPoint.z;
+      impactImpulse = clamp(0.28 + peakSeverity * 2.2 + Math.max(0, -minApproachSpeed) * 0.7, 0.04, 3.4);
+      this.truck.applyImpact(weightedImpactPoint, correctionNormal, impactImpulse);
     }
     this.pressure = Math.max(this.pressure, clamp(0.36 + peakSeverity * 0.54, 0, 1));
     if (this.collisionCooldown <= 0 && peakSeverity > 0.07) {
@@ -9167,6 +9190,13 @@ class Simulator {
       cornerContacts,
       maxPenetration,
       minApproachSpeed,
+      impactImpulse,
+      impactNormalX: correctionNormal.x,
+      impactNormalZ: correctionNormal.z,
+      impactLocalX,
+      impactLocalZ,
+      leftSpeedDrop: Math.max(0, Math.abs(leftSpeedBefore) - Math.abs(this.leftTrackVelocity)),
+      rightSpeedDrop: Math.max(0, Math.abs(rightSpeedBefore) - Math.abs(this.rightTrackVelocity)),
       leftSeverity,
       rightSeverity,
       leftBlocked: leftSeverity > 0.18,

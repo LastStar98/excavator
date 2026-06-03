@@ -1018,11 +1018,26 @@ async function main() {
           truckCollisionValue?.frontContact?.contact &&
           truckCollisionValue?.sideContact?.contact &&
           truckCollisionValue?.diagonalContact?.contact &&
+          truckCollisionValue?.frontContact?.impactImpulse > 0.8 &&
+          truckCollisionValue?.sideContact?.impactImpulse > 0.8 &&
+          truckCollisionValue?.diagonalContact?.impactImpulse > 0.5 &&
+          Math.abs(truckCollisionValue?.frontContact?.impactNormalX ?? 0) > 0.35 &&
+          truckCollisionValue?.frontContact?.impactLocalX < -1.2 &&
+          Math.abs(truckCollisionValue?.frontContact?.impactLocalZ ?? 1) < 0.45 &&
+          Math.abs(truckCollisionValue?.sideContact?.impactNormalZ ?? 0) >
+            Math.abs(truckCollisionValue?.sideContact?.impactNormalX ?? 0) + 0.25 &&
+          truckCollisionValue?.sideContact?.impactLocalZ < -0.75 &&
           truckCollisionValue?.frontContact?.leftSeverity > 0.18 &&
           truckCollisionValue?.frontContact?.rightSeverity > 0.18 &&
+          truckCollisionValue?.frontContact?.leftSpeedDrop > 0.2 &&
+          truckCollisionValue?.frontContact?.rightSpeedDrop > 0.2 &&
           Math.abs(
             (truckCollisionValue?.diagonalContact?.leftSeverity ?? 0) -
               (truckCollisionValue?.diagonalContact?.rightSeverity ?? 0),
+          ) > 0.02 &&
+          Math.abs(
+            (truckCollisionValue?.diagonalContact?.leftSpeedDrop ?? 0) -
+              (truckCollisionValue?.diagonalContact?.rightSpeedDrop ?? 0),
           ) > 0.02 &&
           Math.abs((truckCollisionValue?.diagonalLeftTrackVelocity ?? 0) - (truckCollisionValue?.diagonalRightTrackVelocity ?? 0)) >
             0.02 &&
