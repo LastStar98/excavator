@@ -333,6 +333,8 @@ interface ExcavatorDebugApi {
     emptyPressure: number;
     loadedPressure: number;
     pressureDelta: number;
+    capturePressureDelta: number;
+    dumpPressureDelta: number;
     dumpedVolume: number;
     remainingBucketLoad: number;
     dumpAverageStepMs: number;
@@ -4080,6 +4082,7 @@ class Simulator {
   private trackSoilWork = 0;
   private soilSettleAccumulator = 0;
   private bucketLoadSlumpAccumulator = 0;
+  private bucketDumpPressureSilence = 0;
   private chassisSinkage = 0;
   private chassisPitch = 0;
   private chassisRoll = 0;
@@ -4192,6 +4195,7 @@ class Simulator {
     this.trackSoilWork = 0;
     this.soilSettleAccumulator = 0;
     this.bucketLoadSlumpAccumulator = 0;
+    this.bucketDumpPressureSilence = 0;
     this.chassisSinkage = 0;
     this.chassisPitch = 0;
     this.chassisRoll = 0;
@@ -5802,9 +5806,40 @@ class Simulator {
 
         const empty = runHydraulicResponse(0);
         const loaded = runHydraulicResponse(BUCKET_CAPACITY * 0.92);
+        let capturePressureDelta = 0;
+        this.bucketLoad = BUCKET_CAPACITY * 0.52;
+        this.bucketTransitLoad = 0;
+        this.pressure = 0;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        Object.assign(this.angles, { swing: 0, boom: 0.54, stick: -1.16, bucket: -1.92 });
+        this.excavator.applyAngles(this.angles);
+        const surfaceProbe = this.excavator.bucketGroup.localToWorld(new THREE.Vector3(-0.56, -0.18, 0.02));
+        const bucketSurface = this.excavator.bucketLoadSurfaceAtWorld(surfaceProbe);
+        if (bucketSurface) {
+          const radius = 0.045;
+          const mesh = this.acquireSoilParticleMesh(radius, this.looseSoilMats[0], 7801);
+          const soilLocal = this.excavator.bucketGroup.worldToLocal(bucketSurface.point.clone());
+          soilLocal.y += radius - 0.035;
+          mesh.position.copy(this.excavator.bucketGroup.localToWorld(soilLocal));
+          const particle: SoilParticle = {
+            mesh,
+            velocity: new THREE.Vector3(),
+            volume: 0.018,
+            radius,
+            life: 0,
+            settles: false,
+            toBucket: true,
+          };
+          const pressureBeforeCapture = this.pressure;
+          this.captureParticleOnBucketLoad(particle);
+          capturePressureDelta = Math.abs(this.pressure - pressureBeforeCapture);
+          this.recycleSoilParticle(particle);
+        }
         this.bucketLoad = BUCKET_CAPACITY * 0.88;
         this.bucketTransitLoad = 0;
         this.bucketLoadSlumpAccumulator = 0;
+        this.bucketDumpPressureSilence = 0;
+        this.pressure = 0;
         this.excavator.setBucketLoad(this.bucketLoad);
         Object.assign(this.angles, { swing: 0, boom: 0.42, stick: -1.08, bucket: ANGLE_LIMITS.bucket.max });
         this.excavator.applyAngles(this.angles);
@@ -5812,20 +5847,25 @@ class Simulator {
         this.velocities.bucket = 0.62;
 
         const bucketLoadBeforeDump = this.bucketLoad;
+        const pressureBeforeDump = this.pressure;
         let totalStepMs = 0;
         let dumpMaxStepMs = 0;
         let dumpSteps = 0;
         for (let step = 0; step < 36 && this.bucketLoad > 0.002; step += 1) {
           const started = performance.now();
-          this.spillBucketLoadToWorld(1 / 60, 3.1, 1.1, this.bucketLoad);
-          this.updateSoilParticles(1 / 60);
-          this.updateFineGrains(1 / 60);
+          this.withBucketDumpPressureSilenced(() => {
+            this.spillBucketLoadToWorld(1 / 60, 3.1, 1.1, this.bucketLoad);
+            this.updateSoilParticles(1 / 60);
+            this.updateFineGrains(1 / 60);
+          });
+          this.bucketDumpPressureSilence = Math.max(0, this.bucketDumpPressureSilence - 1 / 60);
           const elapsed = performance.now() - started;
           totalStepMs += elapsed;
           dumpMaxStepMs = Math.max(dumpMaxStepMs, elapsed);
           dumpSteps += 1;
         }
         const dumpedVolume = Math.max(0, bucketLoadBeforeDump - this.bucketLoad);
+        const dumpPressureDelta = Math.abs(this.pressure - pressureBeforeDump);
         const remainingBucketLoad = this.bucketLoad;
         const activeSoilParticles = this.soilParticles.length;
         const activeFineGrains = this.fineGrainCount();
@@ -5848,6 +5888,8 @@ class Simulator {
           emptyPressure: empty.pressure,
           loadedPressure: loaded.pressure,
           pressureDelta: Math.abs(empty.pressure - loaded.pressure),
+          capturePressureDelta,
+          dumpPressureDelta,
           dumpedVolume,
           remainingBucketLoad,
           dumpAverageStepMs: totalStepMs / Math.max(dumpSteps, 1),
@@ -8695,11 +8737,14 @@ class Simulator {
     this.resolveArmWorldObjectCollisions(anglesBeforeArmMotion);
     this.resolveArmTerrainResistance(anglesBeforeArmMotion);
     this.updateCarriedWorldObjects(dt);
-    this.updateSoil(dt);
-    this.updateSoilParticles(dt);
-    this.updateFineGrains(dt);
-    this.updatePassiveSoil(dt);
-    this.updateTruckPhysics(dt);
+    this.withBucketDumpPressureSilenced(() => this.updateSoil(dt));
+    this.withBucketDumpPressureSilenced(() => {
+      this.updateSoilParticles(dt);
+      this.updateFineGrains(dt);
+      this.updatePassiveSoil(dt);
+      this.updateTruckPhysics(dt);
+    });
+    this.bucketDumpPressureSilence = Math.max(0, this.bucketDumpPressureSilence - dt);
     this.updateSafety(dt);
     this.updateCamera(dt);
     this.updateUi(dt);
@@ -11380,12 +11425,10 @@ class Simulator {
 
     if (contactRatio > 0 && isDiggingMotion && captureGate > 0.14) {
       const penetration = clamp(maxPenetration, 0.01, 0.72);
-      const loadRatio = this.bucketLoad / BUCKET_CAPACITY;
       const resistance = clamp(
         penetration * 2.15 +
           contactRatio * 0.26 +
           slope * 0.36 +
-          loadRatio * 0.34 +
           subsoilResistance * 0.42 +
           (1 - attackEfficiency) * 0.22 +
           reverseAlignmentPenalty * 0.18,
@@ -11477,15 +11520,12 @@ class Simulator {
     }
     if (dumpIntent && this.bucketLoad > 0.002) {
       const dumpRate = (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95 + lipDumpBias * 0.62) * dt;
-      const spill = this.spillBucketLoadToWorld(
+      this.spillBucketLoadToWorld(
         dt,
         1.0 + openFactor * 2.4 + Math.max(0, this.velocities.bucket) * 0.8 + lipDumpBias,
         openFactor + lipDumpBias * 0.45,
         dumpRate,
       );
-      if (spill.spilledVolume > 0.001) {
-        this.pressure = Math.max(this.pressure, clamp(0.1 + spill.spilledVolume * 0.36, 0, 0.46));
-      }
     }
 
     this.excavator.setBucketLoad(this.bucketLoad);
@@ -11511,6 +11551,7 @@ class Simulator {
     }
 
     this.bucketLoad = Math.max(0, this.bucketLoad - spilledVolume);
+    this.bucketDumpPressureSilence = Math.max(this.bucketDumpPressureSilence, 0.75);
     this.excavator.setBucketLoad(this.bucketLoad);
     const forward = this.excavator.bucketForwardWorld();
     const side = this.excavator.bucketSidewaysWorld();
@@ -11521,6 +11562,14 @@ class Simulator {
     this.spawnSoilParticles(worldPoint, coarseVolume, forward, openness);
     this.spawnFineGrains(worldPoint, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openness, 0)), true, 1.05 + openness);
     return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint };
+  }
+
+  private withBucketDumpPressureSilenced(run: () => void): void {
+    const pressureBefore = this.pressure;
+    run();
+    if (this.bucketDumpPressureSilence > 0) {
+      this.pressure = pressureBefore;
+    }
   }
 
   private spawnCuttingFlow(edgePoints: THREE.Vector3[], pocket: THREE.Vector3, volume: number): void {
@@ -11949,7 +11998,6 @@ class Simulator {
 
     particle.mesh.position.addScaledVector(hit.normal, Math.min(hit.penetration + 0.002, 0.16));
     this.captureParticleIntoBucket(particle);
-    this.pressure = Math.max(this.pressure, clamp(0.2 + hit.loadHeight * 0.5, 0, 0.55));
     return true;
   }
 

@@ -897,6 +897,8 @@ async function main() {
           Math.abs(bucketSoilNoDragPhysicsValue?.loadedBucketVelocity ?? 0) > 0.35 &&
           (bucketSoilNoDragPhysicsValue?.velocityDelta ?? 1) < 0.00001 &&
           (bucketSoilNoDragPhysicsValue?.pressureDelta ?? 1) < 0.00001 &&
+          (bucketSoilNoDragPhysicsValue?.capturePressureDelta ?? 1) < 0.00001 &&
+          (bucketSoilNoDragPhysicsValue?.dumpPressureDelta ?? 1) < 0.00001 &&
           bucketSoilNoDragPhysicsValue?.soilDynamicCollisionBudget === 0 &&
           bucketSoilNoDragPhysicsValue?.fineGrainDynamicCollisionBudget === 0 &&
           bucketSoilNoDragPhysicsValue?.dumpedVolume > 1.0 &&
