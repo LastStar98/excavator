@@ -901,10 +901,13 @@ async function main() {
           (bucketSoilNoDragPhysicsValue?.dumpPressureDelta ?? 1) < 0.00001 &&
           bucketSoilNoDragPhysicsValue?.soilDynamicCollisionBudget === 0 &&
           bucketSoilNoDragPhysicsValue?.fineGrainDynamicCollisionBudget === 0 &&
+          bucketSoilNoDragPhysicsValue?.bucketSoilRuntimeCollisionsEnabled === false &&
+          bucketSoilNoDragPhysicsValue?.bucketSoilRuntimePayloadEnabled === false &&
+          bucketSoilNoDragPhysicsValue?.bucketSoilFastDumpEnabled === true &&
           bucketSoilNoDragPhysicsValue?.dumpedVolume > 1.0 &&
           bucketSoilNoDragPhysicsValue?.remainingBucketLoad < 0.01 &&
-          bucketSoilNoDragPhysicsValue?.activeSoilParticles <= 6 &&
-          bucketSoilNoDragPhysicsValue?.activeFineGrains <= 20 &&
+          bucketSoilNoDragPhysicsValue?.activeSoilParticles === 0 &&
+          bucketSoilNoDragPhysicsValue?.activeFineGrains === 0 &&
           bucketSoilNoDragPhysicsValue?.dumpAverageStepMs < 4 &&
           bucketSoilNoDragPhysicsValue?.dumpMaxStepMs < 16,
       ],
@@ -1252,15 +1255,15 @@ async function main() {
           Math.abs(roughTrackValue?.rightGroundSpeed ?? 0) > 0.42,
       ],
       [
-        "bucket payload shifts excavator chassis support",
+        "carried objects shift chassis while bucket soil stays drag-free",
         payloadSupportValue?.loadedSinkage > payloadSupportValue?.unloadedSinkage + 0.012 &&
           Math.abs((payloadSupportValue?.loadedPitch ?? 0) - (payloadSupportValue?.unloadedPitch ?? 0)) > 0.012 &&
           Math.abs(payloadSupportValue?.sideRoll ?? 0) > 0.018 &&
           payloadSupportValue?.carriedMass > 1 &&
-          payloadSupportValue?.soilOnlyStability < payloadSupportValue?.unloadedStability - 0.025 &&
+          Math.abs((payloadSupportValue?.soilOnlyStability ?? 0) - (payloadSupportValue?.unloadedStability ?? 1)) < 0.003 &&
           payloadSupportValue?.objectStability < payloadSupportValue?.unloadedStability - 0.012 &&
-          payloadSupportValue?.combinedStability < payloadSupportValue?.soilOnlyStability - 0.01 &&
-          payloadSupportValue?.combinedStability < payloadSupportValue?.objectStability - 0.01 &&
+          payloadSupportValue?.combinedStability < payloadSupportValue?.soilOnlyStability - 0.1 &&
+          payloadSupportValue?.combinedStability <= payloadSupportValue?.objectStability + 0.02 &&
           payloadSupportValue?.pressure > 0.1,
       ],
       [

@@ -341,6 +341,9 @@ interface ExcavatorDebugApi {
     dumpMaxStepMs: number;
     soilDynamicCollisionBudget: number;
     fineGrainDynamicCollisionBudget: number;
+    bucketSoilRuntimeCollisionsEnabled: boolean;
+    bucketSoilRuntimePayloadEnabled: boolean;
+    bucketSoilFastDumpEnabled: boolean;
     activeSoilParticles: number;
     activeFineGrains: number;
   };
@@ -929,6 +932,9 @@ const MOBILE_SOIL_DYNAMIC_COLLISION_BUDGET = 0;
 const MOBILE_FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 0;
 const SOIL_PAIR_COLLISIONS_ENABLED = false;
 const FINE_GRAIN_PAIR_COLLISIONS_ENABLED = false;
+const BUCKET_SOIL_RUNTIME_COLLISIONS_ENABLED = false;
+const BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED = false;
+const BUCKET_SOIL_FAST_DUMP_ENABLED = true;
 const SOIL_PAIR_GRID_SIZE = 0.34;
 const FINE_GRAIN_PAIR_GRID_SIZE = 0.14;
 const DESKTOP_PIXEL_RATIO_LIMIT = 1.75;
@@ -5969,6 +5975,9 @@ class Simulator {
           dumpMaxStepMs,
           soilDynamicCollisionBudget: SOIL_DYNAMIC_COLLISION_BUDGET,
           fineGrainDynamicCollisionBudget: FINE_GRAIN_DYNAMIC_COLLISION_BUDGET,
+          bucketSoilRuntimeCollisionsEnabled: BUCKET_SOIL_RUNTIME_COLLISIONS_ENABLED,
+          bucketSoilRuntimePayloadEnabled: BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED,
+          bucketSoilFastDumpEnabled: BUCKET_SOIL_FAST_DUMP_ENABLED,
           activeSoilParticles,
           activeFineGrains,
         };
@@ -9791,11 +9800,8 @@ class Simulator {
   }
 
   private bucketPayloadMomentLoad(): number {
-    return (
-      this.bucketLoad +
-      this.bucketTransitLoad * 0.65 +
-      (this.carriedWorldObjectMass() / BUCKET_OBJECT_LOAD_REFERENCE) * 1.25
-    );
+    const soilLoad = BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED ? this.bucketLoad + this.bucketTransitLoad * 0.65 : 0;
+    return soilLoad + (this.carriedWorldObjectMass() / BUCKET_OBJECT_LOAD_REFERENCE) * 1.25;
   }
 
   private bucketCarryLocalPoint(collider: WorldCollider): THREE.Vector3 | null {
@@ -10230,7 +10236,7 @@ class Simulator {
       if (nearCrawlerBody && this.resolveLooseObjectExcavatorCollision(collider)) {
         activeObjectMoved = true;
       }
-      if (this.resolveLooseObjectBucketLoadCollision(collider)) {
+      if (BUCKET_SOIL_RUNTIME_COLLISIONS_ENABLED && this.resolveLooseObjectBucketLoadCollision(collider)) {
         activeObjectMoved = true;
       }
 
@@ -10673,14 +10679,19 @@ class Simulator {
     const contactSpan = Math.max(left.highHeight, right.highHeight) - Math.min(left.lowHeight, right.lowHeight);
     const disturbedDepth = (left.disturbedDepth + right.disturbedDepth) * 0.5;
     const bucketPocket = this.excavator.bucketPocketWorld();
-    const payloadMass = this.bucketLoad * 0.55 + this.bucketTransitLoad * 0.45 + this.carriedWorldObjectMass();
+    const soilPayloadMass = BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED ? this.bucketLoad * 0.55 + this.bucketTransitLoad * 0.45 : 0;
+    const carriedMass = this.carriedWorldObjectMass();
+    const payloadMass = soilPayloadMass + carriedMass;
     const reach = bucketPocket.clone().sub(base);
     const forwardReach = reach.dot(forward);
     const sideReach = reach.dot(side);
     const normalizedPayload = clamp(payloadMass / 12, 0, 2.2);
     const pitchMoment = clamp((forwardReach / Math.max(TRACK_LENGTH, 0.001)) * normalizedPayload, -0.9, 0.9);
     const rollMoment = clamp((sideReach / Math.max(TRACK_GAUGE, 0.001)) * normalizedPayload, -1.0, 1.0);
-    const loadFactor = clamp(this.bucketLoad / BUCKET_CAPACITY + this.bucketTransitLoad / BUCKET_CAPACITY * 0.6 + this.carriedWorldObjectMass() / 18, 0, 2.4);
+    const soilLoadFactor = BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED
+      ? this.bucketLoad / BUCKET_CAPACITY + (this.bucketTransitLoad / BUCKET_CAPACITY) * 0.6
+      : 0;
+    const loadFactor = clamp(soilLoadFactor + carriedMass / 18, 0, 2.4);
     const targetSinkage = clamp(
       0.012 + disturbedDepth * 0.13 + contactSpan * 0.035 + loadFactor * 0.026 + Math.abs(pitchMoment) * 0.026 + Math.abs(rollMoment) * 0.018,
       0.012,
@@ -11630,11 +11641,35 @@ class Simulator {
     const side = this.excavator.bucketSidewaysWorld();
     const worldPoint = this.excavator.bucketTipWorld().addScaledVector(forward, 0.08 + openDump * 0.18).addScaledVector(side, (Math.random() - 0.5) * 0.18);
     const openness = openDump;
+    if (BUCKET_SOIL_FAST_DUMP_ENABLED) {
+      this.depositBucketSpillFast(worldPoint, spilledVolume, openness);
+      return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint };
+    }
     const fineVolume = spilledVolume * clamp(0.018 + openness * 0.026, 0.018, 0.055);
     const coarseVolume = Math.max(0, spilledVolume - fineVolume);
     this.spawnSoilParticles(worldPoint, coarseVolume, forward, openness);
     this.spawnFineGrains(worldPoint, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openness, 0)), true, 1.05 + openness);
     return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint };
+  }
+
+  private depositBucketSpillFast(worldPoint: THREE.Vector3, volume: number, openness: number): void {
+    if (volume <= 0) {
+      return;
+    }
+
+    const inTruck = this.truck.containsWorldPoint(worldPoint) && worldPoint.y < TRUCK_CENTER.y + 1.72;
+    if (inTruck) {
+      const accepted = this.truck.depositSoilAt(worldPoint, volume, TRUCK_CAPACITY - this.truckLoad);
+      this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
+      if (accepted < volume) {
+        this.raiseTerrainWithWake(new THREE.Vector3(worldPoint.x, 0, worldPoint.z), 0.3 + Math.cbrt(volume - accepted) * 0.1, volume - accepted, 0);
+      }
+    } else {
+      const ground = this.terrain.getHeightAt(worldPoint.x, worldPoint.z);
+      const radius = 0.3 + Math.cbrt(volume) * 0.15 + clamp(openness, 0, 1) * 0.06;
+      this.raiseTerrainWithWake(new THREE.Vector3(worldPoint.x, ground, worldPoint.z), radius, volume, 0);
+    }
+    this.truck.updateLoad(this.truckLoad);
   }
 
   private withBucketDumpPressureSilenced(run: () => void): void {
@@ -11980,7 +12015,7 @@ class Simulator {
         particle.mesh.position.addScaledVector(particle.velocity, dt);
         particle.mesh.rotation.x += particle.velocity.z * dt * 3.2;
         particle.mesh.rotation.z -= particle.velocity.x * dt * 3.2;
-        if (particle.toBucket && this.captureParticleOnBucketLoad(particle)) {
+        if (BUCKET_SOIL_RUNTIME_COLLISIONS_ENABLED && particle.toBucket && this.captureParticleOnBucketLoad(particle)) {
           this.soilParticles.splice(i, 1);
           this.recycleSoilParticle(particle);
           continue;
