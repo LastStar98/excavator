@@ -431,6 +431,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const visiblePhysicsAudit = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceVisiblePhysicsAudit()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const terrainWakePhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceTerrainChangeWakesObjects()`,
       returnByValue: true,
@@ -678,6 +683,7 @@ async function main() {
     const roughTrackValue = roughTrack.result.value;
     const payloadSupportValue = payloadSupport.result.value;
     const worldObjectPhysicsValue = worldObjectPhysics.result.value;
+    const visiblePhysicsAuditValue = visiblePhysicsAudit.result.value;
     const terrainWakePhysicsValue = terrainWakePhysics.result.value;
     const mapDiversityValue = mapDiversity.result.value;
     const mobileUiValue = mobileUi.result.value;
@@ -1207,6 +1213,26 @@ async function main() {
           worldObjectPhysicsValue?.pressure > 0.35,
       ],
       [
+        "visible scene drawables are classified for physics",
+        visiblePhysicsAuditValue?.visibleDrawableCount > 120 &&
+          visiblePhysicsAuditValue?.unclassifiedDrawableCount === 0 &&
+          visiblePhysicsAuditValue?.physicalDrawableCount + visiblePhysicsAuditValue?.guideDrawableCount ===
+            visiblePhysicsAuditValue?.visibleDrawableCount &&
+          visiblePhysicsAuditValue?.worldColliderDrawableCount === visiblePhysicsAuditValue?.visibleWorldColliderCount &&
+          visiblePhysicsAuditValue?.visibleWorldColliderCount === visiblePhysicsAuditValue?.worldColliderCount &&
+          visiblePhysicsAuditValue?.liftableWorldColliderCount === visiblePhysicsAuditValue?.worldColliderCount &&
+          visiblePhysicsAuditValue?.blockedWorldColliderCount === 0 &&
+          visiblePhysicsAuditValue?.heaviestLiftableMass > 10 &&
+          visiblePhysicsAuditValue?.excavatorDrawableCount > 30 &&
+          visiblePhysicsAuditValue?.truckDrawableCount >= 11 &&
+          visiblePhysicsAuditValue?.terrainDrawableCount === 1 &&
+          visiblePhysicsAuditValue?.guideDrawableCount >= 3 &&
+          visiblePhysicsAuditValue?.particleDrawableCount >= 1 &&
+          visiblePhysicsAuditValue?.excavatorSampleCount > visiblePhysicsAuditValue?.excavatorDrawableCount * 0.55 &&
+          visiblePhysicsAuditValue?.truckSolidPartCount >= 7 &&
+          visiblePhysicsAuditValue?.truckWheelCount === 4,
+      ],
+      [
         "terrain edits wake and support sleeping world objects",
         terrainWakePhysicsValue?.sleptBefore &&
           terrainWakePhysicsValue?.wokeFromCut >= 1 &&
@@ -1370,6 +1396,7 @@ async function main() {
           roughTrack: roughTrackValue,
           payloadSupport: payloadSupportValue,
           worldObjectPhysics: worldObjectPhysicsValue,
+          visiblePhysicsAudit: visiblePhysicsAuditValue,
           terrainWakePhysics: terrainWakePhysicsValue,
           mapDiversity: mapDiversityValue,
           mobileUi: mobileUiValue,

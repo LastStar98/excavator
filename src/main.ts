@@ -109,6 +109,7 @@ interface WorldCollider {
   initialQuaternion: THREE.Quaternion;
   initialScale: THREE.Vector3;
   gridStamp: number;
+  updateStamp: number;
 }
 
 interface ObjectFootprintCompaction {
@@ -702,6 +703,26 @@ interface ExcavatorDebugApi {
     pipeEndpointCenterOffset: number;
     truckStillBlocks: boolean;
   };
+  forceVisiblePhysicsAudit: () => {
+    visibleDrawableCount: number;
+    physicalDrawableCount: number;
+    worldColliderDrawableCount: number;
+    excavatorDrawableCount: number;
+    truckDrawableCount: number;
+    terrainDrawableCount: number;
+    guideDrawableCount: number;
+    particleDrawableCount: number;
+    unclassifiedDrawableCount: number;
+    unclassifiedNames: string[];
+    worldColliderCount: number;
+    visibleWorldColliderCount: number;
+    liftableWorldColliderCount: number;
+    blockedWorldColliderCount: number;
+    heaviestLiftableMass: number;
+    excavatorSampleCount: number;
+    truckSolidPartCount: number;
+    truckWheelCount: number;
+  };
   forceLagFreeSoilCycle: () => {
     averageStepMs: number;
     maxStepMs: number;
@@ -1068,10 +1089,14 @@ class HeightfieldTerrain {
       metalness: 0.02,
     });
     this.mesh = new THREE.Mesh(this.geometry, material);
+    this.mesh.name = "terrain-heightfield";
+    this.mesh.userData.physicsRole = "terrain-heightfield";
     this.mesh.receiveShadow = true;
     scene.add(this.mesh);
 
     const grid = new THREE.GridHelper(this.size, 64, 0x6e796c, 0x495045);
+    grid.name = "terrain-grid-guide";
+    grid.userData.physicsRole = "terrain-guide";
     grid.position.y = 0.018;
     grid.material.transparent = true;
     grid.material.opacity = 0.28;
@@ -1962,6 +1987,14 @@ class WorkTruck {
       impactPitch: this.impactPitch,
       impactRoll: this.impactRoll,
     };
+  }
+
+  solidPartCount(): number {
+    return this.solidBoxes.length;
+  }
+
+  wheelColliderCount(): number {
+    return this.wheelLocals.length;
   }
 
   wheelWorldPoints(): THREE.Vector3[] {
@@ -3971,9 +4004,11 @@ class Simulator {
   private nextWorldColliderId = 1;
   private readonly worldColliderGrid = new Map<string, WorldCollider[]>();
   private readonly colliderQueryResult: WorldCollider[] = [];
+  private readonly worldUpdateCandidates: WorldCollider[] = [];
   private worldColliderGridDirty = true;
   private worldColliderGridDeferredDirty = false;
   private colliderQueryStamp = 1;
+  private worldUpdateStamp = 1;
   private fpsAccumulator = 0;
   private fpsFrames = 0;
   private fps = 0;
@@ -4032,6 +4067,8 @@ class Simulator {
     }
     this.fineGrainGeometry.setAttribute("position", new THREE.BufferAttribute(this.fineGrainPositions, 3));
     (this.fineGrainGeometry.attributes.position as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    this.fineGrainCloud.name = "fine-grain-particles";
+    this.fineGrainCloud.userData.physicsRole = "soil-particles";
     this.fineGrainCloud.frustumCulled = false;
     this.scene.add(this.fineGrainCloud);
   }
@@ -4116,7 +4153,10 @@ class Simulator {
       initialQuaternion: mesh.quaternion.clone(),
       initialScale: mesh.scale.clone(),
       gridStamp: 0,
+      updateStamp: 0,
     };
+    mesh.userData.physicsRole = "world-collider";
+    mesh.userData.worldColliderKind = kind;
     this.nextWorldColliderId += 1;
     this.worldColliders.push(collider);
     this.worldColliderGridDirty = true;
@@ -4203,6 +4243,153 @@ class Simulator {
       }
     }
     return this.colliderQueryResult;
+  }
+
+  private pushWorldUpdateCandidate(collider: WorldCollider, stamp: number): void {
+    if (
+      collider.updateStamp === stamp ||
+      collider.immovable ||
+      this.carriedWorldColliders.has(collider)
+    ) {
+      return;
+    }
+    collider.updateStamp = stamp;
+    this.worldUpdateCandidates.push(collider);
+  }
+
+  private isDrawableObject(object: THREE.Object3D): boolean {
+    return (
+      object instanceof THREE.Mesh ||
+      object instanceof THREE.Points ||
+      object instanceof THREE.Line ||
+      object instanceof THREE.LineSegments
+    );
+  }
+
+  private isVisibleInScene(object: THREE.Object3D): boolean {
+    let current: THREE.Object3D | null = object;
+    while (current) {
+      if (!current.visible) {
+        return false;
+      }
+      current = current.parent;
+    }
+    return true;
+  }
+
+  private isDescendantOf(object: THREE.Object3D, root: THREE.Object3D): boolean {
+    let current: THREE.Object3D | null = object;
+    while (current) {
+      if (current === root) {
+        return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  }
+
+  private excavatorExternalPhysicsMeshes(): THREE.Object3D[] {
+    return [
+      this.excavator.boomCylinder,
+      this.excavator.stickCylinder,
+      this.excavator.bucketCylinder,
+      this.excavator.bucketRockerLeft,
+      this.excavator.bucketRockerRight,
+      this.excavator.bucketLinkLeft,
+      this.excavator.bucketLinkRight,
+    ];
+  }
+
+  private visiblePhysicsAudit(): ReturnType<ExcavatorDebugApi["forceVisiblePhysicsAudit"]> {
+    const worldColliderMeshes = new Set<THREE.Object3D>(this.worldColliders.map((collider) => collider.mesh));
+    const soilParticleMeshes = new Set<THREE.Object3D>(this.soilParticles.map((particle) => particle.mesh));
+    const externalExcavatorMeshes = new Set<THREE.Object3D>(this.excavatorExternalPhysicsMeshes());
+    const liftableWorldColliders = this.worldColliders.filter((collider) => !collider.immovable);
+    const blockedWorldColliders = this.worldColliders.length - liftableWorldColliders.length;
+    const unclassifiedNames: string[] = [];
+    let visibleDrawableCount = 0;
+    let physicalDrawableCount = 0;
+    let worldColliderDrawableCount = 0;
+    let excavatorDrawableCount = 0;
+    let truckDrawableCount = 0;
+    let terrainDrawableCount = 0;
+    let guideDrawableCount = 0;
+    let particleDrawableCount = 0;
+    let unclassifiedDrawableCount = 0;
+
+    this.scene.traverse((object) => {
+      if (!this.isDrawableObject(object) || !this.isVisibleInScene(object)) {
+        return;
+      }
+
+      visibleDrawableCount += 1;
+      const role = object.userData.physicsRole;
+      const isWorldCollider = worldColliderMeshes.has(object);
+      const isExcavator = this.isDescendantOf(object, this.excavator.group) || externalExcavatorMeshes.has(object);
+      const isTruck = this.isDescendantOf(object, this.truck.group);
+      const isTerrain = object === this.terrain.mesh || role === "terrain-heightfield";
+      const isGuide = role === "terrain-guide" || role === "worksite-guide" || object.type === "GridHelper";
+      const isParticle =
+        object === this.fineGrainCloud ||
+        soilParticleMeshes.has(object) ||
+        role === "soil-particles" ||
+        role === "soil-particle";
+
+      if (isWorldCollider) {
+        worldColliderDrawableCount += 1;
+      }
+      if (isExcavator) {
+        excavatorDrawableCount += 1;
+      }
+      if (isTruck) {
+        truckDrawableCount += 1;
+      }
+      if (isTerrain) {
+        terrainDrawableCount += 1;
+      }
+      if (isParticle) {
+        particleDrawableCount += 1;
+      }
+      if (isGuide) {
+        guideDrawableCount += 1;
+      }
+
+      const isPhysical = isWorldCollider || isExcavator || isTruck || isTerrain || isParticle;
+      if (isPhysical) {
+        physicalDrawableCount += 1;
+      } else if (!isGuide) {
+        unclassifiedDrawableCount += 1;
+        if (unclassifiedNames.length < 24) {
+          unclassifiedNames.push(object.name || object.type || object.constructor.name);
+        }
+      }
+    });
+
+    return {
+      visibleDrawableCount,
+      physicalDrawableCount,
+      worldColliderDrawableCount,
+      excavatorDrawableCount,
+      truckDrawableCount,
+      terrainDrawableCount,
+      guideDrawableCount,
+      particleDrawableCount,
+      unclassifiedDrawableCount,
+      unclassifiedNames,
+      worldColliderCount: this.worldColliders.length,
+      visibleWorldColliderCount: this.worldColliders.filter((collider) => this.isVisibleInScene(collider.mesh)).length,
+      liftableWorldColliderCount: liftableWorldColliders.length,
+      blockedWorldColliderCount: blockedWorldColliders,
+      heaviestLiftableMass: Math.max(...liftableWorldColliders.map((collider) => collider.mass)),
+      excavatorSampleCount:
+        this.excavator.armCollisionSamples().length +
+        this.excavator.upperCollisionSamples().length +
+        this.excavator.lowerCollisionBoxes().length +
+        this.crawlerFootprintSamples().length +
+        1,
+      truckSolidPartCount: this.truck.solidPartCount(),
+      truckWheelCount: this.truck.wheelColliderCount(),
+    };
   }
 
   private particleGridKey(x: number, y: number, z: number, cellSize: number): string {
@@ -4537,12 +4724,16 @@ class Simulator {
   private buildWorksiteMarkers(): void {
     const ringMat = new THREE.MeshBasicMaterial({ color: 0xf1ad34, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
     const digRing = new THREE.Mesh(new THREE.RingGeometry(1.55, 1.62, 72), ringMat);
+    digRing.name = "dig-site-guide";
+    digRing.userData.physicsRole = "worksite-guide";
     digRing.rotation.x = -Math.PI / 2;
     digRing.position.set(DIG_SITE.x, 0.04, DIG_SITE.z);
     this.scene.add(digRing);
 
     const safeMat = new THREE.MeshBasicMaterial({ color: 0xdb553f, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
     const safeRing = new THREE.Mesh(new THREE.CircleGeometry(1.08, 48), safeMat);
+    safeRing.name = "worker-zone-guide";
+    safeRing.userData.physicsRole = "worksite-guide";
     safeRing.rotation.x = -Math.PI / 2;
     safeRing.position.set(WORKER_ZONE.x, 0.05, WORKER_ZONE.z);
     this.scene.add(safeRing);
@@ -7602,6 +7793,7 @@ class Simulator {
           truckStillBlocks: Boolean(this.truck.resolveBodyCollision(TRUCK_CENTER.clone(), 1.62)),
         };
       },
+      forceVisiblePhysicsAudit: () => this.visiblePhysicsAudit(),
       forceLagFreeSoilCycle: () => {
         this.bucketLoad = BUCKET_CAPACITY * 0.72;
         this.bucketTransitLoad = 0;
@@ -8017,7 +8209,6 @@ class Simulator {
       return { spilledVolume: 0, terrainGain: 0, worldPoint: this.truck.group.position.clone() };
     }
 
-    const beforeTerrain = this.terrain.terrainVolumeDelta();
     const spill = this.truck.spillLoadOverBed(dt, intensity, this.truckLoad);
     if (spill.spilledVolume <= 0) {
       return { spilledVolume: 0, terrainGain: 0, worldPoint: spill.worldPoint };
@@ -8027,12 +8218,12 @@ class Simulator {
     const depositRadius = clamp(0.34 + Math.cbrt(spilledVolume) * 0.28, 0.36, 0.78);
     const depositPoint = spill.worldPoint.clone();
     depositPoint.y = this.terrain.getHeightAt(depositPoint.x, depositPoint.z);
-    this.raiseTerrainWithWake(depositPoint, depositRadius, spilledVolume, 1);
+    const terrainGain = this.raiseTerrainWithWake(depositPoint, depositRadius, spilledVolume, 1);
     this.truckLoad = Math.max(0, this.truckLoad - spilledVolume);
     this.truck.updateLoad(this.truckLoad);
     return {
       spilledVolume,
-      terrainGain: this.terrain.terrainVolumeDelta() - beforeTerrain,
+      terrainGain,
       worldPoint: spill.worldPoint,
     };
   }
@@ -9281,11 +9472,27 @@ class Simulator {
     const crawlerMotionActive = Math.abs(this.leftTrackVelocity) + Math.abs(this.rightTrackVelocity) > 0.045;
     let activeObjectMoved = false;
     let colliderGridMoved = false;
-    for (const collider of this.worldColliders) {
-      if (collider.immovable || this.carriedWorldColliders.has(collider)) {
-        continue;
-      }
+    this.worldUpdateCandidates.length = 0;
+    this.worldUpdateStamp = this.worldUpdateStamp >= 1_000_000_000 ? 1 : this.worldUpdateStamp + 1;
+    const updateStamp = this.worldUpdateStamp;
 
+    for (const collider of this.worldColliders) {
+      if (!collider.sleeping) {
+        this.pushWorldUpdateCandidate(collider, updateStamp);
+      }
+    }
+    if (bucketMotionActive) {
+      for (const collider of this.nearbyWorldColliders(bucket, 2.28)) {
+        this.pushWorldUpdateCandidate(collider, updateStamp);
+      }
+    }
+    if (crawlerMotionActive) {
+      for (const collider of this.nearbyWorldColliders(machine, 4.55)) {
+        this.pushWorldUpdateCandidate(collider, updateStamp);
+      }
+    }
+
+    for (const collider of this.worldUpdateCandidates) {
       const pos = collider.mesh.position;
       const dxMachine = pos.x - machine.x;
       const dzMachine = pos.z - machine.z;
@@ -10458,7 +10665,7 @@ class Simulator {
     let bucketIntrusion = 0;
     const affected = new Set<"boom" | "stick" | "bucket">();
     const bucketCuttingMotion = Math.max(0, -this.velocities.bucket) > 0.035 || Math.max(0, -this.velocities.stick) > 0.045;
-    const displacementStrokes: Array<{
+    let bestDisplacementStroke: {
       start: THREE.Vector3;
       end: THREE.Vector3;
       sideways: THREE.Vector3;
@@ -10466,7 +10673,7 @@ class Simulator {
       depth: number;
       volumeLimit: number;
       score: number;
-    }> = [];
+    } | null = null;
 
     for (let i = 0; i < currentSamples.length; i += 1) {
       const sample = currentSamples[i];
@@ -10502,7 +10709,7 @@ class Simulator {
           const width = clamp(sample.radius * (isBucket ? 3.0 : 2.75), 0.42, 0.86);
           const depth = clamp((submerged * 0.055 + motionLoad * 0.2) * structureScale / (1 + subsoil * 0.18), 0.002, isBucket ? 0.052 : 0.07);
           const volumeLimit = clamp(width * depth * sweptLength * (0.72 + subsoil * 0.12), 0.004, isBucket ? 0.075 : 0.11);
-          displacementStrokes.push({
+          const stroke = {
             start: previous.point,
             end: sample.point,
             sideways,
@@ -10510,7 +10717,10 @@ class Simulator {
             depth,
             volumeLimit,
             score: submerged * motionLoad * (isBucket ? 0.75 : 1) * (1 + subsoil * 0.12),
-          });
+          };
+          if (!bestDisplacementStroke || stroke.score > bestDisplacementStroke.score) {
+            bestDisplacementStroke = stroke;
+          }
         }
       }
 
@@ -10554,15 +10764,14 @@ class Simulator {
 
     const blockedActions: ActionName[] = [];
     let displacedVolume = 0;
-    displacementStrokes.sort((a, b) => b.score - a.score);
-    for (const stroke of displacementStrokes.slice(0, 1)) {
+    if (bestDisplacementStroke) {
       displacedVolume += this.displaceTerrainWithWake(
-        stroke.start,
-        stroke.end,
-        stroke.sideways,
-        stroke.width,
-        stroke.depth * 1.28,
-        stroke.volumeLimit * 1.7,
+        bestDisplacementStroke.start,
+        bestDisplacementStroke.end,
+        bestDisplacementStroke.sideways,
+        bestDisplacementStroke.width,
+        bestDisplacementStroke.depth * 1.28,
+        bestDisplacementStroke.volumeLimit * 1.7,
       );
     }
 
@@ -10650,18 +10859,7 @@ class Simulator {
       this.totalExcavated += removed;
       if (removed > 0) {
         this.pressure = Math.max(this.pressure, clamp(0.42 + removed * 1.8 + contactRatio * 0.22, 0, 1));
-        if (bucketAccepted > 0.001) {
-          const directCaptureRatio = clamp(0.9 + attackEfficiency * 0.06 + curlInSpeed * 0.025 + contactRatio * 0.025, 0.88, 0.985);
-          const directCapture = Math.min(bucketAccepted, bucketAccepted * directCaptureRatio);
-          const flowVolume = bucketAccepted - directCapture;
-          this.bucketLoad += directCapture;
-          if (flowVolume > 0.001) {
-            this.bucketTransitLoad += flowVolume;
-            this.spawnCuttingFlow(edgePoints, pocket, flowVolume);
-          }
-        } else {
-          this.bucketLoad += bucketAccepted;
-        }
+        this.bucketLoad += bucketAccepted;
         if (airborneFines > 0.001) {
           this.spawnFineGrains(edgePoints[0], airborneFines, forward.clone().multiplyScalar(-1).add(new THREE.Vector3(0, 0.35, 0)), true, 1.35);
         }
@@ -10843,6 +11041,8 @@ class Simulator {
     mesh.visible = true;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
+    mesh.name = "soil-particle";
+    mesh.userData.physicsRole = "soil-particle";
     mesh.scale.set(radius * stretchX, radius * squash, radius * stretchZ);
     mesh.rotation.set(hash2(seed, 31) * Math.PI, hash2(seed, 37) * Math.PI, hash2(seed, 41) * Math.PI);
     this.scene.add(mesh);
