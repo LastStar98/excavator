@@ -67,6 +67,15 @@ interface SoilParticle {
 
 type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone" | "pipe";
 
+interface CrawlerFootprintSample {
+  x: number;
+  z: number;
+  radius: number;
+  track: "left" | "right";
+  padIndex: number;
+  isEnd: boolean;
+}
+
 interface WorldColliderCapsule {
   localA: THREE.Vector3;
   localB: THREE.Vector3;
@@ -538,6 +547,7 @@ interface ExcavatorDebugApi {
     pipeTruckCapsuleHitAfter: number;
     pipeExcavatorCapsuleHitBefore: number;
     pipeExcavatorCapsuleHitAfter: number;
+    crawlerSampleCount: number;
     trackContactCount: number;
     cornerContacts: number;
     movedMass: number;
@@ -706,6 +716,9 @@ const TRACK_WIDTH = 0.5;
 const TRACK_CONTACT_HEIGHT = 0.28;
 const CRAWLER_BODY_CONTACT_HEIGHT = 0.72;
 const TRACK_MAX_SPEED = 1.25;
+const TRACK_PAD_COUNT = 14;
+const TRACK_PAD_START_X = -1.7;
+const TRACK_PAD_SPACING = 0.26;
 const SOIL_REPOSE_TAN = Math.tan(THREE.MathUtils.degToRad(34));
 const SOIL_BEDROCK_FLOOR = -5.2;
 const DIG_SITE = new THREE.Vector3(-4.1, 0, 2.3);
@@ -722,6 +735,8 @@ const SOIL_PARTICLE_COLLISION_QUERY_PADDING = 0.28;
 const FINE_GRAIN_COLLISION_QUERY_PADDING = 0.18;
 const SOIL_DYNAMIC_COLLISION_BUDGET = 1;
 const FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 1;
+const MOBILE_SOIL_DYNAMIC_COLLISION_BUDGET = 0;
+const MOBILE_FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 0;
 const SOIL_PAIR_GRID_SIZE = 0.34;
 const FINE_GRAIN_PAIR_GRID_SIZE = 0.14;
 const DESKTOP_PIXEL_RATIO_LIMIT = 1.75;
@@ -3447,8 +3462,8 @@ class ExcavatorModel {
     this.group.add(makeBox([3.75, 0.52, 0.52], trackMat, [0, 0.28, -0.72]));
     this.group.add(makeBox([3.75, 0.52, 0.52], trackMat, [0, 0.28, 0.72]));
 
-    for (let i = 0; i < 14; i += 1) {
-      const x = -1.7 + i * 0.26;
+    for (let i = 0; i < TRACK_PAD_COUNT; i += 1) {
+      const x = TRACK_PAD_START_X + i * TRACK_PAD_SPACING;
       this.group.add(makeBox([0.18, 0.06, 0.6], padMat, [x, 0.58, -0.72]));
       this.group.add(makeBox([0.18, 0.06, 0.6], padMat, [x, 0.58, 0.72]));
     }
@@ -6488,6 +6503,7 @@ class Simulator {
         let softRutDrop = 0;
         let hardRutDrop = 0;
         let objectBermRise = 0;
+        const crawlerSampleCount = this.crawlerFootprintSamples().length;
         let trackContactCount = 0;
         let cornerContacts = 0;
         let movedMass = 0;
@@ -6795,6 +6811,7 @@ class Simulator {
           pipeTruckCapsuleHitAfter,
           pipeExcavatorCapsuleHitBefore,
           pipeExcavatorCapsuleHitAfter,
+          crawlerSampleCount,
           trackContactCount,
           cornerContacts,
           movedMass,
@@ -7698,6 +7715,33 @@ class Simulator {
     };
   }
 
+  private crawlerFootprintSamples(): CrawlerFootprintSample[] {
+    const samples: CrawlerFootprintSample[] = [];
+    const addTrackSamples = (track: "left" | "right", z: number): void => {
+      for (let i = 0; i < TRACK_PAD_COUNT; i += 1) {
+        const x = TRACK_PAD_START_X + i * TRACK_PAD_SPACING;
+        const endDistance = Math.min(i, TRACK_PAD_COUNT - 1 - i);
+        samples.push({
+          x,
+          z,
+          radius: TRACK_WIDTH * (endDistance <= 1 ? 0.54 : 0.46),
+          track,
+          padIndex: i,
+          isEnd: endDistance <= 1,
+        });
+      }
+      samples.push(
+        { x: 0, z, radius: TRACK_WIDTH * 0.6, track, padIndex: Math.floor(TRACK_PAD_COUNT * 0.5), isEnd: false },
+        { x: TRACK_LENGTH * 0.46, z, radius: TRACK_WIDTH * 0.58, track, padIndex: TRACK_PAD_COUNT, isEnd: true },
+        { x: -TRACK_LENGTH * 0.46, z, radius: TRACK_WIDTH * 0.58, track, padIndex: -1, isEnd: true },
+      );
+    };
+
+    addTrackSamples("left", -TRACK_GAUGE * 0.5);
+    addTrackSamples("right", TRACK_GAUGE * 0.5);
+    return samples;
+  }
+
   private resolveTruckCrawlerFootprintCollision(
     forwardSpeed: number,
     turnRate: number,
@@ -7705,14 +7749,7 @@ class Simulator {
   ): TruckCrawlerContactResult {
     const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
     const base = this.excavator.group.position;
-    const samples = [
-      { x: TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5 },
-      { x: TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5 },
-      { x: 0, z: -TRACK_GAUGE * 0.5 },
-      { x: 0, z: TRACK_GAUGE * 0.5 },
-      { x: -TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5 },
-      { x: -TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5 },
-    ] as const;
+    const samples = this.crawlerFootprintSamples();
 
     let contactCount = 0;
     let cornerContacts = 0;
@@ -7731,7 +7768,7 @@ class Simulator {
         .addScaledVector(forward, sample.x)
         .addScaledVector(side, sample.z);
       world.y = this.terrain.getHeightAt(world.x, world.z) + TRACK_CONTACT_HEIGHT;
-      const hit = this.resolveTruckCrawlerSolidHit(world, TRACK_WIDTH * 0.54);
+      const hit = this.resolveTruckCrawlerSolidHit(world, sample.radius);
       if (!hit) {
         continue;
       }
@@ -7750,10 +7787,10 @@ class Simulator {
       correctionNormal.addScaledVector(hit.normal, 0.12 + severity);
       impactPoint.addScaledVector(world, 0.1 + severity);
       impactWeight += 0.1 + severity;
-      if (Math.abs(sample.x) > TRACK_LENGTH * 0.34 && Math.abs(sample.z) > TRACK_GAUGE * 0.34) {
+      if (sample.isEnd && Math.abs(sample.z) > TRACK_GAUGE * 0.34) {
         cornerContacts += 1;
       }
-      if (sample.z < 0) {
+      if (sample.track === "left") {
         leftSeverity = Math.max(leftSeverity, severity);
       } else {
         rightSeverity = Math.max(rightSeverity, severity);
@@ -7856,14 +7893,7 @@ class Simulator {
     const result = this.emptyCrawlerWorldObjectContact();
     const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
     const base = this.excavator.group.position;
-    const samples = [
-      { x: TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.58, track: "left" },
-      { x: TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.58, track: "right" },
-      { x: 0, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.6, track: "left" },
-      { x: 0, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.6, track: "right" },
-      { x: -TRACK_LENGTH * 0.46, z: -TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.58, track: "left" },
-      { x: -TRACK_LENGTH * 0.46, z: TRACK_GAUGE * 0.5, radius: TRACK_WIDTH * 0.58, track: "right" },
-    ] as const;
+    const samples = this.crawlerFootprintSamples();
     const candidates = [...this.nearbyWorldColliders(base, TRACK_LENGTH * 0.62 + TRACK_GAUGE * 0.58 + 1.35)];
 
     for (const collider of candidates) {
@@ -7915,7 +7945,7 @@ class Simulator {
         correctionNormal.addScaledVector(normal, contactWeight);
         contactPoint.addScaledVector(hit.point, contactWeight);
         contactPointWeight += contactWeight;
-        if (Math.abs(sample.x) > TRACK_LENGTH * 0.34) {
+        if (sample.isEnd) {
           colliderCornerContacts += 1;
         }
         if (sample.track === "left") {
@@ -10199,8 +10229,8 @@ class Simulator {
 
     mesh.material = material;
     mesh.visible = true;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
     mesh.scale.set(radius * stretchX, radius * squash, radius * stretchZ);
     mesh.rotation.set(hash2(seed, 31) * Math.PI, hash2(seed, 37) * Math.PI, hash2(seed, 41) * Math.PI);
     this.scene.add(mesh);
@@ -10289,7 +10319,9 @@ class Simulator {
 
   private updateFineGrains(dt: number): void {
     let changed = false;
-    let dynamicCollisionBudget = FINE_GRAIN_DYNAMIC_COLLISION_BUDGET;
+    let dynamicCollisionBudget = this.isMobilePerformanceProfile()
+      ? MOBILE_FINE_GRAIN_DYNAMIC_COLLISION_BUDGET
+      : FINE_GRAIN_DYNAMIC_COLLISION_BUDGET;
     const bucketPocket = this.excavator.bucketPocketWorld();
     if (dynamicCollisionBudget > 0 && this.fineGrainCount() > 1) {
       this.rebuildFineGrainPairGrid();
@@ -10419,7 +10451,9 @@ class Simulator {
   }
 
   private updateSoilParticles(dt: number): void {
-    let dynamicCollisionBudget = SOIL_DYNAMIC_COLLISION_BUDGET;
+    let dynamicCollisionBudget = this.isMobilePerformanceProfile()
+      ? MOBILE_SOIL_DYNAMIC_COLLISION_BUDGET
+      : SOIL_DYNAMIC_COLLISION_BUDGET;
     const bucketPocket = this.excavator.bucketPocketWorld();
     if (dynamicCollisionBudget > 0 && this.soilParticles.length > 1) {
       this.rebuildSoilParticlePairGrid();

@@ -1159,6 +1159,7 @@ async function main() {
           worldObjectPhysicsValue?.pipeTruckCapsuleHitAfter < 0.02 &&
           worldObjectPhysicsValue?.pipeExcavatorCapsuleHitBefore > worldObjectPhysicsValue?.pipeExcavatorCapsuleHitAfter &&
           worldObjectPhysicsValue?.pipeExcavatorCapsuleHitAfter < 0.02 &&
+          worldObjectPhysicsValue?.crawlerSampleCount >= 30 &&
           worldObjectPhysicsValue?.truckPenetrationBefore > worldObjectPhysicsValue?.truckPenetrationAfter &&
           worldObjectPhysicsValue?.truckPenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.pairDistanceAfter > worldObjectPhysicsValue?.pairDistanceBefore &&
