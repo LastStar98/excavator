@@ -693,11 +693,24 @@ interface ExcavatorDebugApi {
     worldColliderCount: number;
     liftableCount: number;
     blockedCount: number;
+    liftableKindCount: number;
+    liftedKindCount: number;
+    liftedKinds: string[];
+    failedLiftKinds: string[];
     heaviestLiftableMass: number;
+    clodLifted: boolean;
+    clodLiftHeight: number;
+    rockLifted: boolean;
+    rockLiftHeight: number;
+    coneLifted: boolean;
+    coneLiftHeight: number;
     boulderLifted: boolean;
     boulderLiftHeight: number;
     fenceLifted: boolean;
     fenceLiftHeight: number;
+    twigEndpointLifted: boolean;
+    twigEndpointLiftHeight: number;
+    twigEndpointCenterOffset: number;
     pipeEndpointLifted: boolean;
     pipeEndpointLiftHeight: number;
     pipeEndpointCenterOffset: number;
@@ -7656,9 +7669,25 @@ class Simulator {
         const savedAngles = { ...this.angles };
         const savedPosition = this.excavator.group.position.clone();
         const savedRotation = this.excavator.group.rotation.clone();
-        const boulder = this.worldColliders.find((collider) => collider.kind === "boulder");
-        const fence = this.worldColliders.find((collider) => collider.kind === "fence" && collider.radius > 0.4);
-        const pipe = this.worldColliders.find((collider) => collider.kind === "pipe" && collider.capsule);
+        const requiredLiftableKinds: WorldColliderKind[] = ["clod", "rock", "cone", "boulder", "fence", "twig", "pipe"];
+        const pickRepresentative = (kind: WorldColliderKind): WorldCollider | undefined => {
+          let best: WorldCollider | undefined;
+          for (const collider of this.worldColliders) {
+            if (collider.kind !== kind || collider.immovable) {
+              continue;
+            }
+            if (kind === "fence" && collider.radius <= 0.4) {
+              continue;
+            }
+            if ((kind === "pipe" || kind === "twig") && !collider.capsule) {
+              continue;
+            }
+            if (!best || collider.mass > best.mass) {
+              best = collider;
+            }
+          }
+          return best ?? this.worldColliders.find((collider) => collider.kind === kind && !collider.immovable);
+        };
 
         const liftOne = (collider?: WorldCollider): { lifted: boolean; liftHeight: number } => {
           if (!collider) {
@@ -7766,9 +7795,28 @@ class Simulator {
           return { lifted, liftHeight, centerOffset };
         };
 
-        const boulderLift = liftOne(boulder);
-        const fenceLift = liftOne(fence);
-        const pipeEndpointLift = liftEndpoint(pipe);
+        const liftResults = new Map<WorldColliderKind, { lifted: boolean; liftHeight: number; centerOffset: number }>();
+        for (const kind of requiredLiftableKinds) {
+          const collider = pickRepresentative(kind);
+          const lift: { lifted: boolean; liftHeight: number; centerOffset?: number } =
+            kind === "pipe" || kind === "twig" ? liftEndpoint(collider) : liftOne(collider);
+          liftResults.set(kind, {
+            lifted: lift.lifted,
+            liftHeight: lift.liftHeight,
+            centerOffset: lift.centerOffset ?? 0,
+          });
+        }
+        const liftFor = (kind: WorldColliderKind) =>
+          liftResults.get(kind) ?? { lifted: false, liftHeight: 0, centerOffset: 0 };
+        const liftedKinds = requiredLiftableKinds.filter((kind) => liftFor(kind).lifted);
+        const failedLiftKinds = requiredLiftableKinds.filter((kind) => !liftFor(kind).lifted);
+        const clodLift = liftFor("clod");
+        const rockLift = liftFor("rock");
+        const coneLift = liftFor("cone");
+        const boulderLift = liftFor("boulder");
+        const fenceLift = liftFor("fence");
+        const twigEndpointLift = liftFor("twig");
+        const pipeEndpointLift = liftFor("pipe");
         this.excavator.group.position.copy(savedPosition);
         this.excavator.group.rotation.copy(savedRotation);
         Object.assign(this.angles, savedAngles);
@@ -7782,11 +7830,24 @@ class Simulator {
           worldColliderCount: this.worldColliders.length,
           liftableCount: liftable.length,
           blockedCount: blocked.length,
+          liftableKindCount: requiredLiftableKinds.length,
+          liftedKindCount: liftedKinds.length,
+          liftedKinds,
+          failedLiftKinds,
           heaviestLiftableMass: Math.max(...liftable.map((collider) => collider.mass)),
+          clodLifted: clodLift.lifted,
+          clodLiftHeight: clodLift.liftHeight,
+          rockLifted: rockLift.lifted,
+          rockLiftHeight: rockLift.liftHeight,
+          coneLifted: coneLift.lifted,
+          coneLiftHeight: coneLift.liftHeight,
           boulderLifted: boulderLift.lifted,
           boulderLiftHeight: boulderLift.liftHeight,
           fenceLifted: fenceLift.lifted,
           fenceLiftHeight: fenceLift.liftHeight,
+          twigEndpointLifted: twigEndpointLift.lifted,
+          twigEndpointLiftHeight: twigEndpointLift.liftHeight,
+          twigEndpointCenterOffset: twigEndpointLift.centerOffset,
           pipeEndpointLifted: pipeEndpointLift.lifted,
           pipeEndpointLiftHeight: pipeEndpointLift.liftHeight,
           pipeEndpointCenterOffset: pipeEndpointLift.centerOffset,

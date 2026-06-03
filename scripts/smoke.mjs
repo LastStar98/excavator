@@ -1084,10 +1084,22 @@ async function main() {
           liftableObjectAuditValue?.liftableCount === liftableObjectAuditValue?.worldColliderCount &&
           liftableObjectAuditValue?.blockedCount === 0 &&
           liftableObjectAuditValue?.heaviestLiftableMass > 5 &&
+          liftableObjectAuditValue?.liftableKindCount === 7 &&
+          liftableObjectAuditValue?.liftedKindCount === liftableObjectAuditValue?.liftableKindCount &&
+          liftableObjectAuditValue?.failedLiftKinds?.length === 0 &&
+          liftableObjectAuditValue?.clodLifted &&
+          liftableObjectAuditValue?.clodLiftHeight > 0.04 &&
+          liftableObjectAuditValue?.rockLifted &&
+          liftableObjectAuditValue?.rockLiftHeight > 0.04 &&
+          liftableObjectAuditValue?.coneLifted &&
+          liftableObjectAuditValue?.coneLiftHeight > 0.04 &&
           liftableObjectAuditValue?.boulderLifted &&
           liftableObjectAuditValue?.boulderLiftHeight > 0.04 &&
           liftableObjectAuditValue?.fenceLifted &&
           liftableObjectAuditValue?.fenceLiftHeight > 0.04 &&
+          liftableObjectAuditValue?.twigEndpointLifted &&
+          liftableObjectAuditValue?.twigEndpointLiftHeight > 0.04 &&
+          liftableObjectAuditValue?.twigEndpointCenterOffset > 0.2 &&
           liftableObjectAuditValue?.pipeEndpointLifted &&
           liftableObjectAuditValue?.pipeEndpointLiftHeight > 0.04 &&
           liftableObjectAuditValue?.pipeEndpointCenterOffset > 0.4 &&
