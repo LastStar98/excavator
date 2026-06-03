@@ -326,6 +326,22 @@ interface ExcavatorDebugApi {
     obstacleTravel: number;
     activeFlowAfter: number;
   };
+  forceBucketSoilNoDragPhysics: () => {
+    emptyBucketVelocity: number;
+    loadedBucketVelocity: number;
+    velocityDelta: number;
+    emptyPressure: number;
+    loadedPressure: number;
+    pressureDelta: number;
+    dumpedVolume: number;
+    remainingBucketLoad: number;
+    dumpAverageStepMs: number;
+    dumpMaxStepMs: number;
+    soilDynamicCollisionBudget: number;
+    fineGrainDynamicCollisionBudget: number;
+    activeSoilParticles: number;
+    activeFineGrains: number;
+  };
   forceBucketKinematics: () => {
     edgeWidth: number;
     pocketBehindEdge: number;
@@ -5743,6 +5759,86 @@ class Simulator {
           obstacleImpulse,
           obstacleTravel,
           activeFlowAfter: this.soilParticles.filter((particle) => particle.toBucket).length,
+        };
+      },
+      forceBucketSoilNoDragPhysics: () => {
+        const runHydraulicResponse = (load: number) => {
+          this.bucketLoad = load;
+          this.bucketTransitLoad = 0;
+          this.excavator.setBucketLoad(this.bucketLoad);
+          this.bucketLoadSlumpAccumulator = 0;
+          this.pressure = 0;
+          Object.assign(this.velocities, { swing: 0, boom: 0, stick: 0, bucket: 0 });
+          Object.assign(this.targetActions, { swing: 0, boom: 0, stick: 0, bucket: -1 });
+          for (let step = 0; step < 28; step += 1) {
+            this.updateHydraulics(1 / 60, {
+              leftX: 0,
+              leftY: 0,
+              rightX: 0,
+              rightY: 0,
+              leftTrack: 0,
+              rightTrack: 0,
+            });
+          }
+          return { bucketVelocity: this.velocities.bucket, pressure: this.pressure };
+        };
+
+        const empty = runHydraulicResponse(0);
+        const loaded = runHydraulicResponse(BUCKET_CAPACITY * 0.92);
+        this.bucketLoad = BUCKET_CAPACITY * 0.88;
+        this.bucketTransitLoad = 0;
+        this.bucketLoadSlumpAccumulator = 0;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        Object.assign(this.angles, { swing: 0, boom: 0.42, stick: -1.08, bucket: ANGLE_LIMITS.bucket.max });
+        this.excavator.applyAngles(this.angles);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.velocities.bucket = 0.62;
+
+        const bucketLoadBeforeDump = this.bucketLoad;
+        let totalStepMs = 0;
+        let dumpMaxStepMs = 0;
+        let dumpSteps = 0;
+        for (let step = 0; step < 36 && this.bucketLoad > 0.002; step += 1) {
+          const started = performance.now();
+          this.spillBucketLoadToWorld(1 / 60, 3.1, 1.1, this.bucketLoad);
+          this.updateSoilParticles(1 / 60);
+          this.updateFineGrains(1 / 60);
+          const elapsed = performance.now() - started;
+          totalStepMs += elapsed;
+          dumpMaxStepMs = Math.max(dumpMaxStepMs, elapsed);
+          dumpSteps += 1;
+        }
+        const dumpedVolume = Math.max(0, bucketLoadBeforeDump - this.bucketLoad);
+        const remainingBucketLoad = this.bucketLoad;
+        const activeSoilParticles = this.soilParticles.length;
+        const activeFineGrains = this.fineGrainCount();
+        this.clearFineGrains();
+        for (const particle of [...this.soilParticles]) {
+          this.recycleSoilParticle(particle);
+        }
+        this.soilParticles.length = 0;
+        this.bucketLoad = 0;
+        this.bucketTransitLoad = 0;
+        this.excavator.setBucketLoad(0);
+        Object.assign(this.targetActions, { swing: 0, boom: 0, stick: 0, bucket: 0 });
+        Object.assign(this.velocities, { swing: 0, boom: 0, stick: 0, bucket: 0 });
+        this.updateUi(0);
+
+        return {
+          emptyBucketVelocity: empty.bucketVelocity,
+          loadedBucketVelocity: loaded.bucketVelocity,
+          velocityDelta: Math.abs(empty.bucketVelocity - loaded.bucketVelocity),
+          emptyPressure: empty.pressure,
+          loadedPressure: loaded.pressure,
+          pressureDelta: Math.abs(empty.pressure - loaded.pressure),
+          dumpedVolume,
+          remainingBucketLoad,
+          dumpAverageStepMs: totalStepMs / Math.max(dumpSteps, 1),
+          dumpMaxStepMs,
+          soilDynamicCollisionBudget: SOIL_DYNAMIC_COLLISION_BUDGET,
+          fineGrainDynamicCollisionBudget: FINE_GRAIN_DYNAMIC_COLLISION_BUDGET,
+          activeSoilParticles,
+          activeFineGrains,
         };
       },
       forceBucketKinematics: () => {

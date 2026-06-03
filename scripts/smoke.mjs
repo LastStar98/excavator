@@ -326,6 +326,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const bucketSoilNoDragPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceBucketSoilNoDragPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const bucketKinematics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceBucketKinematics()`,
       returnByValue: true,
@@ -672,6 +677,7 @@ async function main() {
     const fineGrainSettlementValue = fineGrainSettlement.result.value;
     const soilPushValue = soilPush.result.value;
     const cuttingFlowPhysicsValue = cuttingFlowPhysics.result.value;
+    const bucketSoilNoDragPhysicsValue = bucketSoilNoDragPhysics.result.value;
     const bucketKinematicsValue = bucketKinematics.result.value;
     const bucketLoadSurfacePhysicsValue = bucketLoadSurfacePhysics.result.value;
     const bucketDirectionalDigPhysicsValue = bucketDirectionalDigPhysics.result.value;
@@ -884,6 +890,21 @@ async function main() {
           cuttingFlowPhysicsValue?.obstacleImpulse === 0 &&
           cuttingFlowPhysicsValue?.obstacleTravel === 0 &&
           cuttingFlowPhysicsValue?.activeFlowAfter === 0,
+      ],
+      [
+        "bucket soil load and dump do not slow controls",
+        Math.abs(bucketSoilNoDragPhysicsValue?.emptyBucketVelocity ?? 0) > 0.35 &&
+          Math.abs(bucketSoilNoDragPhysicsValue?.loadedBucketVelocity ?? 0) > 0.35 &&
+          (bucketSoilNoDragPhysicsValue?.velocityDelta ?? 1) < 0.00001 &&
+          (bucketSoilNoDragPhysicsValue?.pressureDelta ?? 1) < 0.00001 &&
+          bucketSoilNoDragPhysicsValue?.soilDynamicCollisionBudget === 0 &&
+          bucketSoilNoDragPhysicsValue?.fineGrainDynamicCollisionBudget === 0 &&
+          bucketSoilNoDragPhysicsValue?.dumpedVolume > 1.0 &&
+          bucketSoilNoDragPhysicsValue?.remainingBucketLoad < 0.01 &&
+          bucketSoilNoDragPhysicsValue?.activeSoilParticles <= 6 &&
+          bucketSoilNoDragPhysicsValue?.activeFineGrains <= 20 &&
+          bucketSoilNoDragPhysicsValue?.dumpAverageStepMs < 4 &&
+          bucketSoilNoDragPhysicsValue?.dumpMaxStepMs < 16,
       ],
       [
         "bucket linkage and scoop geometry are coherent",
@@ -1443,6 +1464,7 @@ async function main() {
           fineGrainSettlement: fineGrainSettlementValue,
           soilPush: soilPushValue,
           cuttingFlowPhysics: cuttingFlowPhysicsValue,
+          bucketSoilNoDragPhysics: bucketSoilNoDragPhysicsValue,
           bucketKinematics: bucketKinematicsValue,
           bucketLoadSurfacePhysics: bucketLoadSurfacePhysicsValue,
           bucketDirectionalDigPhysics: bucketDirectionalDigPhysicsValue,
