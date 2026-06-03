@@ -88,10 +88,17 @@ interface WorldCollider {
   velocity: THREE.Vector3;
   angularVelocity: THREE.Vector3;
   sleeping: boolean;
+  groundLoadCooldown: number;
   initialPosition: THREE.Vector3;
   initialQuaternion: THREE.Quaternion;
   initialScale: THREE.Vector3;
   gridStamp: number;
+}
+
+interface ObjectFootprintCompaction {
+  compacted: number;
+  rutDrop: number;
+  bermRise: number;
 }
 
 interface TrackSupportSample {
@@ -513,6 +520,11 @@ interface ExcavatorDebugApi {
     pairDistanceBefore: number;
     pairDistanceAfter: number;
     pairAngularSpeed: number;
+    softGroundDrop: number;
+    hardGroundDrop: number;
+    softRutDrop: number;
+    hardRutDrop: number;
+    objectBermRise: number;
     collisionCount: number;
     pressure: number;
   };
@@ -1362,6 +1374,80 @@ class HeightfieldTerrain {
       compacted,
       rutDrop: weightTotal > 0 ? weightedDrop / weightTotal : 0,
       bermRise: Math.max(0, afterBerm - beforeBerm),
+    };
+  }
+
+  compactObjectFootprint(center: THREE.Vector3, radius: number, mass: number, impactSpeed: number, dt: number): ObjectFootprintCompaction {
+    const footprintRadius = Math.max(0.12, radius);
+    const surface = this.getSurfaceConditionAt(center.x, center.z);
+    const disturbedDepth = this.getDisturbedDepthAt(center.x, center.z);
+    const bearingArea = Math.PI * footprintRadius * footprintRadius;
+    const bearingStress = Math.max(0, mass) / Math.max(bearingArea, 0.018);
+    const yieldFactor = clamp(
+      0.18 + surface.wetness * 1.08 + disturbedDepth * 0.26 + (1 - surface.hardpack) * 0.24 - surface.compaction * 0.26,
+      0.05,
+      1.45,
+    );
+    const impactFactor = clamp(0.28 + Math.max(0, impactSpeed) * 0.55 + dt * 0.9, 0.18, 1.15);
+    const targetDepth = clamp(bearingStress * yieldFactor * impactFactor * 0.00072, 0, Math.min(0.038, footprintRadius * 0.13));
+    if (targetDepth <= 0.00008) {
+      return { compacted: 0, rutDrop: 0, bermRise: 0 };
+    }
+
+    const bermRadius = footprintRadius * 1.72;
+    const range = this.gridRange(center.x, center.z, bermRadius + this.spacing);
+    const cellArea = this.spacing * this.spacing;
+    const bermWeights: Array<[number, number]> = [];
+    let compacted = 0;
+    let weightedDrop = 0;
+    let dropWeight = 0;
+    let bermWeightTotal = 0;
+
+    for (let iz = range.minZ; iz <= range.maxZ; iz += 1) {
+      for (let ix = range.minX; ix <= range.maxX; ix += 1) {
+        const idx = this.index(ix, iz);
+        const x = -this.size / 2 + ix * this.spacing;
+        const z = -this.size / 2 + iz * this.spacing;
+        const dist = Math.hypot(x - center.x, z - center.z);
+        if (dist <= footprintRadius) {
+          const falloff = Math.pow(1 - dist / footprintRadius, 1.55);
+          const maxLower = Math.max(0, this.heights[idx] - SOIL_BEDROCK_FLOOR);
+          const delta = Math.min(targetDepth * (0.35 + falloff * 0.65), maxLower);
+          if (delta > 0) {
+            this.heights[idx] -= delta;
+            compacted += delta * cellArea;
+            weightedDrop += delta * (0.35 + falloff);
+            dropWeight += 0.35 + falloff;
+          }
+        } else if (dist <= bermRadius) {
+          const ringT = (dist - footprintRadius) / Math.max(bermRadius - footprintRadius, 0.001);
+          const weight = Math.pow(Math.sin(Math.PI * ringT), 1.4);
+          if (weight > 0.001) {
+            bermWeights.push([idx, weight]);
+            bermWeightTotal += weight;
+          }
+        }
+      }
+    }
+
+    if (compacted <= 0) {
+      return { compacted: 0, rutDrop: 0, bermRise: 0 };
+    }
+
+    const beforeBermHeight = this.getHeightAt(center.x + footprintRadius * 1.18, center.z);
+    const displacedVolume = compacted * clamp(0.1 + surface.wetness * 0.12 + Math.max(0, impactSpeed) * 0.025 - surface.hardpack * 0.06, 0.06, 0.24);
+    if (bermWeightTotal > 0 && displacedVolume > 0) {
+      for (const [idx, weight] of bermWeights) {
+        this.heights[idx] += (displacedVolume * weight) / bermWeightTotal / cellArea;
+      }
+    }
+
+    this.relaxSlopes(range, 1);
+    const afterBermHeight = this.getHeightAt(center.x + footprintRadius * 1.18, center.z);
+    return {
+      compacted,
+      rutDrop: dropWeight > 0 ? weightedDrop / dropWeight : targetDepth,
+      bermRise: Math.max(0, afterBermHeight - beforeBermHeight),
     };
   }
 
@@ -3481,6 +3567,7 @@ class Simulator {
       velocity: new THREE.Vector3(),
       angularVelocity: new THREE.Vector3(),
       sleeping: !(options.immovable ?? false),
+      groundLoadCooldown: 0,
       initialPosition: mesh.position.clone(),
       initialQuaternion: mesh.quaternion.clone(),
       initialScale: mesh.scale.clone(),
@@ -3502,6 +3589,7 @@ class Simulator {
       collider.mesh.scale.copy(collider.initialScale);
       collider.velocity.set(0, 0, 0);
       collider.angularVelocity.set(0, 0, 0);
+      collider.groundLoadCooldown = 0;
       collider.sleeping = !collider.immovable;
       if (!collider.immovable) {
         const support = this.worldColliderTerrainSupport(collider);
@@ -3693,6 +3781,16 @@ class Simulator {
       this.wakeWorldCollidersNear(center, length * 0.5 + width + 0.7);
     }
     return result;
+  }
+
+  private compactWorldObjectFootprint(collider: WorldCollider, center: THREE.Vector3, impactSpeed: number, dt: number): ObjectFootprintCompaction {
+    if (dt <= 0 || collider.mass <= 0.45) {
+      return { compacted: 0, rutDrop: 0, bermRise: 0 };
+    }
+    const footprintRadius = collider.capsule
+      ? Math.max(collider.capsule.radius * 1.65, Math.min(collider.radius * 0.38, 0.62))
+      : Math.max(collider.radius * 0.82, 0.14);
+    return this.terrain.compactObjectFootprint(center, footprintRadius, collider.mass, impactSpeed, dt);
   }
 
   private raiseTerrainWithWake(center: THREE.Vector3, radius: number, volume: number, relaxPasses = 2): number {
@@ -5805,6 +5903,11 @@ class Simulator {
         let pairDistanceBefore = 0;
         let pairDistanceAfter = 0;
         let pairAngularSpeed = 0;
+        let softGroundDrop = 0;
+        let hardGroundDrop = 0;
+        let softRutDrop = 0;
+        let hardRutDrop = 0;
+        let objectBermRise = 0;
         let trackContactCount = 0;
         let cornerContacts = 0;
         let movedMass = 0;
@@ -6024,6 +6127,54 @@ class Simulator {
           pairAngularSpeed = debris.angularVelocity.length() + hard.angularVelocity.length();
         }
 
+        if (hard) {
+          const measureGroundLoad = (x: number, z: number) => {
+            const savedPosition = hard.mesh.position.clone();
+            const savedQuaternion = hard.mesh.quaternion.clone();
+            const savedVelocity = hard.velocity.clone();
+            const savedAngularVelocity = hard.angularVelocity.clone();
+            const savedSleeping = hard.sleeping;
+            const savedGroundLoadCooldown = hard.groundLoadCooldown;
+            const groundBefore = this.terrain.getHeightAt(x, z);
+            hard.mesh.position.set(x, groundBefore + hard.groundOffset - 0.055, z);
+            hard.velocity.set(0.08, -0.82, -0.04);
+            hard.angularVelocity.set(0, 0, 0);
+            hard.sleeping = false;
+            hard.groundLoadCooldown = 0;
+            this.worldColliderGridDirty = true;
+            for (let i = 0; i < 3; i += 1) {
+              this.updateLooseWorldObjects(0.08);
+            }
+            const groundAfter = this.terrain.getHeightAt(x, z);
+            const berm = Math.max(
+              this.terrain.getHeightAt(x + hard.radius * 1.1, z),
+              this.terrain.getHeightAt(x - hard.radius * 1.1, z),
+              this.terrain.getHeightAt(x, z + hard.radius * 1.1),
+              this.terrain.getHeightAt(x, z - hard.radius * 1.1),
+            );
+            hard.mesh.position.copy(savedPosition);
+            hard.mesh.quaternion.copy(savedQuaternion);
+            hard.velocity.copy(savedVelocity);
+            hard.angularVelocity.copy(savedAngularVelocity);
+            hard.sleeping = savedSleeping;
+            hard.groundLoadCooldown = savedGroundLoadCooldown;
+            this.worldColliderGridDirty = true;
+            const groundDrop = Math.max(0, groundBefore - groundAfter);
+            return {
+              groundDrop,
+              rutDrop: groundDrop,
+              bermRise: Math.max(0, berm - groundAfter),
+            };
+          };
+          const softLoad = measureGroundLoad(9.8, -8.8);
+          const hardLoad = measureGroundLoad(-52.0, 42.0);
+          softGroundDrop = softLoad.groundDrop;
+          hardGroundDrop = hardLoad.groundDrop;
+          softRutDrop = softLoad.rutDrop;
+          hardRutDrop = hardLoad.rutDrop;
+          objectBermRise = Math.max(softLoad.bermRise, hardLoad.bermRise);
+        }
+
         this.updateExcavatorSupport(0.3, forward);
         this.updateUi(0);
         return {
@@ -6060,6 +6211,11 @@ class Simulator {
           pairDistanceBefore,
           pairDistanceAfter,
           pairAngularSpeed,
+          softGroundDrop,
+          hardGroundDrop,
+          softRutDrop,
+          hardRutDrop,
+          objectBermRise,
           collisionCount: this.collisionCount,
           pressure: this.pressure,
         };
@@ -7808,6 +7964,7 @@ class Simulator {
       const dzBucket = pos.z - bucket.z;
       const speedSq = collider.velocity.lengthSq();
       const angularSpeedSq = collider.angularVelocity.lengthSq();
+      collider.groundLoadCooldown = Math.max(0, collider.groundLoadCooldown - dt);
       const bucketWakeRadius = collider.radius + 1.28;
       const nearActiveBucket = dxBucket * dxBucket + dyBucket * dyBucket + dzBucket * dzBucket < bucketWakeRadius * bucketWakeRadius;
       const nearCrawlerBody = dxMachine * dxMachine + dzMachine * dzMachine < 5.8;
@@ -7833,8 +7990,24 @@ class Simulator {
 
       const groundSupport = this.worldColliderTerrainSupport(collider);
       if (groundSupport.penetration > 0) {
-        pos.addScaledVector(groundSupport.normal, Math.min(groundSupport.penetration + 0.0015, 0.34));
         const normalSpeed = collider.velocity.dot(groundSupport.normal);
+        const contactLoad = Math.max(0, -normalSpeed) + clamp(groundSupport.penetration * 1.25, 0, 0.5);
+        const shouldCompactFootprint =
+          collider.groundLoadCooldown <= 0 &&
+          collider.mass >= 1.8 &&
+          (contactLoad > 0.12 || groundSupport.penetration > 0.032);
+        const footprint = shouldCompactFootprint
+          ? this.compactWorldObjectFootprint(collider, groundSupport.point, contactLoad, dt)
+          : { compacted: 0, rutDrop: 0, bermRise: 0 };
+        if (footprint.compacted > 0) {
+          collider.groundLoadCooldown = 0.42;
+        }
+        const resolvedPenetration = Math.max(0, groundSupport.penetration - footprint.rutDrop * 0.72);
+        pos.addScaledVector(groundSupport.normal, Math.min(resolvedPenetration + 0.0015, 0.34));
+        if (footprint.compacted > 0) {
+          activeObjectMoved = true;
+          this.pressure = Math.max(this.pressure, clamp(0.08 + footprint.rutDrop * 3.8 + footprint.bermRise * 1.6, 0, 0.64));
+        }
         const tangent = collider.velocity.clone().addScaledVector(groundSupport.normal, -normalSpeed);
         const groundFriction = 1 - Math.min(dt * (1.2 + collider.friction * 3.4), 0.32);
         if (normalSpeed < -0.05) {

@@ -1132,6 +1132,10 @@ async function main() {
           worldObjectPhysicsValue?.truckPenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.pairDistanceAfter > worldObjectPhysicsValue?.pairDistanceBefore &&
           worldObjectPhysicsValue?.pairAngularSpeed > 0.01 &&
+          worldObjectPhysicsValue?.softGroundDrop > 0.001 &&
+          worldObjectPhysicsValue?.softGroundDrop > worldObjectPhysicsValue?.hardGroundDrop * 1.35 &&
+          worldObjectPhysicsValue?.softRutDrop > worldObjectPhysicsValue?.hardRutDrop * 1.35 &&
+          worldObjectPhysicsValue?.objectBermRise > 0.0004 &&
           worldObjectPhysicsValue?.pressure > 0.35,
       ],
       [
