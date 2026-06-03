@@ -331,6 +331,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const bucketShellPhysics = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceBucketShellPhysics()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const hydraulicLinkagePhysics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceHydraulicLinkagePhysics()`,
       returnByValue: true,
@@ -653,6 +658,7 @@ async function main() {
     const cuttingFlowPhysicsValue = cuttingFlowPhysics.result.value;
     const bucketKinematicsValue = bucketKinematics.result.value;
     const bucketLoadSurfacePhysicsValue = bucketLoadSurfacePhysics.result.value;
+    const bucketShellPhysicsValue = bucketShellPhysics.result.value;
     const hydraulicLinkagePhysicsValue = hydraulicLinkagePhysics.result.value;
     const trackPassValue = trackPass.result.value;
     const pitSinkValue = pitSink.result.value;
@@ -862,6 +868,17 @@ async function main() {
           bucketLoadSurfacePhysicsValue?.objectTravel > 0.01 &&
           bucketLoadSurfacePhysicsValue?.objectVelocity > 0.004 &&
           bucketLoadSurfacePhysicsValue?.pressure > 0.1,
+      ],
+      [
+        "empty bucket metal shell collides as a solid scoop",
+        bucketShellPhysicsValue?.bucketSampleCount >= 22 &&
+          bucketShellPhysicsValue?.floorPenetrationBefore > bucketShellPhysicsValue?.floorPenetrationAfter + 0.02 &&
+          bucketShellPhysicsValue?.floorPenetrationAfter < 0.05 &&
+          bucketShellPhysicsValue?.floorTravel > 0.015 &&
+          bucketShellPhysicsValue?.sidePenetrationBefore > bucketShellPhysicsValue?.sidePenetrationAfter + 0.02 &&
+          bucketShellPhysicsValue?.sidePenetrationAfter < 0.05 &&
+          bucketShellPhysicsValue?.sideTravel > 0.015 &&
+          bucketShellPhysicsValue?.pressure > 0.1,
       ],
       [
         "hydraulic cylinders and bucket links participate in physics",
@@ -1251,6 +1268,7 @@ async function main() {
           cuttingFlowPhysics: cuttingFlowPhysicsValue,
           bucketKinematics: bucketKinematicsValue,
           bucketLoadSurfacePhysics: bucketLoadSurfacePhysicsValue,
+          bucketShellPhysics: bucketShellPhysicsValue,
           hydraulicLinkagePhysics: hydraulicLinkagePhysicsValue,
           trackPass: trackPassValue,
           pitSink: pitSinkValue,

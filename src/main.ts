@@ -285,6 +285,16 @@ interface ExcavatorDebugApi {
     objectVelocity: number;
     pressure: number;
   };
+  forceBucketShellPhysics: () => {
+    bucketSampleCount: number;
+    floorPenetrationBefore: number;
+    floorPenetrationAfter: number;
+    floorTravel: number;
+    sidePenetrationBefore: number;
+    sidePenetrationAfter: number;
+    sideTravel: number;
+    pressure: number;
+  };
   forceHydraulicLinkagePhysics: () => {
     sampleCount: number;
     subsoilSampleCount: number;
@@ -2628,7 +2638,37 @@ class ExcavatorModel {
       { action: "bucket", point: this.bucketPocketWorld(), radius: 0.28 },
       ...this.bucketCuttingEdgeWorld().map((point) => ({ action: "bucket" as const, point, radius: 0.16 })),
     );
+    samples.push(...this.bucketShellCollisionSamples(1));
     samples.push(...this.hydraulicCollisionSamples());
+    return samples;
+  }
+
+  bucketShellCollisionSamples(radiusScale = 1): ArmCollisionSample[] {
+    const samples: ArmCollisionSample[] = [];
+    const add = (key: string, local: THREE.Vector3, radius: number): void => {
+      samples.push({
+        key,
+        action: "bucket",
+        point: this.bucketGroup.localToWorld(local),
+        radius: radius * radiusScale,
+      });
+    };
+
+    for (const x of [-0.96, -0.68, -0.38]) {
+      for (const z of [-0.34, 0, 0.34]) {
+        add(`bucket-floor-${x}-${z}`, new THREE.Vector3(x, -0.5, z), 0.13);
+      }
+    }
+    for (const z of [-0.52, 0.52]) {
+      for (const x of [-0.94, -0.62, -0.28]) {
+        add(`bucket-side-${x}-${z}`, new THREE.Vector3(x, -0.34, z), 0.12);
+      }
+      add(`bucket-side-lip-${z}`, new THREE.Vector3(-1.12, -0.48, z), 0.11);
+    }
+    for (const z of [-0.34, 0, 0.34]) {
+      add(`bucket-back-${z}`, new THREE.Vector3(0.16, -0.2, z), 0.14);
+      add(`bucket-lip-${z}`, new THREE.Vector3(-1.18, -0.5, z), 0.13);
+    }
     return samples;
   }
 
@@ -2700,12 +2740,12 @@ class ExcavatorModel {
         radius: 0.18,
       });
     }
-    for (const z of [-0.28, 0, 0.28]) {
+    for (const sample of this.bucketShellCollisionSamples(0.9)) {
       samples.push({
-        key: `bucket-shell-${z}`,
+        key: sample.key ?? `bucket-shell-${samples.length}`,
         action: "bucket",
-        point: this.bucketGroup.localToWorld(new THREE.Vector3(-0.58, -0.2, z)),
-        radius: 0.24,
+        point: sample.point,
+        radius: sample.radius,
       });
     }
     samples.push(
@@ -4644,6 +4684,82 @@ class Simulator {
           objectTravel,
           objectVelocity,
           pressure: this.pressure,
+        };
+      },
+      forceBucketShellPhysics: () => {
+        const savedAngles = { ...this.angles };
+        const savedMachinePosition = this.excavator.group.position.clone();
+        const savedMachineRotation = this.excavator.group.rotation.clone();
+        const savedBucketLoad = this.bucketLoad;
+        const savedTransitLoad = this.bucketTransitLoad;
+        const savedPressure = this.pressure;
+        const obstacle =
+          this.worldColliders.find((collider) => collider.kind === "boulder") ??
+          this.worldColliders.find((collider) => collider.kind === "rock");
+
+        this.bucketLoad = 0;
+        this.bucketTransitLoad = 0;
+        this.pressure = 0;
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.group.rotation.set(0, 0, 0);
+        Object.assign(this.angles, { swing: 0, boom: 0.54, stick: -1.16, bucket: -2.16 });
+        this.excavator.applyAngles(this.angles);
+        this.excavator.setBucketLoad(0);
+
+        const probeShell = (local: THREE.Vector3): { before: number; after: number; travel: number } => {
+          if (!obstacle) {
+            return { before: 0, after: 0, travel: 0 };
+          }
+          const savedPosition = obstacle.mesh.position.clone();
+          const savedQuaternion = obstacle.mesh.quaternion.clone();
+          const savedScale = obstacle.mesh.scale.clone();
+          const savedVelocity = obstacle.velocity.clone();
+          const savedSleeping = obstacle.sleeping;
+
+          obstacle.mesh.position.copy(this.excavator.bucketGroup.localToWorld(local.clone()));
+          obstacle.velocity.set(0, 0, 0);
+          obstacle.sleeping = false;
+          this.worldColliderGridDirty = true;
+          const before = this.resolveLooseObjectExcavatorHit(obstacle)?.penetration ?? 0;
+          const beforePosition = obstacle.mesh.position.clone();
+          this.resolveLooseObjectExcavatorCollision(obstacle);
+          const after = this.resolveLooseObjectExcavatorHit(obstacle)?.penetration ?? 0;
+          const travel = obstacle.mesh.position.distanceTo(beforePosition);
+
+          obstacle.mesh.position.copy(savedPosition);
+          obstacle.mesh.quaternion.copy(savedQuaternion);
+          obstacle.mesh.scale.copy(savedScale);
+          obstacle.velocity.copy(savedVelocity);
+          obstacle.sleeping = savedSleeping;
+          this.worldColliderGridDirty = true;
+          return { before, after, travel };
+        };
+
+        const floor = probeShell(new THREE.Vector3(-0.68, -0.5, 0));
+        const side = probeShell(new THREE.Vector3(-0.62, -0.34, 0.52));
+        const measuredPressure = this.pressure;
+        const bucketSampleCount = this.excavator.armCollisionSamples().filter((sample) => sample.action === "bucket").length;
+
+        this.bucketLoad = savedBucketLoad;
+        this.bucketTransitLoad = savedTransitLoad;
+        this.pressure = savedPressure;
+        this.excavator.group.position.copy(savedMachinePosition);
+        this.excavator.group.rotation.copy(savedMachineRotation);
+        Object.assign(this.angles, savedAngles);
+        this.excavator.applyAngles(this.angles);
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.updateUi(0);
+
+        return {
+          bucketSampleCount,
+          floorPenetrationBefore: floor.before,
+          floorPenetrationAfter: floor.after,
+          floorTravel: floor.travel,
+          sidePenetrationBefore: side.before,
+          sidePenetrationAfter: side.after,
+          sideTravel: side.travel,
+          pressure: measuredPressure,
         };
       },
       forceHydraulicLinkagePhysics: () => {
@@ -7648,7 +7764,7 @@ class Simulator {
 
     const responseNormal = hit.normal.clone().normalize();
     let maxPenetration = hit.penetration;
-    for (let i = 0; i < 2 && hit; i += 1) {
+    for (let i = 0; i < 3 && hit; i += 1) {
       const normal = hit.normal.clone().normalize();
       maxPenetration = Math.max(maxPenetration, hit.penetration);
       collider.mesh.position.addScaledVector(normal, Math.min(hit.penetration + 0.004, 0.42));
