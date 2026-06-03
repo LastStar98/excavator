@@ -1005,6 +1005,9 @@ async function main() {
           armWorldObjectPhysicsValue?.heavyLifted &&
           armWorldObjectPhysicsValue?.heavyLiftHeight > 0.04 &&
           armWorldObjectPhysicsValue?.heavyCarriedMass > 1 &&
+          armWorldObjectPhysicsValue?.heavyOrientationDelta > 0.04 &&
+          armWorldObjectPhysicsValue?.bucketOrientationDelta > 0.04 &&
+          armWorldObjectPhysicsValue?.orientationDeltaError < 0.03 &&
           armWorldObjectPhysicsValue?.carriedTruckReleased &&
           armWorldObjectPhysicsValue?.carriedTruckPenetrationBefore > armWorldObjectPhysicsValue?.carriedTruckPenetrationAfter &&
           armWorldObjectPhysicsValue?.carriedTruckPenetrationAfter < 0.04 &&

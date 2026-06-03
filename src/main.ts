@@ -418,6 +418,9 @@ interface ExcavatorDebugApi {
     carriedTruckPenetrationBefore: number;
     carriedTruckPenetrationAfter: number;
     carriedObjectImpulse: number;
+    heavyOrientationDelta: number;
+    bucketOrientationDelta: number;
+    orientationDeltaError: number;
     immovableBlocked: boolean;
     beforeStick: number;
     afterStick: number;
@@ -3249,6 +3252,7 @@ class Simulator {
   private readonly worldColliders: WorldCollider[] = [];
   private readonly carriedWorldColliders = new Map<WorldCollider, THREE.Vector3>();
   private readonly carriedWorldPreviousPositions = new Map<WorldCollider, THREE.Vector3>();
+  private readonly carriedWorldLocalQuaternions = new Map<WorldCollider, THREE.Quaternion>();
   private readonly looseSoilMats = [
     makeMat(0x6d4c2c, 0.95, 0.02),
     makeMat(0x855f36, 0.94, 0.02),
@@ -3469,6 +3473,7 @@ class Simulator {
   private resetWorldColliders(): void {
     this.carriedWorldColliders.clear();
     this.carriedWorldPreviousPositions.clear();
+    this.carriedWorldLocalQuaternions.clear();
     for (const collider of this.worldColliders) {
       collider.mesh.position.copy(collider.initialPosition);
       collider.mesh.quaternion.copy(collider.initialQuaternion);
@@ -5334,6 +5339,9 @@ class Simulator {
         let carriedTruckPenetrationBefore = 0;
         let carriedTruckPenetrationAfter = 0;
         let carriedObjectImpulse = 0;
+        let heavyOrientationDelta = 0;
+        let bucketOrientationDelta = 0;
+        let orientationDeltaError = 0;
         let immovableBlocked = false;
         let beforeStick = 0;
         let afterStick = 0;
@@ -5390,10 +5398,15 @@ class Simulator {
           const result = this.resolveArmWorldObjectCollisions(previousAngles);
           const carriedAfterHit = this.carriedWorldColliders.has(hard);
           const beforeLiftY = hard.mesh.position.y;
+          const heavyQuaternionBeforeLift = hard.mesh.quaternion.clone();
+          const bucketQuaternionBeforeLift = this.excavator.bucketGroup.getWorldQuaternion(new THREE.Quaternion());
           Object.assign(this.angles, { boom: this.angles.boom + 0.2, stick: this.angles.stick + 0.04 });
           this.velocities.boom = 0.42;
           this.excavator.applyAngles(this.angles);
           this.updateCarriedWorldObjects(0.34);
+          heavyOrientationDelta = heavyQuaternionBeforeLift.angleTo(hard.mesh.quaternion);
+          bucketOrientationDelta = bucketQuaternionBeforeLift.angleTo(this.excavator.bucketGroup.getWorldQuaternion(new THREE.Quaternion()));
+          orientationDeltaError = Math.abs(heavyOrientationDelta - bucketOrientationDelta);
           afterStick = this.angles.stick;
           velocityAfter = this.velocities.stick;
           blockedActions = result.blockedActions;
@@ -5408,6 +5421,7 @@ class Simulator {
         if (debris) {
           this.carriedWorldColliders.clear();
           this.carriedWorldPreviousPositions.clear();
+          this.carriedWorldLocalQuaternions.clear();
           Object.assign(this.angles, { swing: 0, boom: 0.44, stick: -1.46, bucket: -2.24 });
           this.excavator.applyAngles(this.angles);
           const local = new THREE.Vector3(-0.56, -0.28, 0);
@@ -5418,8 +5432,7 @@ class Simulator {
           debris.mesh.position.copy(truckTarget);
           debris.velocity.set(0, 0, 0);
           debris.sleeping = false;
-          this.carriedWorldColliders.set(debris, local);
-          this.carriedWorldPreviousPositions.set(debris, truckTarget.clone().add(new THREE.Vector3(-0.42, 0, 0)));
+          this.carryWorldColliderAt(debris, local, truckTarget.clone().add(new THREE.Vector3(-0.42, 0, 0)));
           this.collisionCooldown = 0;
           carriedTruckPenetrationBefore = this.truck.resolveSolidCollision(debris.mesh.position, debris.radius)?.penetration ?? 0;
           this.updateCarriedWorldObjects(0.08);
@@ -5431,6 +5444,7 @@ class Simulator {
         if (debris && hard) {
           this.carriedWorldColliders.clear();
           this.carriedWorldPreviousPositions.clear();
+          this.carriedWorldLocalQuaternions.clear();
           this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
           Object.assign(this.angles, { swing: 0, boom: 0.48, stick: -1.5, bucket: -2.36 });
           this.excavator.applyAngles(this.angles);
@@ -5447,8 +5461,7 @@ class Simulator {
           hard.velocity.set(0, 0, 0);
           debris.sleeping = false;
           hard.sleeping = false;
-          this.carriedWorldColliders.set(debris, local);
-          this.carriedWorldPreviousPositions.set(debris, target.clone().add(new THREE.Vector3(-0.36, 0, 0)));
+          this.carryWorldColliderAt(debris, local, target.clone().add(new THREE.Vector3(-0.36, 0, 0)));
           this.updateCarriedWorldObjects(0.08);
           carriedObjectImpulse = hard.velocity.length();
           this.releaseCarriedWorldObjects();
@@ -5470,6 +5483,9 @@ class Simulator {
           carriedTruckPenetrationBefore,
           carriedTruckPenetrationAfter,
           carriedObjectImpulse,
+          heavyOrientationDelta,
+          bucketOrientationDelta,
+          orientationDeltaError,
           immovableBlocked,
           beforeStick,
           afterStick,
@@ -5633,6 +5649,7 @@ class Simulator {
       forceExcavatorPayloadSupport: () => {
         this.carriedWorldColliders.clear();
         this.carriedWorldPreviousPositions.clear();
+        this.carriedWorldLocalQuaternions.clear();
         this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
         this.excavator.group.rotation.set(0, 0, 0);
         Object.assign(this.angles, { swing: 0, boom: 0.64, stick: -0.78, bucket: -1.46 });
@@ -5653,8 +5670,7 @@ class Simulator {
           const local = new THREE.Vector3(-0.62, -0.28, 0);
           heavy.mesh.position.copy(this.excavator.bucketGroup.localToWorld(local.clone()));
           heavy.velocity.set(0, 0, 0);
-          this.carriedWorldColliders.set(heavy, local);
-          this.carriedWorldPreviousPositions.set(heavy, heavy.mesh.position.clone());
+          this.carryWorldColliderAt(heavy, local, heavy.mesh.position);
           carriedMass = this.carriedWorldObjectMass();
         }
         this.excavator.setBucketLoad(this.bucketLoad);
@@ -5667,6 +5683,11 @@ class Simulator {
         if (heavy) {
           const local = this.carriedWorldColliders.get(heavy) ?? new THREE.Vector3(-0.62, -0.28, 0);
           heavy.mesh.position.copy(this.excavator.bucketGroup.localToWorld(local.clone()));
+          const localQuaternion = this.carriedWorldLocalQuaternions.get(heavy);
+          if (localQuaternion) {
+            const bucketWorldQuaternion = this.excavator.bucketGroup.getWorldQuaternion(new THREE.Quaternion());
+            heavy.mesh.quaternion.copy(bucketWorldQuaternion.multiply(localQuaternion));
+          }
           this.carriedWorldPreviousPositions.set(heavy, heavy.mesh.position.clone());
         }
         this.updateExcavatorSupport(1.2, forward);
@@ -6102,6 +6123,7 @@ class Simulator {
 
           this.carriedWorldColliders.delete(collider);
           this.carriedWorldPreviousPositions.delete(collider);
+          this.carriedWorldLocalQuaternions.delete(collider);
           this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
           this.excavator.group.rotation.set(0, 0, 0);
           Object.assign(this.angles, { swing: 0, boom: 0.48, stick: -1.34, bucket: -2.18 });
@@ -6123,6 +6145,7 @@ class Simulator {
 
           this.carriedWorldColliders.delete(collider);
           this.carriedWorldPreviousPositions.delete(collider);
+          this.carriedWorldLocalQuaternions.delete(collider);
           collider.mesh.position.copy(objectPosition);
           collider.mesh.quaternion.copy(objectQuaternion);
           collider.mesh.scale.copy(objectScale);
@@ -6144,6 +6167,7 @@ class Simulator {
 
           this.carriedWorldColliders.delete(collider);
           this.carriedWorldPreviousPositions.delete(collider);
+          this.carriedWorldLocalQuaternions.delete(collider);
           this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
           this.excavator.group.rotation.set(0, 0, 0);
           Object.assign(this.angles, { swing: 0, boom: 0.48, stick: -1.34, bucket: -2.18 });
@@ -6177,6 +6201,7 @@ class Simulator {
 
           this.carriedWorldColliders.delete(collider);
           this.carriedWorldPreviousPositions.delete(collider);
+          this.carriedWorldLocalQuaternions.delete(collider);
           collider.mesh.position.copy(objectPosition);
           collider.mesh.quaternion.copy(objectQuaternion);
           collider.mesh.scale.copy(objectScale);
@@ -7402,6 +7427,22 @@ class Simulator {
     return this.carriedWorldObjectMass() + Math.max(0, collider.mass) <= BUCKET_OBJECT_LIFT_LIMIT;
   }
 
+  private bucketLocalQuaternionFor(collider: WorldCollider): THREE.Quaternion {
+    const bucketWorldQuaternion = this.excavator.bucketGroup.getWorldQuaternion(new THREE.Quaternion());
+    return bucketWorldQuaternion.invert().multiply(collider.mesh.quaternion);
+  }
+
+  private carryWorldColliderAt(collider: WorldCollider, local: THREE.Vector3, previousWorld?: THREE.Vector3): void {
+    const world = this.excavator.bucketGroup.localToWorld(local.clone());
+    this.carriedWorldColliders.set(collider, local.clone());
+    this.carriedWorldPreviousPositions.set(collider, previousWorld?.clone() ?? world.clone());
+    this.carriedWorldLocalQuaternions.set(collider, this.bucketLocalQuaternionFor(collider));
+    collider.mesh.position.copy(world);
+    collider.velocity.set(0, 0, 0);
+    collider.sleeping = false;
+    this.worldColliderGridDirty = true;
+  }
+
   private tryCarryWorldCollider(collider: WorldCollider): boolean {
     if (!this.canCarryWorldCollider(collider)) {
       return false;
@@ -7412,13 +7453,7 @@ class Simulator {
       return false;
     }
 
-    const world = this.excavator.bucketGroup.localToWorld(local.clone());
-    this.carriedWorldColliders.set(collider, local);
-    this.carriedWorldPreviousPositions.set(collider, world.clone());
-    collider.mesh.position.copy(world);
-    collider.velocity.set(0, 0, 0);
-    collider.sleeping = false;
-    this.worldColliderGridDirty = true;
+    this.carryWorldColliderAt(collider, local);
     this.pressure = Math.max(this.pressure, clamp(0.18 + collider.mass / BUCKET_OBJECT_LIFT_LIMIT * 0.34, 0, 0.62));
     return true;
   }
@@ -7436,7 +7471,11 @@ class Simulator {
       const next = this.excavator.bucketGroup.localToWorld(local.clone());
       collider.velocity.copy(next).sub(previous).divideScalar(Math.max(dt, 0.001));
       collider.mesh.position.copy(next);
-      if (!collider.capsule) {
+      const localQuaternion = this.carriedWorldLocalQuaternions.get(collider);
+      if (localQuaternion) {
+        const bucketWorldQuaternion = this.excavator.bucketGroup.getWorldQuaternion(new THREE.Quaternion());
+        collider.mesh.quaternion.copy(bucketWorldQuaternion.multiply(localQuaternion));
+      } else if (!collider.capsule) {
         collider.mesh.rotation.x += collider.velocity.z * dt * 0.65;
         collider.mesh.rotation.z -= collider.velocity.x * dt * 0.65;
       }
@@ -7540,6 +7579,7 @@ class Simulator {
     const carriedVelocity = collider.velocity.clone();
     this.carriedWorldColliders.delete(collider);
     this.carriedWorldPreviousPositions.delete(collider);
+    this.carriedWorldLocalQuaternions.delete(collider);
     collider.velocity.copy(carriedVelocity);
     if (extraVelocity) {
       collider.velocity.add(extraVelocity);
