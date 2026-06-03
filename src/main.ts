@@ -686,12 +686,14 @@ const BUCKET_OBJECT_LIFT_LIMIT = 4000;
 const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 const WORLD_COLLIDER_GRID_SIZE = 2.4;
 const WORLD_COLLIDER_WAKE_LIMIT = 20;
-const SOIL_PARTICLE_SOFT_LIMIT = 16;
-const SOIL_PARTICLE_HARD_LIMIT = 22;
+const SOIL_PARTICLE_SOFT_LIMIT = 12;
+const SOIL_PARTICLE_HARD_LIMIT = 18;
 const SOIL_PARTICLE_COLLISION_QUERY_PADDING = 0.28;
 const FINE_GRAIN_COLLISION_QUERY_PADDING = 0.18;
-const SOIL_DYNAMIC_COLLISION_BUDGET = 12;
-const FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 10;
+const SOIL_DYNAMIC_COLLISION_BUDGET = 6;
+const FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 5;
+const SOIL_PAIR_GRID_SIZE = 0.34;
+const FINE_GRAIN_PAIR_GRID_SIZE = 0.14;
 
 const ANGLE_LIMITS: Record<ActionName, Limits> = {
   swing: { min: -Infinity, max: Infinity },
@@ -3374,13 +3376,17 @@ class Simulator {
   private readonly pooledSoilGeometry = new THREE.DodecahedronGeometry(1, 0);
   private readonly soilParticlePool: THREE.Mesh[] = [];
   private readonly soilParticlePoolLimit = 40;
-  private readonly fineGrainMax = 72;
+  private readonly fineGrainMax = 56;
   private readonly fineGrainPositions = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainVelocities = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainLife = new Float32Array(this.fineGrainMax);
   private readonly fineGrainMaxLife = new Float32Array(this.fineGrainMax);
   private readonly fineGrainVolumes = new Float32Array(this.fineGrainMax);
   private readonly fineGrainSettles = new Uint8Array(this.fineGrainMax);
+  private readonly soilParticlePairGrid = new Map<string, SoilParticle[]>();
+  private readonly soilParticlePairCandidates: SoilParticle[] = [];
+  private readonly fineGrainPairGrid = new Map<string, number[]>();
+  private readonly fineGrainPairCandidates: number[] = [];
   private readonly fineGrainGeometry = new THREE.BufferGeometry();
   private readonly fineGrainMaterial = new THREE.PointsMaterial({
     color: 0x9a7043,
@@ -3665,6 +3671,93 @@ class Simulator {
       }
     }
     return this.colliderQueryResult;
+  }
+
+  private particleGridKey(x: number, y: number, z: number, cellSize: number): string {
+    return `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)},${Math.floor(z / cellSize)}`;
+  }
+
+  private rebuildSoilParticlePairGrid(): void {
+    this.soilParticlePairGrid.clear();
+    for (const particle of this.soilParticles) {
+      if (particle.toBucket || (!particle.settles && particle.life < 0.08)) {
+        continue;
+      }
+      const pos = particle.mesh.position;
+      const key = this.particleGridKey(pos.x, pos.y, pos.z, SOIL_PAIR_GRID_SIZE);
+      let bucket = this.soilParticlePairGrid.get(key);
+      if (!bucket) {
+        bucket = [];
+        this.soilParticlePairGrid.set(key, bucket);
+      }
+      bucket.push(particle);
+    }
+  }
+
+  private nearbySoilParticlePairCandidates(pos: THREE.Vector3, radius: number): SoilParticle[] {
+    this.soilParticlePairCandidates.length = 0;
+    const minX = Math.floor((pos.x - radius) / SOIL_PAIR_GRID_SIZE);
+    const maxX = Math.floor((pos.x + radius) / SOIL_PAIR_GRID_SIZE);
+    const minY = Math.floor((pos.y - radius) / SOIL_PAIR_GRID_SIZE);
+    const maxY = Math.floor((pos.y + radius) / SOIL_PAIR_GRID_SIZE);
+    const minZ = Math.floor((pos.z - radius) / SOIL_PAIR_GRID_SIZE);
+    const maxZ = Math.floor((pos.z + radius) / SOIL_PAIR_GRID_SIZE);
+    for (let iz = minZ; iz <= maxZ; iz += 1) {
+      for (let iy = minY; iy <= maxY; iy += 1) {
+        for (let ix = minX; ix <= maxX; ix += 1) {
+          const bucket = this.soilParticlePairGrid.get(`${ix},${iy},${iz}`);
+          if (!bucket) {
+            continue;
+          }
+          this.soilParticlePairCandidates.push(...bucket);
+        }
+      }
+    }
+    return this.soilParticlePairCandidates;
+  }
+
+  private rebuildFineGrainPairGrid(): void {
+    this.fineGrainPairGrid.clear();
+    for (let i = 0; i < this.fineGrainMax; i += 1) {
+      if (this.fineGrainMaxLife[i] <= 0 || this.fineGrainVolumes[i] <= 0 || this.fineGrainSettles[i] !== 1) {
+        continue;
+      }
+      const p = i * 3;
+      const key = this.particleGridKey(
+        this.fineGrainPositions[p],
+        this.fineGrainPositions[p + 1],
+        this.fineGrainPositions[p + 2],
+        FINE_GRAIN_PAIR_GRID_SIZE,
+      );
+      let bucket = this.fineGrainPairGrid.get(key);
+      if (!bucket) {
+        bucket = [];
+        this.fineGrainPairGrid.set(key, bucket);
+      }
+      bucket.push(i);
+    }
+  }
+
+  private nearbyFineGrainPairCandidates(pos: THREE.Vector3, radius: number): number[] {
+    this.fineGrainPairCandidates.length = 0;
+    const minX = Math.floor((pos.x - radius) / FINE_GRAIN_PAIR_GRID_SIZE);
+    const maxX = Math.floor((pos.x + radius) / FINE_GRAIN_PAIR_GRID_SIZE);
+    const minY = Math.floor((pos.y - radius) / FINE_GRAIN_PAIR_GRID_SIZE);
+    const maxY = Math.floor((pos.y + radius) / FINE_GRAIN_PAIR_GRID_SIZE);
+    const minZ = Math.floor((pos.z - radius) / FINE_GRAIN_PAIR_GRID_SIZE);
+    const maxZ = Math.floor((pos.z + radius) / FINE_GRAIN_PAIR_GRID_SIZE);
+    for (let iz = minZ; iz <= maxZ; iz += 1) {
+      for (let iy = minY; iy <= maxY; iy += 1) {
+        for (let ix = minX; ix <= maxX; ix += 1) {
+          const bucket = this.fineGrainPairGrid.get(`${ix},${iy},${iz}`);
+          if (!bucket) {
+            continue;
+          }
+          this.fineGrainPairCandidates.push(...bucket);
+        }
+      }
+    }
+    return this.fineGrainPairCandidates;
   }
 
   private warmWorldColliderGrid(): void {
@@ -4555,6 +4648,7 @@ class Simulator {
         const pairVelocityBeforeA = pairA.velocity.clone();
         const pairVelocityBeforeB = pairB.velocity.clone();
         soilPairDistanceBefore = pairMeshA.position.distanceTo(pairMeshB.position);
+        this.rebuildSoilParticlePairGrid();
         this.resolveSoilParticlePairCollision(pairA, pairRadius, Math.max(0.025, pairA.volume * 1.8));
         soilPairDistanceAfter = pairMeshA.position.distanceTo(pairMeshB.position);
         soilPairVelocityDelta = pairA.velocity.distanceTo(pairVelocityBeforeA) + pairB.velocity.distanceTo(pairVelocityBeforeB);
@@ -6807,6 +6901,7 @@ class Simulator {
         const finePairPosA = new THREE.Vector3(this.fineGrainPositions[fa], this.fineGrainPositions[fa + 1], this.fineGrainPositions[fa + 2]);
         const finePairVelocityA = finePairVelocityBeforeA.clone();
         finePairDistanceBefore = finePairPosA.distanceTo(new THREE.Vector3(this.fineGrainPositions[fb], this.fineGrainPositions[fb + 1], this.fineGrainPositions[fb + 2]));
+        this.rebuildFineGrainPairGrid();
         this.resolveFineGrainPairCollision(finePairA, finePairPosA, finePairVelocityA, pairFineRadius, Math.max(0.006, this.fineGrainVolumes[finePairA] * 1.8));
         this.fineGrainPositions[fa] = finePairPosA.x;
         this.fineGrainPositions[fa + 1] = finePairPosA.y;
@@ -7813,8 +7908,7 @@ class Simulator {
 
   private bucketCarryLocalPoint(collider: WorldCollider): THREE.Vector3 | null {
     let best: { local: THREE.Vector3; score: number } | null = null;
-    const heavyReach =
-      collider.kind === "boulder" || collider.kind === "fence" || collider.kind === "pipe" ? 0.58 : 0.36;
+    const heavyReach = collider.kind === "cone" ? 0.48 : collider.kind === "twig" ? 0.52 : 0.78;
 
     for (const sample of this.worldColliderShapeSamples(collider)) {
       const local = this.excavator.bucketGroup.worldToLocal(sample.point.clone());
@@ -7867,6 +7961,9 @@ class Simulator {
 
   private canCarryWorldCollider(collider: WorldCollider): boolean {
     if (this.carriedWorldColliders.has(collider)) {
+      return false;
+    }
+    if (collider.immovable) {
       return false;
     }
     return this.carriedWorldObjectMass() + Math.max(0, collider.mass) <= BUCKET_OBJECT_LIFT_LIMIT;
@@ -9159,9 +9256,9 @@ class Simulator {
     const curlInSpeed = Math.max(0, -this.velocities.bucket);
     const stickPullSpeed = Math.max(0, -this.velocities.stick);
     const isDiggingMotion =
-      curlInSpeed > 0.06 ||
-      stickPullSpeed > 0.06 ||
-      tipSpeed > 0.18;
+      curlInSpeed > 0.035 ||
+      stickPullSpeed > 0.035 ||
+      tipSpeed > 0.08;
 
     if (contactRatio > 0 && isDiggingMotion) {
       const penetration = clamp(maxPenetration, 0.01, 0.72);
@@ -9183,15 +9280,15 @@ class Simulator {
       const freeCapacity = BUCKET_CAPACITY - this.bucketLoad - this.bucketTransitLoad;
       const penetration = clamp(maxPenetration, 0.01, 0.9);
       const bite = clamp(
-        (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.32 + 0.22) *
+        (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.32 + 0.32) *
           attackEfficiency *
           (0.5 + contactRatio * 0.5),
-        0.05,
+        0.12,
         1.55,
       );
       const digDepth = clamp(
-        (penetration * 0.68 + Math.min(tipSpeed, 1.8) * 0.055) * bite * dt * 3.9,
-        0.004,
+        (penetration * 0.68 + Math.min(tipSpeed, 1.8) * 0.055) * bite * dt * 4.6,
+        0.006,
         0.28,
       );
       const removed = this.excavateTerrainWithWake(
@@ -9202,14 +9299,14 @@ class Simulator {
         digDepth,
         freeCapacity,
       );
-      const airborneFines = removed * clamp(0.045 + tipSpeed * 0.012 + (1 - attackEfficiency) * 0.02, 0.045, 0.11);
+      const airborneFines = removed * clamp(0.025 + tipSpeed * 0.008 + (1 - attackEfficiency) * 0.014, 0.025, 0.075);
       const bucketAccepted = Math.min(freeCapacity, Math.max(0, removed - airborneFines));
       const spill = Math.max(0, removed - airborneFines - bucketAccepted);
       this.totalExcavated += removed;
       if (removed > 0) {
         this.pressure = Math.max(this.pressure, clamp(0.42 + removed * 1.8 + contactRatio * 0.22, 0, 1));
         if (bucketAccepted > 0.001) {
-          const directCaptureRatio = clamp(0.42 + attackEfficiency * 0.22 + curlInSpeed * 0.08 + contactRatio * 0.08, 0.38, 0.72);
+          const directCaptureRatio = clamp(0.68 + attackEfficiency * 0.18 + curlInSpeed * 0.06 + contactRatio * 0.06, 0.62, 0.9);
           const directCapture = Math.min(bucketAccepted, bucketAccepted * directCaptureRatio);
           const flowVolume = bucketAccepted - directCapture;
           this.bucketLoad += directCapture;
@@ -9382,7 +9479,7 @@ class Simulator {
       return;
     }
 
-    const count = clamp(Math.ceil(volume * 8 * burst), 1, 3);
+    const count = clamp(Math.ceil(volume * 7 * burst), 1, 2);
     const perGrain = volume / count;
     const baseDirection = direction.clone();
     if (baseDirection.lengthSq() < 0.0001) {
@@ -9448,6 +9545,7 @@ class Simulator {
     let changed = false;
     let dynamicCollisionBudget = FINE_GRAIN_DYNAMIC_COLLISION_BUDGET;
     const bucketPocket = this.excavator.bucketPocketWorld();
+    this.rebuildFineGrainPairGrid();
 
     for (let i = 0; i < this.fineGrainMax; i += 1) {
       if (this.fineGrainMaxLife[i] <= 0) {
@@ -9573,6 +9671,7 @@ class Simulator {
   private updateSoilParticles(dt: number): void {
     let dynamicCollisionBudget = SOIL_DYNAMIC_COLLISION_BUDGET;
     const bucketPocket = this.excavator.bucketPocketWorld();
+    this.rebuildSoilParticlePairGrid();
 
     for (let i = this.soilParticles.length - 1; i >= 0; i -= 1) {
       const particle = this.soilParticles[i];
@@ -9804,7 +9903,10 @@ class Simulator {
 
   private resolveFineGrainPairCollision(i: number, pos: THREE.Vector3, velocity: THREE.Vector3, radius: number, fineMass: number): boolean {
     let collided = false;
-    for (let j = 0; j < this.fineGrainMax; j += 1) {
+    if (this.fineGrainPairGrid.size === 0) {
+      this.rebuildFineGrainPairGrid();
+    }
+    for (const j of this.nearbyFineGrainPairCandidates(pos, radius + FINE_GRAIN_COLLISION_QUERY_PADDING)) {
       if (j === i || this.fineGrainMaxLife[j] <= 0 || this.fineGrainVolumes[j] <= 0) {
         continue;
       }
@@ -9965,7 +10067,10 @@ class Simulator {
   private resolveSoilParticlePairCollision(particle: SoilParticle, radius: number, soilMass: number): boolean {
     const pos = particle.mesh.position;
     let collided = false;
-    for (const other of this.soilParticles) {
+    if (this.soilParticlePairGrid.size === 0) {
+      this.rebuildSoilParticlePairGrid();
+    }
+    for (const other of this.nearbySoilParticlePairCandidates(pos, radius + SOIL_PARTICLE_COLLISION_QUERY_PADDING)) {
       if (other === particle || other.toBucket || (!particle.settles && !other.settles)) {
         continue;
       }
