@@ -354,6 +354,10 @@ interface ExcavatorDebugApi {
     diagonalAfterZ: number;
     diagonalBlocked: boolean;
     elevatedFalseContact: boolean;
+    openBedEnvelopePenetration: number;
+    openBedSolidPenetration: number;
+    chassisSolidPenetration: number;
+    wheelSolidPenetration: number;
     frontContact: TruckCrawlerContactResult;
     sideContact: TruckCrawlerContactResult;
     diagonalContact: TruckCrawlerContactResult;
@@ -5510,6 +5514,13 @@ class Simulator {
         const diagonal = runScenario(new THREE.Vector3(-3.18, 0, -2.28), new THREE.Vector3(1, 0, 0.72));
         const highClearProbe = this.truck.group.localToWorld(new THREE.Vector3(0.2, 3.05, 0));
         const elevatedFalseContact = Boolean(this.truck.resolveBodyCollision(highClearProbe, TRACK_WIDTH * 0.54));
+        const openBedProbe = this.truck.group.localToWorld(new THREE.Vector3(0.54, 1.24, 0));
+        const chassisProbe = this.truck.group.localToWorld(new THREE.Vector3(0.0, 0.45, 0.0));
+        const wheelProbe = this.truck.group.localToWorld(new THREE.Vector3(-1.7, 0.32, -1.02));
+        const openBedEnvelopePenetration = this.truck.resolveBodyCollision(openBedProbe, 0.08)?.penetration ?? 0;
+        const openBedSolidPenetration = this.truck.resolveSolidCollision(openBedProbe, 0.08)?.penetration ?? 0;
+        const chassisSolidPenetration = this.truck.resolveSolidCollision(chassisProbe, 0.08)?.penetration ?? 0;
+        const wheelSolidPenetration = this.truck.resolveSolidCollision(wheelProbe, 0.08)?.penetration ?? 0;
         const supportForward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
         this.updateExcavatorSupport(0.3, supportForward);
         this.updateUi(0);
@@ -5536,6 +5547,10 @@ class Simulator {
             (Math.abs(diagonal.leftTrackVelocity) < TRACK_MAX_SPEED * 0.72 ||
               Math.abs(diagonal.rightTrackVelocity) < TRACK_MAX_SPEED * 0.72),
           elevatedFalseContact,
+          openBedEnvelopePenetration,
+          openBedSolidPenetration,
+          chassisSolidPenetration,
+          wheelSolidPenetration,
           frontContact: front.contact,
           sideContact: side.contact,
           diagonalContact: diagonal.contact,
@@ -7584,7 +7599,7 @@ class Simulator {
         .addScaledVector(forward, sample.x)
         .addScaledVector(side, sample.z);
       world.y = this.terrain.getHeightAt(world.x, world.z) + TRACK_CONTACT_HEIGHT;
-      const hit = this.truck.resolveBodyCollision(world, TRACK_WIDTH * 0.54);
+      const hit = this.resolveTruckCrawlerSolidHit(world, TRACK_WIDTH * 0.54);
       if (!hit) {
         continue;
       }
@@ -7620,7 +7635,7 @@ class Simulator {
     if (correctionNormal.lengthSq() < 0.000001) {
       const bodyPoint = base.clone();
       bodyPoint.y = this.terrain.getHeightAt(bodyPoint.x, bodyPoint.z) + CRAWLER_BODY_CONTACT_HEIGHT;
-      const centerHit = this.truck.resolveBodyCollision(bodyPoint, 1.62);
+      const centerHit = this.resolveTruckCrawlerSolidHit(bodyPoint, 1.62, true);
       if (!centerHit) {
         return this.emptyTruckCrawlerContact();
       }
@@ -7657,6 +7672,31 @@ class Simulator {
       leftBlocked: leftSeverity > 0.18,
       rightBlocked: rightSeverity > 0.18,
     };
+  }
+
+  private resolveTruckCrawlerSolidHit(
+    worldCenter: THREE.Vector3,
+    radius: number,
+    allowEnvelopeFallback = false,
+  ): { normal: THREE.Vector3; penetration: number } | null {
+    const hit =
+      this.truck.resolveSolidCollision(worldCenter, radius) ??
+      (allowEnvelopeFallback ? this.truck.resolveBodyCollision(worldCenter, radius) : null);
+    if (!hit) {
+      return null;
+    }
+
+    const normal = hit.normal.clone();
+    normal.y = 0;
+    if (normal.lengthSq() < 0.000001) {
+      normal.copy(worldCenter).sub(this.truck.group.position).setY(0);
+    }
+    if (normal.lengthSq() < 0.000001) {
+      normal.set(1, 0, 0);
+    } else {
+      normal.normalize();
+    }
+    return { normal, penetration: hit.penetration };
   }
 
   private emptyCrawlerWorldObjectContact(): CrawlerWorldObjectContactResult {
@@ -7839,7 +7879,7 @@ class Simulator {
     const truckContact = this.resolveTruckCrawlerFootprintCollision(forwardSpeed, turnRate, forward);
     const bodyPoint = this.excavator.group.position.clone();
     bodyPoint.y = this.terrain.getHeightAt(bodyPoint.x, bodyPoint.z) + CRAWLER_BODY_CONTACT_HEIGHT;
-    const hit = this.truck.resolveBodyCollision(bodyPoint, 1.62);
+    const hit = this.resolveTruckCrawlerSolidHit(bodyPoint, 1.62, true);
     if (hit) {
       this.truck.applyImpact(
         this.excavator.group.position,

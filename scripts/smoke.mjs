@@ -945,6 +945,10 @@ async function main() {
           truckCollisionValue?.diagonalAfterX < truckCollisionValue?.diagonalBeforeX - 0.04 &&
           truckCollisionValue?.diagonalAfterZ < truckCollisionValue?.diagonalBeforeZ - 0.04 &&
           truckCollisionValue?.elevatedFalseContact === false &&
+          truckCollisionValue?.openBedEnvelopePenetration > 0.08 &&
+          truckCollisionValue?.openBedSolidPenetration === 0 &&
+          truckCollisionValue?.chassisSolidPenetration > 0.08 &&
+          truckCollisionValue?.wheelSolidPenetration > 0.08 &&
           truckCollisionValue?.collisionCount > 0 &&
           truckCollisionValue?.pressure > 0.4,
       ],
