@@ -1158,6 +1158,10 @@ async function main() {
           worldObjectPhysicsValue?.excavatorPenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.excavatorObjectTravel > 0.03 &&
           worldObjectPhysicsValue?.excavatorObjectVelocity > 0.01 &&
+          worldObjectPhysicsValue?.turntablePenetrationBefore > worldObjectPhysicsValue?.turntablePenetrationAfter &&
+          worldObjectPhysicsValue?.turntablePenetrationAfter < 0.04 &&
+          worldObjectPhysicsValue?.turntableObjectTravel > 0.03 &&
+          worldObjectPhysicsValue?.turntableObjectVelocity > 0.01 &&
           worldObjectPhysicsValue?.pipeSphereFalsePenetration > 0.04 &&
           worldObjectPhysicsValue?.pipeCapsuleFalsePenetration === 0 &&
           worldObjectPhysicsValue?.pipeCapsuleHitBefore > worldObjectPhysicsValue?.pipeCapsuleHitAfter &&
