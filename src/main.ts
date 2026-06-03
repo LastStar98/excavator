@@ -251,6 +251,9 @@ interface ExcavatorDebugApi {
     soilTruckPenetrationBefore: number;
     soilTruckPenetrationAfter: number;
     soilObjectImpulse: number;
+    soilPairDistanceBefore: number;
+    soilPairDistanceAfter: number;
+    soilPairVelocityDelta: number;
   };
   forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
   forceCuttingFlowPhysics: () => {
@@ -572,6 +575,9 @@ interface ExcavatorDebugApi {
     excavatorFinePenetrationAfter: number;
     excavatorFineTravel: number;
     excavatorFineVelocity: number;
+    finePairDistanceBefore: number;
+    finePairDistanceAfter: number;
+    finePairVelocityDelta: number;
     truckLoad: number;
   };
   forceExcavatorPitSink: () => {
@@ -4488,6 +4494,9 @@ class Simulator {
         let soilTruckPenetrationBefore = 0;
         let soilTruckPenetrationAfter = 0;
         let soilObjectImpulse = 0;
+        let soilPairDistanceBefore = 0;
+        let soilPairDistanceAfter = 0;
+        let soilPairVelocityDelta = 0;
         const testRadius = 0.08;
         const testMesh = this.acquireSoilParticleMesh(testRadius, this.looseSoilMats[0], 991);
         const testParticle: SoilParticle = {
@@ -4519,6 +4528,43 @@ class Simulator {
           soilObjectImpulse = hard.velocity.length();
         }
         this.recycleSoilParticle(testParticle);
+
+        const pairRadius = 0.09;
+        const pairBase = new THREE.Vector3(5.4, this.terrain.getHeightAt(5.4, -4.8) + 1.2, -4.8);
+        const pairMeshA = this.acquireSoilParticleMesh(pairRadius, this.looseSoilMats[0], 992);
+        const pairMeshB = this.acquireSoilParticleMesh(pairRadius, this.looseSoilMats[1], 993);
+        const pairA: SoilParticle = {
+          mesh: pairMeshA,
+          velocity: new THREE.Vector3(0.42, -0.05, 0),
+          volume: 0.04,
+          radius: pairRadius,
+          life: 0,
+          settles: true,
+        };
+        const pairB: SoilParticle = {
+          mesh: pairMeshB,
+          velocity: new THREE.Vector3(-0.28, -0.02, 0),
+          volume: 0.035,
+          radius: pairRadius,
+          life: 0,
+          settles: true,
+        };
+        pairMeshA.position.copy(pairBase);
+        pairMeshB.position.copy(pairBase).add(new THREE.Vector3(pairRadius * 1.25, 0.006, 0));
+        this.soilParticles.push(pairA, pairB);
+        const pairVelocityBeforeA = pairA.velocity.clone();
+        const pairVelocityBeforeB = pairB.velocity.clone();
+        soilPairDistanceBefore = pairMeshA.position.distanceTo(pairMeshB.position);
+        this.resolveSoilParticlePairCollision(pairA, pairRadius, Math.max(0.025, pairA.volume * 1.8));
+        soilPairDistanceAfter = pairMeshA.position.distanceTo(pairMeshB.position);
+        soilPairVelocityDelta = pairA.velocity.distanceTo(pairVelocityBeforeA) + pairB.velocity.distanceTo(pairVelocityBeforeB);
+        for (const pairParticle of [pairA, pairB]) {
+          const idx = this.soilParticles.indexOf(pairParticle);
+          if (idx >= 0) {
+            this.soilParticles.splice(idx, 1);
+          }
+          this.recycleSoilParticle(pairParticle);
+        }
         this.excavator.setBucketLoad(this.bucketLoad);
         this.truck.updateLoad(this.truckLoad);
         this.updateUi(0);
@@ -4533,6 +4579,9 @@ class Simulator {
           soilTruckPenetrationBefore,
           soilTruckPenetrationAfter,
           soilObjectImpulse,
+          soilPairDistanceBefore,
+          soilPairDistanceAfter,
+          soilPairVelocityDelta,
         };
       },
       forceFullBucketPush: () => {
@@ -6626,6 +6675,9 @@ class Simulator {
         let excavatorFinePenetrationAfter = 0;
         let excavatorFineTravel = 0;
         let excavatorFineVelocity = 0;
+        let finePairDistanceBefore = 0;
+        let finePairDistanceAfter = 0;
+        let finePairVelocityDelta = 0;
         const fineTarget =
           this.worldColliders.find((collider) => collider.kind === "cone") ??
           this.worldColliders.find((collider) => collider.kind === "rock") ??
@@ -6722,6 +6774,53 @@ class Simulator {
         this.excavator.group.rotation.copy(savedMachineRotation);
         this.excavator.applyAngles(this.angles);
 
+        const pairFineRadius = 0.026;
+        const finePairA = this.fineGrainCursor;
+        const finePairB = (finePairA + 1) % this.fineGrainMax;
+        this.deactivateFineGrain(finePairA);
+        this.deactivateFineGrain(finePairB);
+        const fa = finePairA * 3;
+        const fb = finePairB * 3;
+        const finePairBase = new THREE.Vector3(6.4, this.terrain.getHeightAt(6.4, -5.6) + 1.1, -5.6);
+        this.fineGrainPositions[fa] = finePairBase.x;
+        this.fineGrainPositions[fa + 1] = finePairBase.y;
+        this.fineGrainPositions[fa + 2] = finePairBase.z;
+        this.fineGrainPositions[fb] = finePairBase.x + pairFineRadius * 1.25;
+        this.fineGrainPositions[fb + 1] = finePairBase.y + 0.004;
+        this.fineGrainPositions[fb + 2] = finePairBase.z;
+        this.fineGrainVelocities[fa] = 0.28;
+        this.fineGrainVelocities[fa + 1] = -0.02;
+        this.fineGrainVelocities[fa + 2] = 0;
+        this.fineGrainVelocities[fb] = -0.18;
+        this.fineGrainVelocities[fb + 1] = -0.01;
+        this.fineGrainVelocities[fb + 2] = 0;
+        this.fineGrainVolumes[finePairA] = 0.018;
+        this.fineGrainVolumes[finePairB] = 0.016;
+        this.fineGrainLife[finePairA] = 0;
+        this.fineGrainLife[finePairB] = 0;
+        this.fineGrainMaxLife[finePairA] = 1;
+        this.fineGrainMaxLife[finePairB] = 1;
+        this.fineGrainSettles[finePairA] = 1;
+        this.fineGrainSettles[finePairB] = 1;
+        const finePairVelocityBeforeA = new THREE.Vector3(this.fineGrainVelocities[fa], this.fineGrainVelocities[fa + 1], this.fineGrainVelocities[fa + 2]);
+        const finePairVelocityBeforeB = new THREE.Vector3(this.fineGrainVelocities[fb], this.fineGrainVelocities[fb + 1], this.fineGrainVelocities[fb + 2]);
+        const finePairPosA = new THREE.Vector3(this.fineGrainPositions[fa], this.fineGrainPositions[fa + 1], this.fineGrainPositions[fa + 2]);
+        const finePairVelocityA = finePairVelocityBeforeA.clone();
+        finePairDistanceBefore = finePairPosA.distanceTo(new THREE.Vector3(this.fineGrainPositions[fb], this.fineGrainPositions[fb + 1], this.fineGrainPositions[fb + 2]));
+        this.resolveFineGrainPairCollision(finePairA, finePairPosA, finePairVelocityA, pairFineRadius, Math.max(0.006, this.fineGrainVolumes[finePairA] * 1.8));
+        this.fineGrainPositions[fa] = finePairPosA.x;
+        this.fineGrainPositions[fa + 1] = finePairPosA.y;
+        this.fineGrainPositions[fa + 2] = finePairPosA.z;
+        this.fineGrainVelocities[fa] = finePairVelocityA.x;
+        this.fineGrainVelocities[fa + 1] = finePairVelocityA.y;
+        this.fineGrainVelocities[fa + 2] = finePairVelocityA.z;
+        finePairDistanceAfter = finePairPosA.distanceTo(new THREE.Vector3(this.fineGrainPositions[fb], this.fineGrainPositions[fb + 1], this.fineGrainPositions[fb + 2]));
+        finePairVelocityDelta =
+          finePairVelocityA.distanceTo(finePairVelocityBeforeA) +
+          new THREE.Vector3(this.fineGrainVelocities[fb], this.fineGrainVelocities[fb + 1], this.fineGrainVelocities[fb + 2]).distanceTo(finePairVelocityBeforeB);
+        this.deactivateFineGrain(finePairA);
+        this.deactivateFineGrain(finePairB);
+
         this.updateUi(0);
         return {
           spawnedVolume,
@@ -6736,6 +6835,9 @@ class Simulator {
           excavatorFinePenetrationAfter,
           excavatorFineTravel,
           excavatorFineVelocity,
+          finePairDistanceBefore,
+          finePairDistanceAfter,
+          finePairVelocityDelta,
           truckLoad: this.truckLoad,
         };
       },
@@ -9685,6 +9787,10 @@ class Simulator {
       break;
     }
 
+    if (this.resolveFineGrainPairCollision(i, pos, velocity, radius, fineMass)) {
+      collided = true;
+    }
+
     if (collided) {
       this.fineGrainPositions[p] = pos.x;
       this.fineGrainPositions[p + 1] = pos.y;
@@ -9692,6 +9798,66 @@ class Simulator {
       this.fineGrainVelocities[p] = velocity.x;
       this.fineGrainVelocities[p + 1] = velocity.y;
       this.fineGrainVelocities[p + 2] = velocity.z;
+    }
+    return collided;
+  }
+
+  private resolveFineGrainPairCollision(i: number, pos: THREE.Vector3, velocity: THREE.Vector3, radius: number, fineMass: number): boolean {
+    let collided = false;
+    for (let j = 0; j < this.fineGrainMax; j += 1) {
+      if (j === i || this.fineGrainMaxLife[j] <= 0 || this.fineGrainVolumes[j] <= 0) {
+        continue;
+      }
+      if (this.fineGrainSettles[i] !== 1 && this.fineGrainSettles[j] !== 1) {
+        continue;
+      }
+      const q = j * 3;
+      const dx = pos.x - this.fineGrainPositions[q];
+      const dy = pos.y - this.fineGrainPositions[q + 1];
+      const dz = pos.z - this.fineGrainPositions[q + 2];
+      const otherRadius = 0.026;
+      const combinedRadius = radius + otherRadius;
+      const distanceSq = dx * dx + dy * dy + dz * dz;
+      if (distanceSq >= combinedRadius * combinedRadius) {
+        continue;
+      }
+
+      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+      const normal = distanceSq < 0.000001 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(dx / distance, dy / distance, dz / distance);
+      const penetration = combinedRadius - distance;
+      const otherMass = Math.max(0.006, this.fineGrainVolumes[j] * 1.8);
+      const invFine = 1 / fineMass;
+      const invOther = 1 / otherMass;
+      const totalInvMass = invFine + invOther;
+      const correction = Math.min(penetration * 0.62 + 0.0008, 0.035);
+
+      pos.addScaledVector(normal, correction * (invFine / totalInvMass));
+      this.fineGrainPositions[q] -= normal.x * correction * (invOther / totalInvMass);
+      this.fineGrainPositions[q + 1] -= normal.y * correction * (invOther / totalInvMass);
+      this.fineGrainPositions[q + 2] -= normal.z * correction * (invOther / totalInvMass);
+
+      const otherVelocity = new THREE.Vector3(this.fineGrainVelocities[q], this.fineGrainVelocities[q + 1], this.fineGrainVelocities[q + 2]);
+      const relativeVelocity = velocity.clone().sub(otherVelocity);
+      const closingSpeed = relativeVelocity.dot(normal);
+      if (closingSpeed < 0) {
+        const impulse = (-(1.08 * closingSpeed)) / totalInvMass;
+        velocity.addScaledVector(normal, impulse * invFine);
+        otherVelocity.addScaledVector(normal, -impulse * invOther);
+      }
+
+      const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
+      if (tangent.lengthSq() > 0.000001) {
+        tangent.normalize().multiplyScalar(0.012);
+        velocity.addScaledVector(tangent, -invFine / totalInvMass);
+        otherVelocity.addScaledVector(tangent, invOther / totalInvMass);
+      }
+      this.fineGrainVelocities[q] = otherVelocity.x * 0.985;
+      this.fineGrainVelocities[q + 1] = otherVelocity.y * 0.985;
+      this.fineGrainVelocities[q + 2] = otherVelocity.z * 0.985;
+      velocity.multiplyScalar(0.985);
+      this.pressure = Math.max(this.pressure, clamp(0.018 + penetration * 0.32, 0, 0.12));
+      collided = true;
+      break;
     }
     return collided;
   }
@@ -9742,6 +9908,10 @@ class Simulator {
       return true;
     }
 
+    if ((particle.settles || !particle.toBucket) && this.resolveSoilParticlePairCollision(particle, radius, soilMass)) {
+      collided = true;
+    }
+
     for (const collider of this.nearbyWorldColliders(pos, radius + SOIL_PARTICLE_COLLISION_QUERY_PADDING)) {
       if (this.carriedWorldColliders.has(collider)) {
         continue;
@@ -9789,6 +9959,56 @@ class Simulator {
       break;
     }
 
+    return collided;
+  }
+
+  private resolveSoilParticlePairCollision(particle: SoilParticle, radius: number, soilMass: number): boolean {
+    const pos = particle.mesh.position;
+    let collided = false;
+    for (const other of this.soilParticles) {
+      if (other === particle || other.toBucket || (!particle.settles && !other.settles)) {
+        continue;
+      }
+      const otherPos = other.mesh.position;
+      const delta = pos.clone().sub(otherPos);
+      const combinedRadius = radius + Math.max(0.018, other.radius);
+      const distanceSq = delta.lengthSq();
+      if (distanceSq >= combinedRadius * combinedRadius) {
+        continue;
+      }
+
+      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+      const normal = distanceSq < 0.000001 ? new THREE.Vector3(1, 0, 0) : delta.divideScalar(distance);
+      const penetration = combinedRadius - distance;
+      const otherMass = Math.max(0.025, other.volume * 1.8);
+      const invSoil = 1 / soilMass;
+      const invOther = 1 / otherMass;
+      const totalInvMass = invSoil + invOther;
+      const correction = Math.min(penetration * 0.72 + 0.0015, 0.12);
+
+      pos.addScaledVector(normal, correction * (invSoil / totalInvMass));
+      otherPos.addScaledVector(normal, -correction * (invOther / totalInvMass));
+
+      const relativeVelocity = particle.velocity.clone().sub(other.velocity);
+      const closingSpeed = relativeVelocity.dot(normal);
+      if (closingSpeed < 0) {
+        const impulse = (-(1.12 * closingSpeed)) / totalInvMass;
+        particle.velocity.addScaledVector(normal, impulse * invSoil);
+        other.velocity.addScaledVector(normal, -impulse * invOther);
+      }
+
+      const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
+      if (tangent.lengthSq() > 0.000001) {
+        tangent.normalize().multiplyScalar(0.035);
+        particle.velocity.addScaledVector(tangent, -invSoil / totalInvMass);
+        other.velocity.addScaledVector(tangent, invOther / totalInvMass);
+      }
+      particle.velocity.multiplyScalar(0.992);
+      other.velocity.multiplyScalar(0.992);
+      this.pressure = Math.max(this.pressure, clamp(0.035 + penetration * 0.42, 0, 0.18));
+      collided = true;
+      break;
+    }
     return collided;
   }
 

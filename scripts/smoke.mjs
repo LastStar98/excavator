@@ -804,7 +804,9 @@ async function main() {
           soilDumpValue?.gravityDelta > 0.08 &&
           soilDumpValue?.soilTruckPenetrationBefore > soilDumpValue?.soilTruckPenetrationAfter &&
           soilDumpValue?.soilTruckPenetrationAfter < 0.035 &&
-          soilDumpValue?.soilObjectImpulse > 0.002,
+          soilDumpValue?.soilObjectImpulse > 0.002 &&
+          soilDumpValue?.soilPairDistanceAfter > soilDumpValue?.soilPairDistanceBefore + 0.01 &&
+          soilDumpValue?.soilPairVelocityDelta > 0.04,
       ],
       ["bucket load surface clears after dumping", (soilAfterDumpValue?.bucketVisualLoad ?? 1) < 0.01],
       [
@@ -819,7 +821,9 @@ async function main() {
           fineGrainSettlementValue?.excavatorFinePenetrationBefore > fineGrainSettlementValue?.excavatorFinePenetrationAfter &&
           fineGrainSettlementValue?.excavatorFinePenetrationAfter < 0.015 &&
           fineGrainSettlementValue?.excavatorFineTravel > 0.006 &&
-          fineGrainSettlementValue?.excavatorFineVelocity > 0.002,
+          fineGrainSettlementValue?.excavatorFineVelocity > 0.002 &&
+          fineGrainSettlementValue?.finePairDistanceAfter > fineGrainSettlementValue?.finePairDistanceBefore + 0.004 &&
+          fineGrainSettlementValue?.finePairVelocityDelta > 0.015,
       ],
       [
         "full bucket pushes soil into berms",
