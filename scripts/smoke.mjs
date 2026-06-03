@@ -873,7 +873,11 @@ async function main() {
           fineGrainSettlementValue?.excavatorFineTravel > 0.006 &&
           fineGrainSettlementValue?.excavatorFineVelocity > 0.002 &&
           fineGrainSettlementValue?.finePairDistanceAfter > fineGrainSettlementValue?.finePairDistanceBefore + 0.004 &&
-          fineGrainSettlementValue?.finePairVelocityDelta > 0.015,
+          fineGrainSettlementValue?.finePairVelocityDelta > 0.015 &&
+          fineGrainSettlementValue?.terrainContactSlope > 0.035 &&
+          fineGrainSettlementValue?.terrainContactSlide > 0.0001 &&
+          fineGrainSettlementValue?.terrainContactSpeedAfter < fineGrainSettlementValue?.terrainContactSpeedBefore &&
+          fineGrainSettlementValue?.terrainContactSettled === false,
       ],
       [
         "full bucket pushes soil into berms",

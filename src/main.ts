@@ -65,6 +65,15 @@ interface SoilParticle {
   toBucket?: boolean;
 }
 
+interface SoilTerrainContactResult {
+  contacted: boolean;
+  settled: boolean;
+  slope: number;
+  slideDistance: number;
+  speedBefore: number;
+  speedAfter: number;
+}
+
 type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone" | "pipe";
 type TruckSolidPartKey = "chassis" | "cab" | "bed-floor" | "bed-left-wall" | "bed-right-wall" | "bed-front-gate" | "bed-tailgate";
 
@@ -807,6 +816,11 @@ interface ExcavatorDebugApi {
     finePairDistanceBefore: number;
     finePairDistanceAfter: number;
     finePairVelocityDelta: number;
+    terrainContactSlope: number;
+    terrainContactSlide: number;
+    terrainContactSpeedBefore: number;
+    terrainContactSpeedAfter: number;
+    terrainContactSettled: boolean;
     truckLoad: number;
   };
   forceExcavatorPitSink: () => {
@@ -8825,6 +8839,9 @@ class Simulator {
         const ground = this.terrain.getHeightAt(x, z);
         const origin = new THREE.Vector3(x, ground + 1.1, z);
         const spawnedVolume = 0.12;
+        const terrainContactBase = new THREE.Vector3(56.0, 0, 14.0);
+        this.raiseTerrainWithWake(terrainContactBase.clone().add(new THREE.Vector3(-0.64, 0, 0)), 0.72, 0.34, 0);
+        this.terrain.lowerAt(terrainContactBase.clone().add(new THREE.Vector3(0.64, 0, 0)), 0.72, 0.24);
         const beforeSettled = this.fineGrainSettledVolume;
         const beforeTerrain = this.terrain.terrainVolumeDelta();
         this.spawnFineGrains(origin, spawnedVolume, new THREE.Vector3(0.15, -0.72, 0.08), true, 1.25);
@@ -8843,6 +8860,11 @@ class Simulator {
         let finePairDistanceBefore = 0;
         let finePairDistanceAfter = 0;
         let finePairVelocityDelta = 0;
+        let terrainContactSlope = 0;
+        let terrainContactSlide = 0;
+        let terrainContactSpeedBefore = 0;
+        let terrainContactSpeedAfter = 0;
+        let terrainContactSettled = false;
         const fineTarget =
           this.worldColliders.find((collider) => collider.kind === "cone") ??
           this.worldColliders.find((collider) => collider.kind === "rock") ??
@@ -8987,6 +9009,39 @@ class Simulator {
         this.deactivateFineGrain(finePairA);
         this.deactivateFineGrain(finePairB);
 
+        const terrainFineRadius = 0.026;
+        const terrainFineIndex = this.fineGrainCursor;
+        const tp = terrainFineIndex * 3;
+        const terrainContactGround = this.terrain.getHeightAt(terrainContactBase.x, terrainContactBase.z);
+        this.deactivateFineGrain(terrainFineIndex);
+        this.fineGrainPositions[tp] = terrainContactBase.x;
+        this.fineGrainPositions[tp + 1] = terrainContactGround + terrainFineRadius - 0.014;
+        this.fineGrainPositions[tp + 2] = terrainContactBase.z;
+        this.fineGrainVelocities[tp] = 0.72;
+        this.fineGrainVelocities[tp + 1] = -1.1;
+        this.fineGrainVelocities[tp + 2] = 0.12;
+        this.fineGrainVolumes[terrainFineIndex] = 0.018;
+        this.fineGrainLife[terrainFineIndex] = 0;
+        this.fineGrainMaxLife[terrainFineIndex] = 1;
+        this.fineGrainSettles[terrainFineIndex] = 1;
+        const terrainFinePosition = new THREE.Vector3(
+          this.fineGrainPositions[tp],
+          this.fineGrainPositions[tp + 1],
+          this.fineGrainPositions[tp + 2],
+        );
+        const terrainFineVelocity = new THREE.Vector3(
+          this.fineGrainVelocities[tp],
+          this.fineGrainVelocities[tp + 1],
+          this.fineGrainVelocities[tp + 2],
+        );
+        const terrainContact = this.resolveSoilTerrainContact(terrainFinePosition, terrainFineVelocity, terrainFineRadius, 0.08, true);
+        terrainContactSlope = terrainContact.slope;
+        terrainContactSlide = terrainContact.slideDistance;
+        terrainContactSpeedBefore = terrainContact.speedBefore;
+        terrainContactSpeedAfter = terrainContact.speedAfter;
+        terrainContactSettled = terrainContact.settled;
+        this.deactivateFineGrain(terrainFineIndex);
+
         this.updateUi(0);
         return {
           spawnedVolume,
@@ -9004,6 +9059,11 @@ class Simulator {
           finePairDistanceBefore,
           finePairDistanceAfter,
           finePairVelocityDelta,
+          terrainContactSlope,
+          terrainContactSlide,
+          terrainContactSpeedBefore,
+          terrainContactSpeedAfter,
+          terrainContactSettled,
           truckLoad: this.truckLoad,
         };
       },
@@ -12284,6 +12344,73 @@ class Simulator {
     (this.fineGrainGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
   }
 
+  private resolveSoilTerrainContact(
+    pos: THREE.Vector3,
+    velocity: THREE.Vector3,
+    radius: number,
+    dt: number,
+    fineGrain: boolean,
+  ): SoilTerrainContactResult {
+    const span = Math.max(this.terrain.spacing * 1.25, radius * 2.2);
+    const ground = this.terrain.getHeightAt(pos.x, pos.z);
+    const penetration = ground + radius - pos.y;
+    if (penetration < 0) {
+      const speed = velocity.length();
+      return { contacted: false, settled: false, slope: 0, slideDistance: 0, speedBefore: speed, speedAfter: speed };
+    }
+
+    const hL = this.terrain.getHeightAt(pos.x - span, pos.z);
+    const hR = this.terrain.getHeightAt(pos.x + span, pos.z);
+    const hD = this.terrain.getHeightAt(pos.x, pos.z - span);
+    const hU = this.terrain.getHeightAt(pos.x, pos.z + span);
+    const slopeX = (hR - hL) / Math.max(span * 2, 0.001);
+    const slopeZ = (hU - hD) / Math.max(span * 2, 0.001);
+    const slope = Math.hypot(slopeX, slopeZ);
+    const normal = new THREE.Vector3(-slopeX, 1, -slopeZ).normalize();
+    const speedBefore = velocity.length();
+    const surface = this.terrain.getSurfaceConditionAt(pos.x, pos.z);
+    const correction = Math.min(penetration + (fineGrain ? 0.002 : 0.004), fineGrain ? 0.065 : 0.16);
+    pos.addScaledVector(normal, correction);
+
+    const normalSpeed = velocity.dot(normal);
+    const tangent = velocity.clone().addScaledVector(normal, -normalSpeed);
+    const restitution = fineGrain
+      ? clamp(0.045 + surface.hardpack * 0.055 - surface.wetness * 0.025, 0.018, 0.095)
+      : clamp(0.065 + surface.hardpack * 0.06 - surface.wetness * 0.02, 0.025, 0.13);
+    const tangentDamping = clamp(
+      (fineGrain ? 0.58 : 0.64) + surface.hardpack * 0.16 + surface.compaction * 0.1 - surface.wetness * 0.18,
+      fineGrain ? 0.34 : 0.42,
+      fineGrain ? 0.82 : 0.88,
+    );
+    if (normalSpeed < 0) {
+      velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(normal, -normalSpeed * restitution);
+    } else {
+      velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(normal, normalSpeed * 0.48);
+    }
+
+    let slideDistance = 0;
+    if (slope > 0.012) {
+      const downhill = new THREE.Vector3(-slopeX, 0, -slopeZ);
+      if (downhill.lengthSq() > 0.000001) {
+        downhill.normalize();
+        const gravityAlongSlope = (9.81 * clamp(slope, 0, 0.9)) / Math.sqrt(1 + slope * slope);
+        const slideGrip = clamp(0.16 + surface.hardpack * 0.2 + surface.compaction * 0.08 - surface.wetness * 0.1, 0.04, 0.34);
+        const slideVelocity = gravityAlongSlope * slideGrip * dt;
+        velocity.addScaledVector(downhill, slideVelocity);
+        slideDistance = slideVelocity * dt;
+      }
+    }
+
+    const speedAfter = velocity.length();
+    const settleSpeed = fineGrain ? 0.135 + surface.wetness * 0.045 : 0.18 + surface.wetness * 0.06;
+    const settled = speedAfter < settleSpeed && (slope < SOIL_REPOSE_TAN * 0.94 || surface.wetness > 0.42);
+    this.pressure = Math.max(
+      this.pressure,
+      clamp(0.018 + Math.max(0, -normalSpeed) * (fineGrain ? 0.018 : 0.032) + penetration * 0.12, 0, fineGrain ? 0.14 : 0.24),
+    );
+    return { contacted: true, settled, slope, slideDistance, speedBefore, speedAfter };
+  }
+
   private shouldResolveDynamicSoilCollisionAt(
     x: number,
     y: number,
@@ -12360,15 +12487,30 @@ class Simulator {
         }
       }
 
-      const ground = this.terrain.getHeightAt(this.fineGrainPositions[p], this.fineGrainPositions[p + 2]);
+      const finePosition = new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2]);
       const inTruck =
         this.fineGrainSettles[i] === 1 &&
-        this.truck.containsWorldPoint(new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2])) &&
+        this.truck.containsWorldPoint(finePosition) &&
         this.fineGrainPositions[p + 1] < TRUCK_CENTER.y + 1.72;
+      let terrainSettled = false;
+      if (settles && !inTruck) {
+        const fineVelocity = new THREE.Vector3(this.fineGrainVelocities[p], this.fineGrainVelocities[p + 1], this.fineGrainVelocities[p + 2]);
+        const terrainContact = this.resolveSoilTerrainContact(finePosition, fineVelocity, 0.026, dt, true);
+        if (terrainContact.contacted) {
+          this.fineGrainPositions[p] = finePosition.x;
+          this.fineGrainPositions[p + 1] = finePosition.y;
+          this.fineGrainPositions[p + 2] = finePosition.z;
+          this.fineGrainVelocities[p] = fineVelocity.x;
+          this.fineGrainVelocities[p + 1] = fineVelocity.y;
+          this.fineGrainVelocities[p + 2] = fineVelocity.z;
+          terrainSettled = terrainContact.settled;
+          changed = true;
+        }
+      }
       if (
         this.fineGrainLife[i] > this.fineGrainMaxLife[i] ||
         inTruck ||
-        (settles && this.fineGrainPositions[p + 1] <= ground + 0.025)
+        terrainSettled
       ) {
         if (this.fineGrainVolumes[i] > 0) {
           this.depositFineGrain(i);
@@ -12544,10 +12686,11 @@ class Simulator {
         this.resolveSoilParticleCollisions(particle);
       }
 
-      const ground = this.terrain.getHeightAt(pos.x, pos.z);
       const inTruck = this.truck.containsWorldPoint(pos) && pos.y < TRUCK_CENTER.y + 1.72;
-      const hitGround = pos.y <= ground + 0.05;
-      if (inTruck || hitGround || particle.life > 5.5) {
+      const terrainContact = inTruck
+        ? { contacted: false, settled: false, slope: 0, slideDistance: 0, speedBefore: particle.velocity.length(), speedAfter: particle.velocity.length() }
+        : this.resolveSoilTerrainContact(pos, particle.velocity, particle.radius, dt, false);
+      if (inTruck || terrainContact.settled || particle.life > 5.5) {
         this.soilParticles.splice(i, 1);
         if (inTruck) {
           const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
