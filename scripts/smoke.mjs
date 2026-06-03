@@ -1285,8 +1285,7 @@ async function main() {
         "visible scene drawables are classified for physics",
         visiblePhysicsAuditValue?.visibleDrawableCount > 120 &&
           visiblePhysicsAuditValue?.unclassifiedDrawableCount === 0 &&
-          visiblePhysicsAuditValue?.physicalDrawableCount + visiblePhysicsAuditValue?.guideDrawableCount ===
-            visiblePhysicsAuditValue?.visibleDrawableCount &&
+          visiblePhysicsAuditValue?.physicalDrawableCount === visiblePhysicsAuditValue?.visibleDrawableCount &&
           visiblePhysicsAuditValue?.worldColliderDrawableCount === visiblePhysicsAuditValue?.visibleWorldColliderCount &&
           visiblePhysicsAuditValue?.visibleWorldColliderCount === visiblePhysicsAuditValue?.worldColliderCount &&
           visiblePhysicsAuditValue?.liftableWorldColliderCount === visiblePhysicsAuditValue?.worldColliderCount &&
@@ -1295,7 +1294,7 @@ async function main() {
           visiblePhysicsAuditValue?.excavatorDrawableCount > 30 &&
           visiblePhysicsAuditValue?.truckDrawableCount >= 11 &&
           visiblePhysicsAuditValue?.terrainDrawableCount === 1 &&
-          visiblePhysicsAuditValue?.guideDrawableCount >= 3 &&
+          visiblePhysicsAuditValue?.guideDrawableCount === 0 &&
           visiblePhysicsAuditValue?.particleDrawableCount >= 1 &&
           visiblePhysicsAuditValue?.excavatorSampleCount > visiblePhysicsAuditValue?.excavatorDrawableCount * 0.55 &&
           visiblePhysicsAuditValue?.truckSolidPartCount >= 7 &&

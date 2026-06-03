@@ -1166,6 +1166,7 @@ class HeightfieldTerrain {
     grid.position.y = 0.018;
     grid.material.transparent = true;
     grid.material.opacity = 0.28;
+    grid.visible = false;
     scene.add(grid);
   }
 
@@ -4794,6 +4795,7 @@ class Simulator {
     digRing.userData.physicsRole = "worksite-guide";
     digRing.rotation.x = -Math.PI / 2;
     digRing.position.set(DIG_SITE.x, 0.04, DIG_SITE.z);
+    digRing.visible = false;
     this.scene.add(digRing);
 
     const safeMat = new THREE.MeshBasicMaterial({ color: 0xdb553f, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
@@ -4802,6 +4804,7 @@ class Simulator {
     safeRing.userData.physicsRole = "worksite-guide";
     safeRing.rotation.x = -Math.PI / 2;
     safeRing.position.set(WORKER_ZONE.x, 0.05, WORKER_ZONE.z);
+    safeRing.visible = false;
     this.scene.add(safeRing);
 
     const coneMat = makeMat(0xe2602d, 0.65, 0.04);
