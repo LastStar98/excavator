@@ -1068,7 +1068,11 @@ async function main() {
           truckLoadPhysicsValue?.loadSurfacePenetrationAfter < truckLoadPhysicsValue?.loadSurfacePenetrationBefore - 0.02 &&
           truckLoadPhysicsValue?.loadSurfaceObjectTravel > 0.02 &&
           truckLoadPhysicsValue?.loadSurfaceObjectImpulse > 0.02 &&
-          truckLoadPhysicsValue?.loadSurfaceObjectVelocity > 0.005,
+          truckLoadPhysicsValue?.loadSurfaceObjectVelocity > 0.005 &&
+          truckLoadPhysicsValue?.spilledVolume > 0.015 &&
+          truckLoadPhysicsValue?.loadAfterSpill < truckLoadPhysicsValue?.accepted - 0.01 &&
+          truckLoadPhysicsValue?.spillTerrainGain > 0.01 &&
+          truckLoadPhysicsValue?.loadHeightDropFromSpill > 0.002,
       ],
       [
         "terrain material zones alter track and bucket physics",

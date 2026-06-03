@@ -465,6 +465,10 @@ interface ExcavatorDebugApi {
     loadSurfaceObjectTravel: number;
     loadSurfaceObjectImpulse: number;
     loadSurfaceObjectVelocity: number;
+    spilledVolume: number;
+    loadAfterSpill: number;
+    spillTerrainGain: number;
+    loadHeightDropFromSpill: number;
   };
   forceTerrainMaterialPhysics: () => {
     mudWetness: number;
@@ -2242,6 +2246,115 @@ class WorkTruck {
       this.commitLoadSurface();
     }
     return moved;
+  }
+
+  spillLoadOverBed(
+    dt: number,
+    intensity = 1,
+    maxVolume = Infinity,
+  ): { spilledVolume: number; worldPoint: THREE.Vector3; localX: number; localZ: number } {
+    const fallbackLocal = new THREE.Vector3(this.bedCenterX, this.bedFloorY + 0.04, 0);
+    if (!this.loadMesh.visible || dt <= 0 || maxVolume <= 0) {
+      const worldPoint = this.group.localToWorld(fallbackLocal.clone());
+      return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z };
+    }
+
+    const inverseTruckRotation = this.group.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const localGravity = new THREE.Vector3(0, -1, 0).applyQuaternion(inverseTruckRotation);
+    const downhill = new THREE.Vector2(localGravity.x, localGravity.z);
+    const downhillLen = downhill.length();
+    const verticalSupport = Math.max(Math.abs(localGravity.y), 0.2);
+    if (downhillLen < 0.012) {
+      const worldPoint = this.group.localToWorld(fallbackLocal.clone());
+      return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z };
+    }
+
+    downhill.divideScalar(downhillLen);
+    const impactShake = clamp(Math.abs(this.impactPitch) + Math.abs(this.impactRoll) + this.impactImpulse * 0.012, 0, 0.45);
+    const tilt = clamp(downhillLen / verticalSupport + impactShake * 0.6, 0, 1.35);
+    const spillDrive = clamp((tilt - 0.045) * clamp(intensity, 0.25, 4.5), 0, 2.1);
+    if (spillDrive <= 0.001) {
+      const worldPoint = this.group.localToWorld(fallbackLocal.clone());
+      return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z };
+    }
+
+    const cellArea = (this.bedLength / this.loadSegmentsX) * (this.bedWidth / this.loadSegmentsZ);
+    const timeScale = clamp(dt * 1.55, 0.08, 1.35);
+    const spillThreshold = clamp(0.3 - spillDrive * 0.13, 0.105, 0.3);
+    let spilledVolume = 0;
+    let weightedX = 0;
+    let weightedZ = 0;
+
+    for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+        let edgeAlignment = 0;
+        if (ix === 0) {
+          edgeAlignment = Math.max(edgeAlignment, -downhill.x);
+        }
+        if (ix === this.loadSegmentsX) {
+          edgeAlignment = Math.max(edgeAlignment, downhill.x);
+        }
+        if (iz === 0) {
+          edgeAlignment = Math.max(edgeAlignment, -downhill.y);
+        }
+        if (iz === this.loadSegmentsZ) {
+          edgeAlignment = Math.max(edgeAlignment, downhill.y);
+        }
+        if (edgeAlignment <= 0.08) {
+          continue;
+        }
+
+        const idx = this.loadIndex(ix, iz);
+        const sourceHeight = this.loadHeights[idx];
+        if (sourceHeight <= 0.001) {
+          continue;
+        }
+
+        const overflow = Math.max(0, sourceHeight - spillThreshold);
+        const shakeOverflow = Math.max(0, spillDrive - 0.55) * 0.018 * edgeAlignment;
+        const removeHeight = clamp(
+          (overflow * (0.16 + edgeAlignment * 0.24) + shakeOverflow) * timeScale,
+          0,
+          sourceHeight * 0.36,
+        );
+        if (removeHeight <= 0) {
+          continue;
+        }
+
+        const remainingVolume = Math.max(0, maxVolume - spilledVolume);
+        const volume = Math.min(remainingVolume, (removeHeight * cellArea) / 0.72);
+        const actualRemoveHeight = (volume * 0.72) / cellArea;
+        if (actualRemoveHeight <= 0) {
+          continue;
+        }
+
+        this.loadHeights[idx] = Math.max(0, this.loadHeights[idx] - actualRemoveHeight);
+        const localX = this.bedCenterX - this.bedLength / 2 + (ix / this.loadSegmentsX) * this.bedLength;
+        const localZ = -this.bedWidth / 2 + (iz / this.loadSegmentsZ) * this.bedWidth;
+        const outsideX = localX + downhill.x * 0.44;
+        const outsideZ = localZ + downhill.y * 0.38;
+        spilledVolume += volume;
+        weightedX += outsideX * volume;
+        weightedZ += outsideZ * volume;
+        if (spilledVolume >= maxVolume - 0.000001) {
+          break;
+        }
+      }
+      if (spilledVolume >= maxVolume - 0.000001) {
+        break;
+      }
+    }
+
+    if (spilledVolume <= 0) {
+      const worldPoint = this.group.localToWorld(fallbackLocal.clone());
+      return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z };
+    }
+
+    this.commitLoadSurface();
+    const localX = weightedX / spilledVolume;
+    const localZ = weightedZ / spilledVolume;
+    const worldPoint = this.group.localToWorld(new THREE.Vector3(localX, this.bedFloorY + 0.04, localZ));
+    return { spilledVolume, worldPoint, localX, localZ };
   }
 
   depositSoilAt(point: THREE.Vector3, volume: number, availableVolume: number): number {
@@ -5829,6 +5942,9 @@ class Simulator {
         let loadSurfaceObjectTravel = 0;
         let loadSurfaceObjectImpulse = 0;
         let loadSurfaceObjectVelocity = 0;
+        let spilledVolume = 0;
+        let spillTerrainGain = 0;
+        let loadHeightDropFromSpill = 0;
         const loadProbe = this.truck.group.localToWorld(new THREE.Vector3(1.12, 1.18, 0.28));
         const loadSurface = this.truck.loadSurfaceAtWorld(loadProbe);
         const loadObstacle =
@@ -5865,6 +5981,15 @@ class Simulator {
           this.worldColliderGridDirty = true;
         }
 
+        const loadStatsBeforeSpill = this.truck.loadDistributionStats();
+        this.truck.group.rotation.x = 0.24;
+        this.truck.group.rotation.z = -0.22;
+        this.truck.applyImpact(this.truck.group.localToWorld(new THREE.Vector3(1.9, 1.5, 0.84)), new THREE.Vector3(0, -1, 0.75), 3.8);
+        const spill = this.spillTruckLoadToTerrain(0.9, 3.6);
+        spilledVolume = spill.spilledVolume;
+        spillTerrainGain = spill.terrainGain;
+        loadHeightDropFromSpill = Math.max(0, loadStatsBeforeSpill.totalHeight - this.truck.loadDistributionStats().totalHeight);
+
         this.updateUi(0);
         return {
           accepted,
@@ -5887,6 +6012,10 @@ class Simulator {
           loadSurfaceObjectTravel,
           loadSurfaceObjectImpulse,
           loadSurfaceObjectVelocity,
+          spilledVolume,
+          loadAfterSpill: this.truckLoad,
+          spillTerrainGain,
+          loadHeightDropFromSpill,
         };
       },
       forceTerrainMaterialPhysics: () => {
@@ -7038,10 +7167,42 @@ class Simulator {
 
   private updateTruckPhysics(dt: number): void {
     const state = this.truck.updatePhysics(this.terrain, this.truckLoad, dt, this.truckLoad > 0.02);
+    const spill = this.spillTruckLoadToTerrain(
+      dt,
+      0.85 + clamp(Math.abs(state.pitch) + Math.abs(state.roll) + state.impactImpulse * 0.016, 0, 1.25),
+    );
+    if (spill.spilledVolume > 0.001) {
+      this.pressure = Math.max(this.pressure, clamp(0.12 + spill.spilledVolume * 0.32 + spill.terrainGain * 0.45, 0, 0.48));
+    }
     if (state.tireCompacted > 0.001) {
       this.wakeTruckWheelColliders();
       this.pressure = Math.max(this.pressure, clamp(0.04 + state.loadRatio * 0.18 + state.tireRutDrop * 2.4, 0, 0.42));
     }
+  }
+
+  private spillTruckLoadToTerrain(dt: number, intensity = 1): { spilledVolume: number; terrainGain: number; worldPoint: THREE.Vector3 } {
+    if (this.truckLoad <= 0.002) {
+      return { spilledVolume: 0, terrainGain: 0, worldPoint: this.truck.group.position.clone() };
+    }
+
+    const beforeTerrain = this.terrain.terrainVolumeDelta();
+    const spill = this.truck.spillLoadOverBed(dt, intensity, this.truckLoad);
+    if (spill.spilledVolume <= 0) {
+      return { spilledVolume: 0, terrainGain: 0, worldPoint: spill.worldPoint };
+    }
+
+    const spilledVolume = Math.min(this.truckLoad, spill.spilledVolume);
+    const depositRadius = clamp(0.34 + Math.cbrt(spilledVolume) * 0.28, 0.36, 0.78);
+    const depositPoint = spill.worldPoint.clone();
+    depositPoint.y = this.terrain.getHeightAt(depositPoint.x, depositPoint.z);
+    this.raiseTerrainWithWake(depositPoint, depositRadius, spilledVolume, 1);
+    this.truckLoad = Math.max(0, this.truckLoad - spilledVolume);
+    this.truck.updateLoad(this.truckLoad);
+    return {
+      spilledVolume,
+      terrainGain: this.terrain.terrainVolumeDelta() - beforeTerrain,
+      worldPoint: spill.worldPoint,
+    };
   }
 
   private readAxes(): JoystickAxes {
