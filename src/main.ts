@@ -640,6 +640,9 @@ interface ExcavatorDebugApi {
     loadCenterShiftZ: number;
     loadHeightConserved: number;
     loadSlumpMoved: number;
+    impactLoadCenterShiftX: number;
+    impactLoadCenterShiftZ: number;
+    impactLoadHeightConserved: number;
     loadSurfaceHeight: number;
     loadSurfaceNormalY: number;
     loadSurfacePenetrationBefore: number;
@@ -2241,6 +2244,9 @@ class WorkTruck {
     this.impactRoll = clamp(this.impactRoll + rollImpulse, -0.15, 0.15);
     this.impactLift = clamp(Math.max(this.impactLift, Math.abs(forceY) * impulseMagnitude * 0.018), 0, 0.08);
     this.impactImpulse = clamp(this.impactImpulse + impulseMagnitude, 0, 8);
+    if (this.loadMesh.visible) {
+      this.slumpLoadByInertia(new THREE.Vector2(-forceX, -forceZ), impulseMagnitude);
+    }
     return this.physicsState();
   }
 
@@ -2701,6 +2707,44 @@ class WorkTruck {
       for (let iz = 0; iz < this.loadSegmentsZ; iz += 1) {
         for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
           moved += this.transferLoadDownhill(ix, iz, ix, iz + 1, downhill, tilt, dt, intensity);
+        }
+      }
+    }
+
+    if (moved > 0.0001) {
+      this.relaxLoad(1);
+      this.commitLoadSurface();
+    }
+    return moved;
+  }
+
+  slumpLoadByInertia(localAcceleration: THREE.Vector2, impulse = 1): number {
+    if (!this.loadMesh.visible) {
+      return 0;
+    }
+
+    const direction = localAcceleration.clone();
+    const length = direction.length();
+    if (length < 0.025 || impulse <= 0) {
+      return 0;
+    }
+
+    direction.divideScalar(length);
+    const drive = clamp(length * impulse * 0.16, 0.025, 0.9);
+    const dt = clamp(0.08 + impulse * 0.025, 0.08, 0.26);
+    const intensity = clamp(0.8 + impulse * 0.24, 0.8, 2.8);
+    const passes = Math.max(1, Math.min(4, Math.ceil(1 + drive * 3)));
+    let moved = 0;
+
+    for (let pass = 0; pass < passes; pass += 1) {
+      for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix < this.loadSegmentsX; ix += 1) {
+          moved += this.transferLoadDownhill(ix, iz, ix + 1, iz, direction, drive, dt, intensity);
+        }
+      }
+      for (let iz = 0; iz < this.loadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+          moved += this.transferLoadDownhill(ix, iz, ix, iz + 1, direction, drive, dt, intensity);
         }
       }
     }
@@ -7572,6 +7616,9 @@ class Simulator {
         let spilledVolume = 0;
         let spillTerrainGain = 0;
         let loadHeightDropFromSpill = 0;
+        let impactLoadCenterShiftX = 0;
+        let impactLoadCenterShiftZ = 0;
+        let impactLoadHeightConserved = 0;
         const loadProbe = this.truck.group.localToWorld(new THREE.Vector3(1.12, 1.18, 0.28));
         const loadSurface = this.truck.loadSurfaceAtWorld(loadProbe);
         const loadObstacle =
@@ -7612,6 +7659,10 @@ class Simulator {
         this.truck.group.rotation.x = 0.24;
         this.truck.group.rotation.z = -0.22;
         this.truck.applyImpact(this.truck.group.localToWorld(new THREE.Vector3(1.9, 1.5, 0.84)), new THREE.Vector3(0, -1, 0.75), 3.8);
+        const loadStatsAfterImpact = this.truck.loadDistributionStats();
+        impactLoadCenterShiftX = loadStatsAfterImpact.centerX - loadStatsBeforeSpill.centerX;
+        impactLoadCenterShiftZ = loadStatsAfterImpact.centerZ - loadStatsBeforeSpill.centerZ;
+        impactLoadHeightConserved = Math.abs(loadStatsAfterImpact.totalHeight - loadStatsBeforeSpill.totalHeight);
         const spill = this.spillTruckLoadToTerrain(0.9, 3.6);
         spilledVolume = spill.spilledVolume;
         spillTerrainGain = spill.terrainGain;
@@ -7632,6 +7683,9 @@ class Simulator {
           loadCenterShiftZ: loadStatsAfterSlump.centerZ - loadStatsBeforeSlump.centerZ,
           loadHeightConserved: Math.abs(loadStatsAfterSlump.totalHeight - loadHeightBeforeSlump),
           loadSlumpMoved,
+          impactLoadCenterShiftX,
+          impactLoadCenterShiftZ,
+          impactLoadHeightConserved,
           loadSurfaceHeight,
           loadSurfaceNormalY,
           loadSurfacePenetrationBefore,

@@ -1247,6 +1247,8 @@ async function main() {
           Math.hypot(truckLoadPhysicsValue?.loadCenterShiftX ?? 0, truckLoadPhysicsValue?.loadCenterShiftZ ?? 0) > 0.012 &&
           truckLoadPhysicsValue?.loadHeightConserved < 0.0005 &&
           truckLoadPhysicsValue?.loadSlumpMoved > 0.006 &&
+          Math.hypot(truckLoadPhysicsValue?.impactLoadCenterShiftX ?? 0, truckLoadPhysicsValue?.impactLoadCenterShiftZ ?? 0) > 0.004 &&
+          truckLoadPhysicsValue?.impactLoadHeightConserved < 0.0005 &&
           truckLoadPhysicsValue?.loadSurfaceHeight > 0.1 &&
           truckLoadPhysicsValue?.loadSurfaceNormalY > 0.45 &&
           truckLoadPhysicsValue?.loadSurfacePenetrationBefore > 0.05 &&
