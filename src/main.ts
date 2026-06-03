@@ -445,6 +445,10 @@ interface ExcavatorDebugApi {
     carriedTruckReleased: boolean;
     carriedTruckPenetrationBefore: number;
     carriedTruckPenetrationAfter: number;
+    carriedTerrainReleased: boolean;
+    carriedTerrainPenetrationBefore: number;
+    carriedTerrainPenetrationAfter: number;
+    carriedTerrainImpactSpeed: number;
     carriedObjectImpulse: number;
     heavyOrientationDelta: number;
     bucketOrientationDelta: number;
@@ -5948,6 +5952,10 @@ class Simulator {
         let carriedTruckReleased = false;
         let carriedTruckPenetrationBefore = 0;
         let carriedTruckPenetrationAfter = 0;
+        let carriedTerrainReleased = false;
+        let carriedTerrainPenetrationBefore = 0;
+        let carriedTerrainPenetrationAfter = 0;
+        let carriedTerrainImpactSpeed = 0;
         let carriedObjectImpulse = 0;
         let heavyOrientationDelta = 0;
         let bucketOrientationDelta = 0;
@@ -6055,6 +6063,33 @@ class Simulator {
           this.releaseCarriedWorldObjects();
         }
 
+        if (hard) {
+          this.carriedWorldColliders.clear();
+          this.carriedWorldPreviousPositions.clear();
+          this.carriedWorldLocalQuaternions.clear();
+          this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+          Object.assign(this.angles, { swing: 0, boom: 0.42, stick: -1.52, bucket: -2.32 });
+          this.excavator.applyAngles(this.angles);
+          const local = new THREE.Vector3(-0.58, -0.3, 0.02);
+          const terrainTarget = new THREE.Vector3(2.25, 0, -2.65);
+          terrainTarget.y = this.terrain.getHeightAt(terrainTarget.x, terrainTarget.z) + hard.groundOffset - 0.34;
+          const current = this.excavator.bucketGroup.localToWorld(local.clone());
+          this.excavator.group.position.add(terrainTarget.clone().sub(current));
+          this.excavator.applyAngles(this.angles);
+          hard.mesh.position.copy(terrainTarget);
+          hard.velocity.set(0, 0, 0);
+          hard.angularVelocity.set(0, 0, 0);
+          hard.sleeping = false;
+          this.carryWorldColliderAt(hard, local, terrainTarget.clone().add(new THREE.Vector3(0, 0.46, 0)));
+          this.collisionCooldown = 0;
+          carriedTerrainPenetrationBefore = this.worldColliderTerrainSupport(hard).penetration;
+          this.updateCarriedWorldObjects(0.08);
+          carriedTerrainReleased = !this.carriedWorldColliders.has(hard);
+          carriedTerrainPenetrationAfter = this.worldColliderTerrainSupport(hard).penetration;
+          carriedTerrainImpactSpeed = hard.velocity.length();
+          this.releaseCarriedWorldObjects();
+        }
+
         if (debris && hard) {
           this.carriedWorldColliders.clear();
           this.carriedWorldPreviousPositions.clear();
@@ -6098,6 +6133,10 @@ class Simulator {
           carriedTruckReleased,
           carriedTruckPenetrationBefore,
           carriedTruckPenetrationAfter,
+          carriedTerrainReleased,
+          carriedTerrainPenetrationBefore,
+          carriedTerrainPenetrationAfter,
+          carriedTerrainImpactSpeed,
           carriedObjectImpulse,
           heavyOrientationDelta,
           bucketOrientationDelta,
@@ -8446,7 +8485,7 @@ class Simulator {
         collider.mesh.rotation.x += collider.velocity.z * dt * 0.65;
         collider.mesh.rotation.z -= collider.velocity.x * dt * 0.65;
       }
-      if (!this.resolveCarriedWorldObjectImpact(collider)) {
+      if (!this.resolveCarriedWorldObjectImpact(collider, dt)) {
         this.carriedWorldPreviousPositions.set(collider, next.clone());
       }
     }
@@ -8457,7 +8496,7 @@ class Simulator {
     );
   }
 
-  private resolveCarriedWorldObjectImpact(collider: WorldCollider): boolean {
+  private resolveCarriedWorldObjectImpact(collider: WorldCollider, dt: number): boolean {
     const truckHit = this.resolveWorldColliderShapeHit(collider, (point, radius) => this.truck.resolveSolidCollision(point, radius));
     if (truckHit) {
       const normal = truckHit.normal.clone().normalize();
@@ -8487,6 +8526,48 @@ class Simulator {
       this.applyWorldColliderAngularImpulse(collider, truckHit.point, normal.clone().multiplyScalar(truckImpulse * collider.mass), 0.2);
       this.releaseCarriedWorldCollider(collider);
       this.pressure = Math.max(this.pressure, clamp(0.42 + maxPenetration * 1.6 + collider.mass * 0.008, 0, 1));
+      if (this.collisionCooldown <= 0 && maxPenetration > 0.018) {
+        this.collisionCount += 1;
+        this.collisionCooldown = 0.34;
+      }
+      return true;
+    }
+
+    const terrainSupport = this.worldColliderTerrainSupport(collider);
+    if (terrainSupport.penetration > 0.018) {
+      const normal = terrainSupport.normal.clone().normalize();
+      let maxPenetration = terrainSupport.penetration;
+      let contactPoint = terrainSupport.point.clone();
+      for (let pass = 0; pass < 4; pass += 1) {
+        const passSupport = this.worldColliderTerrainSupport(collider);
+        if (passSupport.penetration <= 0.003) {
+          break;
+        }
+        maxPenetration = Math.max(maxPenetration, passSupport.penetration);
+        contactPoint = passSupport.point.clone();
+        collider.mesh.position.addScaledVector(passSupport.normal, Math.min(passSupport.penetration + 0.004, 0.42));
+      }
+
+      const normalSpeed = collider.velocity.dot(normal);
+      const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed).multiplyScalar(0.58);
+      const bounceSpeed =
+        normalSpeed < 0
+          ? -normalSpeed * clamp(collider.restitution + 0.06, 0.06, 0.34)
+          : Math.max(normalSpeed, 0.02 + maxPenetration * 0.08);
+      const impactSpeed = Math.max(0, -normalSpeed) + maxPenetration * 2.2;
+      const footprint = this.compactWorldObjectFootprint(collider, contactPoint, impactSpeed, dt);
+      collider.velocity.copy(tangent).addScaledVector(normal, bounceSpeed + clamp(maxPenetration * 0.42, 0, 0.18));
+      this.applyWorldColliderAngularImpulse(
+        collider,
+        contactPoint,
+        normal.clone().multiplyScalar(Math.max(impactSpeed, 0.08) * collider.mass),
+        0.22,
+      );
+      this.releaseCarriedWorldCollider(collider);
+      this.pressure = Math.max(
+        this.pressure,
+        clamp(0.34 + maxPenetration * 1.45 + impactSpeed * 0.12 + footprint.rutDrop * 2.8, 0, 1),
+      );
       if (this.collisionCooldown <= 0 && maxPenetration > 0.018) {
         this.collisionCount += 1;
         this.collisionCooldown = 0.34;

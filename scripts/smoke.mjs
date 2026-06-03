@@ -1032,6 +1032,10 @@ async function main() {
           armWorldObjectPhysicsValue?.carriedTruckReleased &&
           armWorldObjectPhysicsValue?.carriedTruckPenetrationBefore > armWorldObjectPhysicsValue?.carriedTruckPenetrationAfter &&
           armWorldObjectPhysicsValue?.carriedTruckPenetrationAfter < 0.04 &&
+          armWorldObjectPhysicsValue?.carriedTerrainReleased &&
+          armWorldObjectPhysicsValue?.carriedTerrainPenetrationBefore > armWorldObjectPhysicsValue?.carriedTerrainPenetrationAfter + 0.04 &&
+          armWorldObjectPhysicsValue?.carriedTerrainPenetrationAfter < 0.035 &&
+          armWorldObjectPhysicsValue?.carriedTerrainImpactSpeed > 0.02 &&
           armWorldObjectPhysicsValue?.carriedObjectImpulse > 0.02 &&
           !armWorldObjectPhysicsValue?.immovableBlocked &&
           armWorldObjectPhysicsValue?.penetration > 0.02 &&
