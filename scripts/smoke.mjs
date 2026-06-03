@@ -954,6 +954,12 @@ async function main() {
           truckCollisionValue?.openBedEnvelopePenetration > 0.08 &&
           truckCollisionValue?.openBedSolidPenetration === 0 &&
           truckCollisionValue?.chassisSolidPenetration > 0.08 &&
+          truckCollisionValue?.cabSolidPenetration > 0.08 &&
+          truckCollisionValue?.bedFloorSolidPenetration > 0.08 &&
+          truckCollisionValue?.bedLeftWallSolidPenetration > 0.08 &&
+          truckCollisionValue?.bedRightWallSolidPenetration > 0.08 &&
+          truckCollisionValue?.bedFrontGateSolidPenetration > 0.08 &&
+          truckCollisionValue?.bedTailgateSolidPenetration > 0.08 &&
           truckCollisionValue?.wheelSolidPenetration > 0.08 &&
           truckCollisionValue?.collisionCount > 0 &&
           truckCollisionValue?.pressure > 0.4,

@@ -66,6 +66,7 @@ interface SoilParticle {
 }
 
 type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone" | "pipe";
+type TruckSolidPartKey = "chassis" | "cab" | "bed-floor" | "bed-left-wall" | "bed-right-wall" | "bed-front-gate" | "bed-tailgate";
 
 interface CrawlerFootprintSample {
   x: number;
@@ -80,6 +81,12 @@ interface WorldColliderCapsule {
   localA: THREE.Vector3;
   localB: THREE.Vector3;
   radius: number;
+}
+
+interface TruckSolidBox {
+  key: TruckSolidPartKey;
+  center: THREE.Vector3;
+  half: THREE.Vector3;
 }
 
 interface WorldCollider {
@@ -384,6 +391,12 @@ interface ExcavatorDebugApi {
     openBedEnvelopePenetration: number;
     openBedSolidPenetration: number;
     chassisSolidPenetration: number;
+    cabSolidPenetration: number;
+    bedFloorSolidPenetration: number;
+    bedLeftWallSolidPenetration: number;
+    bedRightWallSolidPenetration: number;
+    bedFrontGateSolidPenetration: number;
+    bedTailgateSolidPenetration: number;
     wheelSolidPenetration: number;
     frontContact: TruckCrawlerContactResult;
     sideContact: TruckCrawlerContactResult;
@@ -1839,14 +1852,14 @@ class WorkTruck {
   private readonly bedWidth = 1.72;
   private readonly bedFloorY = 0.72;
   private readonly bedCenterX = 0.54;
-  private readonly solidBoxes = [
-    { center: new THREE.Vector3(0, 0.45, 0), half: new THREE.Vector3(2.2, 0.11, 0.98) },
-    { center: new THREE.Vector3(-2.12, 1.03, 0), half: new THREE.Vector3(0.53, 0.48, 0.86) },
-    { center: new THREE.Vector3(0.54, 0.72, 0), half: new THREE.Vector3(1.93, 0.08, 0.86) },
-    { center: new THREE.Vector3(0.54, 1.12, -0.86), half: new THREE.Vector3(1.93, 0.45, 0.06) },
-    { center: new THREE.Vector3(0.54, 1.12, 0.86), half: new THREE.Vector3(1.93, 0.45, 0.06) },
-    { center: new THREE.Vector3(-1.38, 1.12, 0), half: new THREE.Vector3(0.07, 0.45, 0.86) },
-    { center: new THREE.Vector3(2.46, 1.12, 0), half: new THREE.Vector3(0.07, 0.45, 0.86) },
+  private readonly solidBoxes: TruckSolidBox[] = [
+    { key: "chassis", center: new THREE.Vector3(0, 0.45, 0), half: new THREE.Vector3(2.2, 0.11, 0.98) },
+    { key: "cab", center: new THREE.Vector3(-2.12, 1.03, 0), half: new THREE.Vector3(0.53, 0.48, 0.86) },
+    { key: "bed-floor", center: new THREE.Vector3(0.54, 0.72, 0), half: new THREE.Vector3(1.93, 0.08, 0.86) },
+    { key: "bed-left-wall", center: new THREE.Vector3(0.54, 1.12, -0.86), half: new THREE.Vector3(1.93, 0.45, 0.06) },
+    { key: "bed-right-wall", center: new THREE.Vector3(0.54, 1.12, 0.86), half: new THREE.Vector3(1.93, 0.45, 0.06) },
+    { key: "bed-front-gate", center: new THREE.Vector3(-1.38, 1.12, 0), half: new THREE.Vector3(0.07, 0.45, 0.86) },
+    { key: "bed-tailgate", center: new THREE.Vector3(2.46, 1.12, 0), half: new THREE.Vector3(0.07, 0.45, 0.86) },
   ];
   private readonly loadSegmentsX = 10;
   private readonly loadSegmentsZ = 6;
@@ -2101,44 +2114,13 @@ class WorkTruck {
     let best: { normal: THREE.Vector3; penetration: number } | null = null;
 
     for (const box of this.solidBoxes) {
-      const delta = local.clone().sub(box.center);
-      const closest = new THREE.Vector3(
-        clamp(delta.x, -box.half.x, box.half.x),
-        clamp(delta.y, -box.half.y, box.half.y),
-        clamp(delta.z, -box.half.z, box.half.z),
-      );
-      const separation = delta.clone().sub(closest);
-      const distanceSq = separation.lengthSq();
-      let localNormal: THREE.Vector3 | null = null;
-      let penetration = 0;
-
-      if (distanceSq > 0.000001) {
-        const distance = Math.sqrt(distanceSq);
-        if (distance >= radius) {
-          continue;
-        }
-        localNormal = separation.divideScalar(distance);
-        penetration = radius - distance;
-      } else if (
-        Math.abs(delta.x) <= box.half.x &&
-        Math.abs(delta.y) <= box.half.y &&
-        Math.abs(delta.z) <= box.half.z
-      ) {
-        const faceDistances = [
-          { value: box.half.x - Math.abs(delta.x), normal: new THREE.Vector3(Math.sign(delta.x || 1), 0, 0) },
-          { value: box.half.y - Math.abs(delta.y), normal: new THREE.Vector3(0, Math.sign(delta.y || 1), 0) },
-          { value: box.half.z - Math.abs(delta.z), normal: new THREE.Vector3(0, 0, Math.sign(delta.z || 1)) },
-        ].sort((a, b) => a.value - b.value);
-        localNormal = faceDistances[0].normal;
-        penetration = radius + faceDistances[0].value;
-      }
-
-      if (!localNormal || penetration <= 0) {
+      const boxHit = this.resolveSolidBoxLocalCollision(box, local, radius);
+      if (!boxHit) {
         continue;
       }
-      const normal = localNormal.applyQuaternion(this.group.quaternion).normalize();
-      if (!best || penetration > best.penetration) {
-        best = { normal, penetration };
+      const normal = boxHit.normal.applyQuaternion(this.group.quaternion).normalize();
+      if (!best || boxHit.penetration > best.penetration) {
+        best = { normal, penetration: boxHit.penetration };
       }
     }
 
@@ -2159,6 +2141,69 @@ class WorkTruck {
     }
 
     return best;
+  }
+
+  resolveSolidPartCollision(
+    part: TruckSolidPartKey,
+    worldPoint: THREE.Vector3,
+    radius: number,
+  ): { normal: THREE.Vector3; penetration: number } | null {
+    const box = this.solidBoxes.find((candidate) => candidate.key === part);
+    if (!box) {
+      return null;
+    }
+    const local = this.group.worldToLocal(worldPoint.clone());
+    const boxHit = this.resolveSolidBoxLocalCollision(box, local, radius);
+    if (!boxHit) {
+      return null;
+    }
+    return {
+      normal: boxHit.normal.applyQuaternion(this.group.quaternion).normalize(),
+      penetration: boxHit.penetration,
+    };
+  }
+
+  private resolveSolidBoxLocalCollision(
+    box: TruckSolidBox,
+    local: THREE.Vector3,
+    radius: number,
+  ): { normal: THREE.Vector3; penetration: number } | null {
+    const delta = local.clone().sub(box.center);
+    const closest = new THREE.Vector3(
+      clamp(delta.x, -box.half.x, box.half.x),
+      clamp(delta.y, -box.half.y, box.half.y),
+      clamp(delta.z, -box.half.z, box.half.z),
+    );
+    const separation = delta.clone().sub(closest);
+    const distanceSq = separation.lengthSq();
+    let localNormal: THREE.Vector3 | null = null;
+    let penetration = 0;
+
+    if (distanceSq > 0.000001) {
+      const distance = Math.sqrt(distanceSq);
+      if (distance >= radius) {
+        return null;
+      }
+      localNormal = separation.divideScalar(distance);
+      penetration = radius - distance;
+    } else if (
+      Math.abs(delta.x) <= box.half.x &&
+      Math.abs(delta.y) <= box.half.y &&
+      Math.abs(delta.z) <= box.half.z
+    ) {
+      const faceDistances = [
+        { value: box.half.x - Math.abs(delta.x), normal: new THREE.Vector3(Math.sign(delta.x || 1), 0, 0) },
+        { value: box.half.y - Math.abs(delta.y), normal: new THREE.Vector3(0, Math.sign(delta.y || 1), 0) },
+        { value: box.half.z - Math.abs(delta.z), normal: new THREE.Vector3(0, 0, Math.sign(delta.z || 1)) },
+      ].sort((a, b) => a.value - b.value);
+      localNormal = faceDistances[0].normal;
+      penetration = radius + faceDistances[0].value;
+    }
+
+    if (!localNormal || penetration <= 0) {
+      return null;
+    }
+    return { normal: localNormal, penetration };
   }
 
   resolveWheelCollision(worldPoint: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
@@ -5795,10 +5840,22 @@ class Simulator {
         const elevatedFalseContact = Boolean(this.truck.resolveBodyCollision(highClearProbe, TRACK_WIDTH * 0.54));
         const openBedProbe = this.truck.group.localToWorld(new THREE.Vector3(0.54, 1.24, 0));
         const chassisProbe = this.truck.group.localToWorld(new THREE.Vector3(0.0, 0.45, 0.0));
+        const cabProbe = this.truck.group.localToWorld(new THREE.Vector3(-2.12, 1.03, 0));
+        const bedFloorProbe = this.truck.group.localToWorld(new THREE.Vector3(0.54, 0.72, 0));
+        const bedLeftWallProbe = this.truck.group.localToWorld(new THREE.Vector3(0.54, 1.12, -0.86));
+        const bedRightWallProbe = this.truck.group.localToWorld(new THREE.Vector3(0.54, 1.12, 0.86));
+        const bedFrontGateProbe = this.truck.group.localToWorld(new THREE.Vector3(-1.38, 1.12, 0));
+        const bedTailgateProbe = this.truck.group.localToWorld(new THREE.Vector3(2.46, 1.12, 0));
         const wheelProbe = this.truck.group.localToWorld(new THREE.Vector3(-1.7, 0.32, -1.02));
         const openBedEnvelopePenetration = this.truck.resolveBodyCollision(openBedProbe, 0.08)?.penetration ?? 0;
         const openBedSolidPenetration = this.truck.resolveSolidCollision(openBedProbe, 0.08)?.penetration ?? 0;
-        const chassisSolidPenetration = this.truck.resolveSolidCollision(chassisProbe, 0.08)?.penetration ?? 0;
+        const chassisSolidPenetration = this.truck.resolveSolidPartCollision("chassis", chassisProbe, 0.08)?.penetration ?? 0;
+        const cabSolidPenetration = this.truck.resolveSolidPartCollision("cab", cabProbe, 0.08)?.penetration ?? 0;
+        const bedFloorSolidPenetration = this.truck.resolveSolidPartCollision("bed-floor", bedFloorProbe, 0.08)?.penetration ?? 0;
+        const bedLeftWallSolidPenetration = this.truck.resolveSolidPartCollision("bed-left-wall", bedLeftWallProbe, 0.08)?.penetration ?? 0;
+        const bedRightWallSolidPenetration = this.truck.resolveSolidPartCollision("bed-right-wall", bedRightWallProbe, 0.08)?.penetration ?? 0;
+        const bedFrontGateSolidPenetration = this.truck.resolveSolidPartCollision("bed-front-gate", bedFrontGateProbe, 0.08)?.penetration ?? 0;
+        const bedTailgateSolidPenetration = this.truck.resolveSolidPartCollision("bed-tailgate", bedTailgateProbe, 0.08)?.penetration ?? 0;
         const wheelSolidPenetration = this.truck.resolveSolidCollision(wheelProbe, 0.08)?.penetration ?? 0;
         const supportForward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
         this.updateExcavatorSupport(0.3, supportForward);
@@ -5829,6 +5886,12 @@ class Simulator {
           openBedEnvelopePenetration,
           openBedSolidPenetration,
           chassisSolidPenetration,
+          cabSolidPenetration,
+          bedFloorSolidPenetration,
+          bedLeftWallSolidPenetration,
+          bedRightWallSolidPenetration,
+          bedFrontGateSolidPenetration,
+          bedTailgateSolidPenetration,
           wheelSolidPenetration,
           frontContact: front.contact,
           sideContact: side.contact,
