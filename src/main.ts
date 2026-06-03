@@ -622,7 +622,24 @@ interface ExcavatorDebugApi {
     hardResistance: number;
     softResistance: number;
   };
-  forceRoughTrackSupport: () => { roll: number; pitch: number; sinkage: number; pressure: number; supportDrop: number };
+  forceRoughTrackSupport: () => {
+    roll: number;
+    pitch: number;
+    sinkage: number;
+    pressure: number;
+    supportDrop: number;
+    leftSupportHeight: number;
+    rightSupportHeight: number;
+    supportHeightDelta: number;
+    leftRoughness: number;
+    rightRoughness: number;
+    leftSlip: number;
+    rightSlip: number;
+    leftMotorVelocity: number;
+    rightMotorVelocity: number;
+    leftGroundSpeed: number;
+    rightGroundSpeed: number;
+  };
   forceExcavatorPayloadSupport: () => {
     unloadedPitch: number;
     loadedPitch: number;
@@ -7402,6 +7419,10 @@ class Simulator {
         this.rightTrackVelocity = TRACK_MAX_SPEED * 0.65;
         this.updateTrackSoilInteraction(0.42, forward);
         this.updateExcavatorSupport(0.65, forward);
+        const leftCenter = this.excavator.group.position.clone().addScaledVector(side, -0.72);
+        const rightCenter = this.excavator.group.position.clone().addScaledVector(side, 0.72);
+        const leftSupport = this.terrain.sampleTrackSupport(leftCenter, forward, side, TRACK_LENGTH, TRACK_WIDTH);
+        const rightSupport = this.terrain.sampleTrackSupport(rightCenter, forward, side, TRACK_LENGTH, TRACK_WIDTH);
         this.updateUi(0);
         return {
           roll: this.chassisRoll,
@@ -7409,6 +7430,17 @@ class Simulator {
           sinkage: this.chassisSinkage,
           pressure: this.pressure,
           supportDrop: beforeSupport - this.supportHeight,
+          leftSupportHeight: leftSupport.supportHeight,
+          rightSupportHeight: rightSupport.supportHeight,
+          supportHeightDelta: rightSupport.supportHeight - leftSupport.supportHeight,
+          leftRoughness: this.trackTraction.leftRoughness,
+          rightRoughness: this.trackTraction.rightRoughness,
+          leftSlip: this.trackTraction.leftSlip,
+          rightSlip: this.trackTraction.rightSlip,
+          leftMotorVelocity: this.leftTrackVelocity,
+          rightMotorVelocity: this.rightTrackVelocity,
+          leftGroundSpeed: this.trackTraction.leftGroundSpeed,
+          rightGroundSpeed: this.trackTraction.rightGroundSpeed,
         };
       },
       forceExcavatorPayloadSupport: () => {
