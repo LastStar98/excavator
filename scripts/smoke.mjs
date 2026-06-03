@@ -878,6 +878,9 @@ async function main() {
           bucketShellPhysicsValue?.sidePenetrationBefore > bucketShellPhysicsValue?.sidePenetrationAfter + 0.02 &&
           bucketShellPhysicsValue?.sidePenetrationAfter < 0.05 &&
           bucketShellPhysicsValue?.sideTravel > 0.015 &&
+          bucketShellPhysicsValue?.toothPenetrationBefore > bucketShellPhysicsValue?.toothPenetrationAfter + 0.02 &&
+          bucketShellPhysicsValue?.toothPenetrationAfter < 0.05 &&
+          bucketShellPhysicsValue?.toothTravel > 0.015 &&
           bucketShellPhysicsValue?.pressure > 0.1,
       ],
       [
