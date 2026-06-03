@@ -294,6 +294,11 @@ interface ExcavatorDebugApi {
     objectPenetrationAfter: number;
     objectTravel: number;
     objectVelocity: number;
+    loadBeforeSpill: number;
+    spilledVolume: number;
+    loadAfterSpill: number;
+    spillHeightDrop: number;
+    spillVolumeConserved: number;
     pressure: number;
   };
   forceBucketShellPhysics: () => {
@@ -2745,6 +2750,125 @@ class ExcavatorModel {
     return moved;
   }
 
+  spillBucketLoadOverLip(
+    dt: number,
+    intensity = 1,
+    currentLoad = BUCKET_CAPACITY,
+    maxSpillVolume = currentLoad,
+    lipBias = 0,
+  ): { spilledVolume: number; worldPoint: THREE.Vector3; localX: number; localZ: number; heightRemoved: number } {
+    const fallbackLocal = new THREE.Vector3(this.bucketLoadMinX, -0.5, 0);
+    if (!this.bucketLoadMesh.visible || dt <= 0 || currentLoad <= 0 || maxSpillVolume <= 0) {
+      const worldPoint = this.bucketGroup.localToWorld(fallbackLocal.clone());
+      return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z, heightRemoved: 0 };
+    }
+
+    const stats = this.bucketLoadDistributionStats();
+    if (stats.totalHeight <= 0.0001) {
+      const worldPoint = this.bucketGroup.localToWorld(fallbackLocal.clone());
+      return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z, heightRemoved: 0 };
+    }
+
+    const inverseBucketRotation = this.bucketGroup.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const localGravity = new THREE.Vector3(0, -1, 0).applyQuaternion(inverseBucketRotation);
+    const downhill = new THREE.Vector2(localGravity.x, localGravity.z);
+    const downhillLen = downhill.length();
+    if (downhillLen > 0.0001) {
+      downhill.divideScalar(downhillLen);
+    } else {
+      downhill.set(-1, 0);
+    }
+
+    const verticalSupport = Math.max(Math.abs(localGravity.y), 0.2);
+    const openLipDrive = clamp(lipBias, 0, 1.8);
+    const tilt = clamp(downhillLen / verticalSupport + openLipDrive * 0.54, 0, 1.8);
+    const spillDrive = clamp((tilt - 0.035) * clamp(intensity, 0.25, 4.2), 0, 2.4);
+    if (spillDrive <= 0.001) {
+      const worldPoint = this.bucketGroup.localToWorld(fallbackLocal.clone());
+      return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z, heightRemoved: 0 };
+    }
+
+    const volumePerHeight = currentLoad / stats.totalHeight;
+    const timeScale = clamp(dt * 1.8, 0.08, 1.4);
+    const spillThreshold = clamp(0.24 - spillDrive * 0.09 - openLipDrive * 0.08, 0.05, 0.24);
+    let spilledVolume = 0;
+    let heightRemoved = 0;
+    let weightedX = 0;
+    let weightedZ = 0;
+
+    for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
+        let edgeAlignment = 0;
+        if (ix === 0) {
+          edgeAlignment = Math.max(edgeAlignment, -downhill.x, openLipDrive);
+        }
+        if (iz === 0) {
+          edgeAlignment = Math.max(edgeAlignment, -downhill.y * 0.62);
+        }
+        if (iz === this.bucketLoadSegmentsZ) {
+          edgeAlignment = Math.max(edgeAlignment, downhill.y * 0.62);
+        }
+        if (edgeAlignment <= 0.06) {
+          continue;
+        }
+
+        const idx = this.bucketLoadIndex(ix, iz);
+        const sourceHeight = this.bucketLoadHeights[idx];
+        if (sourceHeight <= 0.001) {
+          continue;
+        }
+
+        const overflow = Math.max(0, sourceHeight - spillThreshold);
+        const shakeOverflow = Math.max(0, spillDrive - 0.4) * 0.014 * edgeAlignment;
+        const removeHeight = clamp(
+          (overflow * (0.18 + edgeAlignment * 0.28) + shakeOverflow) * timeScale,
+          0,
+          sourceHeight * 0.42,
+        );
+        const remainingVolume = Math.max(0, maxSpillVolume - spilledVolume);
+        const actualRemoveHeight = Math.min(removeHeight, remainingVolume / Math.max(volumePerHeight, 0.000001));
+        if (actualRemoveHeight <= 0) {
+          continue;
+        }
+
+        this.bucketLoadHeights[idx] = Math.max(0, sourceHeight - actualRemoveHeight);
+        const volume = actualRemoveHeight * volumePerHeight;
+        const localX = THREE.MathUtils.lerp(this.bucketLoadMinX, this.bucketLoadMaxX, ix / this.bucketLoadSegmentsX);
+        const localZ = THREE.MathUtils.lerp(this.bucketLoadMinZ, this.bucketLoadMaxZ, iz / this.bucketLoadSegmentsZ);
+        const outsideX = localX - 0.34 + Math.min(0, downhill.x) * 0.12;
+        const outsideZ = localZ + downhill.y * 0.22;
+        spilledVolume += volume;
+        heightRemoved += actualRemoveHeight;
+        weightedX += outsideX * volume;
+        weightedZ += outsideZ * volume;
+        if (spilledVolume >= maxSpillVolume - 0.000001) {
+          break;
+        }
+      }
+      if (spilledVolume >= maxSpillVolume - 0.000001) {
+        break;
+      }
+    }
+
+    if (spilledVolume <= 0) {
+      const worldPoint = this.bucketGroup.localToWorld(fallbackLocal.clone());
+      return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z, heightRemoved: 0 };
+    }
+
+    const remainingRatio = clamp((currentLoad - spilledVolume) / BUCKET_CAPACITY, 0, 1);
+    this.bucketLoadRenderedRatio = remainingRatio;
+    this.bucketLoadMesh.visible = remainingRatio > 0.02;
+    if (!this.bucketLoadMesh.visible) {
+      this.bucketLoadHeights.fill(0);
+    }
+    this.commitBucketLoadSurface();
+
+    const localX = weightedX / spilledVolume;
+    const localZ = weightedZ / spilledVolume;
+    const worldPoint = this.bucketGroup.localToWorld(new THREE.Vector3(localX, this.bucketLoadBaseY(this.bucketLoadMinX, localZ), localZ));
+    return { spilledVolume, worldPoint, localX, localZ, heightRemoved };
+  }
+
   resolveBucketLoadCollision(worldPoint: THREE.Vector3, radius: number): BucketLoadSurfaceHit | null {
     const local = this.bucketGroup.worldToLocal(worldPoint.clone());
     const hit = this.resolveBucketLoadSolidCollision(local, radius);
@@ -4996,6 +5120,11 @@ class Simulator {
         let objectPenetrationAfter = 0;
         let objectTravel = 0;
         let objectVelocity = 0;
+        let loadBeforeSpill = 0;
+        let spilledVolume = 0;
+        let loadAfterSpill = 0;
+        let spillHeightDrop = 0;
+        let spillVolumeConserved = 0;
 
         if (surface) {
           const soilRadius = 0.06;
@@ -5054,6 +5183,18 @@ class Simulator {
           }
         }
 
+        loadBeforeSpill = this.bucketLoad;
+        const heightBeforeSpill = this.excavator.bucketLoadDistributionStats().totalHeight;
+        Object.assign(this.angles, { swing: 0, boom: 0.54, stick: -1.16, bucket: 0.28 });
+        this.excavator.applyAngles(this.angles);
+        this.excavator.slumpBucketLoadUnderGravity(0.8, 2.6);
+        const spill = this.excavator.spillBucketLoadOverLip(0.85, 3.4, this.bucketLoad, this.bucketLoad * 0.34, 1.05);
+        spilledVolume = spill.spilledVolume;
+        this.bucketLoad = Math.max(0, this.bucketLoad - spilledVolume);
+        loadAfterSpill = this.bucketLoad;
+        spillHeightDrop = Math.max(0, heightBeforeSpill - this.excavator.bucketLoadDistributionStats().totalHeight);
+        spillVolumeConserved = Math.abs(loadBeforeSpill - loadAfterSpill - spilledVolume);
+
         this.updateUi(0);
         return {
           bucketLoad: this.bucketLoad,
@@ -5071,6 +5212,11 @@ class Simulator {
           objectPenetrationAfter,
           objectTravel,
           objectVelocity,
+          loadBeforeSpill,
+          spilledVolume,
+          loadAfterSpill,
+          spillHeightDrop,
+          spillVolumeConserved,
           pressure: this.pressure,
         };
       },
@@ -9523,17 +9669,53 @@ class Simulator {
     }
     if (dumpIntent && this.bucketLoad > 0.002) {
       const dumpRate = (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95 + lipDumpBias * 0.62) * dt;
-      const dumped = Math.min(this.bucketLoad, dumpRate);
-      this.bucketLoad -= dumped;
-      const fineVolume = dumped * clamp(0.035 + openFactor * 0.055, 0.035, 0.1);
-      const coarseVolume = Math.max(0, dumped - fineVolume);
-      this.spawnSoilParticles(pocket, coarseVolume, forward, openFactor);
-      this.spawnFineGrains(pocket, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openFactor, 0)), true, 1.05 + openFactor);
+      const spill = this.spillBucketLoadToWorld(
+        dt,
+        1.0 + openFactor * 2.4 + Math.max(0, this.velocities.bucket) * 0.8 + lipDumpBias,
+        openFactor + lipDumpBias * 0.45,
+        dumpRate,
+      );
+      if (spill.spilledVolume > 0.001) {
+        this.pressure = Math.max(this.pressure, clamp(0.1 + spill.spilledVolume * 0.36, 0, 0.46));
+      }
     }
 
     this.excavator.setBucketLoad(this.bucketLoad);
     this.truck.updateLoad(this.truckLoad);
     this.previousBucketTip.copy(tip);
+  }
+
+  private spillBucketLoadToWorld(
+    dt: number,
+    intensity: number,
+    lipBias: number,
+    maxVolume = this.bucketLoad,
+  ): { spilledVolume: number; heightRemoved: number; worldPoint: THREE.Vector3 } {
+    if (this.bucketLoad <= 0.002 || maxVolume <= 0) {
+      return { spilledVolume: 0, heightRemoved: 0, worldPoint: this.excavator.bucketPocketWorld() };
+    }
+
+    const spill = this.excavator.spillBucketLoadOverLip(
+      dt,
+      intensity,
+      this.bucketLoad,
+      Math.min(this.bucketLoad, maxVolume),
+      lipBias,
+    );
+    if (spill.spilledVolume <= 0) {
+      return { spilledVolume: 0, heightRemoved: 0, worldPoint: spill.worldPoint };
+    }
+
+    const spilledVolume = Math.min(this.bucketLoad, spill.spilledVolume);
+    this.bucketLoad = Math.max(0, this.bucketLoad - spilledVolume);
+    const direction = spill.worldPoint.clone().sub(this.excavator.bucketPocketWorld());
+    const forward = direction.lengthSq() > 0.0001 ? direction.normalize() : this.excavator.bucketForwardWorld();
+    const openness = clamp(lipBias, 0, 1.2);
+    const fineVolume = spilledVolume * clamp(0.035 + openness * 0.055, 0.035, 0.1);
+    const coarseVolume = Math.max(0, spilledVolume - fineVolume);
+    this.spawnSoilParticles(spill.worldPoint, coarseVolume, forward, openness);
+    this.spawnFineGrains(spill.worldPoint, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openness, 0)), true, 1.05 + openness);
+    return { spilledVolume, heightRemoved: spill.heightRemoved, worldPoint: spill.worldPoint };
   }
 
   private spawnCuttingFlow(edgePoints: THREE.Vector3[], pocket: THREE.Vector3, volume: number): void {

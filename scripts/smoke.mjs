@@ -871,6 +871,10 @@ async function main() {
           bucketLoadSurfacePhysicsValue?.objectPenetrationAfter < bucketLoadSurfacePhysicsValue?.objectPenetrationBefore - 0.015 &&
           bucketLoadSurfacePhysicsValue?.objectTravel > 0.01 &&
           bucketLoadSurfacePhysicsValue?.objectVelocity > 0.004 &&
+          bucketLoadSurfacePhysicsValue?.spilledVolume > 0.015 &&
+          bucketLoadSurfacePhysicsValue?.loadAfterSpill < bucketLoadSurfacePhysicsValue?.loadBeforeSpill - 0.01 &&
+          bucketLoadSurfacePhysicsValue?.spillHeightDrop > 0.002 &&
+          bucketLoadSurfacePhysicsValue?.spillVolumeConserved < 0.0005 &&
           bucketLoadSurfacePhysicsValue?.pressure > 0.1,
       ],
       [
