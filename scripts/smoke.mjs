@@ -1007,6 +1007,9 @@ async function main() {
           liftableObjectAuditValue?.boulderLiftHeight > 0.04 &&
           liftableObjectAuditValue?.fenceLifted &&
           liftableObjectAuditValue?.fenceLiftHeight > 0.04 &&
+          liftableObjectAuditValue?.pipeEndpointLifted &&
+          liftableObjectAuditValue?.pipeEndpointLiftHeight > 0.04 &&
+          liftableObjectAuditValue?.pipeEndpointCenterOffset > 0.4 &&
           liftableObjectAuditValue?.truckStillBlocks,
       ],
       [
