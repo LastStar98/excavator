@@ -1124,6 +1124,7 @@ async function main() {
           worldObjectPhysicsValue?.cornerContacts >= 1 &&
           worldObjectPhysicsValue?.movedMass > 6 &&
           (worldObjectPhysicsValue?.leftImpulse > 0.01 || worldObjectPhysicsValue?.rightImpulse > 0.01) &&
+          worldObjectPhysicsValue?.elevatedFalseContact === false &&
           worldObjectPhysicsValue?.excavatorPenetrationBefore > worldObjectPhysicsValue?.excavatorPenetrationAfter &&
           worldObjectPhysicsValue?.excavatorPenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.excavatorObjectTravel > 0.03 &&

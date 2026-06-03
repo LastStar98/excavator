@@ -527,6 +527,7 @@ interface ExcavatorDebugApi {
     leftImpulse: number;
     rightImpulse: number;
     centerContact: boolean;
+    elevatedFalseContact: boolean;
     truckPenetrationBefore: number;
     truckPenetrationAfter: number;
     pairDistanceBefore: number;
@@ -685,6 +686,8 @@ const TRUCK_CAPACITY = 7.5;
 const TRACK_GAUGE = 1.48;
 const TRACK_LENGTH = 3.65;
 const TRACK_WIDTH = 0.5;
+const TRACK_CONTACT_HEIGHT = 0.28;
+const CRAWLER_BODY_CONTACT_HEIGHT = 0.72;
 const TRACK_MAX_SPEED = 1.25;
 const SOIL_REPOSE_TAN = Math.tan(THREE.MathUtils.degToRad(34));
 const SOIL_BEDROCK_FLOOR = -5.2;
@@ -6332,6 +6335,7 @@ class Simulator {
         let leftImpulse = 0;
         let rightImpulse = 0;
         let centerContact = false;
+        let elevatedFalseContact = false;
         const collectObjectContact = (contact: CrawlerWorldObjectContactResult) => {
           trackContactCount += contact.trackContactCount;
           cornerContacts += contact.cornerContacts;
@@ -6340,6 +6344,20 @@ class Simulator {
           rightImpulse += contact.rightImpulse;
           centerContact = centerContact || contact.centerContact;
         };
+
+        if (debris) {
+          const savedPosition = debris.mesh.position.clone();
+          const trackProbe = new THREE.Vector3(TRACK_LENGTH * 0.46, 0, TRACK_GAUGE * 0.5);
+          trackProbe.y = this.terrain.getHeightAt(trackProbe.x, trackProbe.z) + TRACK_CONTACT_HEIGHT;
+          debris.mesh.position.set(
+            trackProbe.x,
+            trackProbe.y + TRACK_WIDTH * 0.58 + debris.radius + 0.42,
+            trackProbe.z,
+          );
+          elevatedFalseContact = Boolean(this.resolveColliderHit(debris, trackProbe, TRACK_WIDTH * 0.58));
+          debris.mesh.position.copy(savedPosition);
+          this.worldColliderGridDirty = true;
+        }
 
         this.excavator.group.rotation.set(0, 0, 0);
         if (debris) {
@@ -6624,6 +6642,7 @@ class Simulator {
           leftImpulse,
           rightImpulse,
           centerContact,
+          elevatedFalseContact,
           truckPenetrationBefore,
           truckPenetrationAfter,
           pairDistanceBefore,
@@ -7676,12 +7695,15 @@ class Simulator {
       let colliderLeftSeverity = 0;
       let colliderRightSeverity = 0;
       const correctionNormal = new THREE.Vector3();
+      const contactPoint = new THREE.Vector3();
+      let contactPointWeight = 0;
 
       for (const sample of samples) {
         const samplePoint = base
           .clone()
           .addScaledVector(forward, sample.x)
           .addScaledVector(side, sample.z);
+        samplePoint.y = this.terrain.getHeightAt(samplePoint.x, samplePoint.z) + TRACK_CONTACT_HEIGHT;
         const hit = this.resolveColliderHit(collider, samplePoint, sample.radius);
         if (!hit) {
           continue;
@@ -7703,7 +7725,10 @@ class Simulator {
         colliderMinApproachSpeed = Math.min(colliderMinApproachSpeed, approachSpeed);
         colliderMaxClosingSpeed = Math.max(colliderMaxClosingSpeed, closingSpeed);
         colliderSeverity = Math.max(colliderSeverity, severity);
-        correctionNormal.addScaledVector(normal, 0.16 + severity + penetration * 1.8);
+        const contactWeight = 0.16 + severity + penetration * 1.8;
+        correctionNormal.addScaledVector(normal, contactWeight);
+        contactPoint.addScaledVector(hit.point, contactWeight);
+        contactPointWeight += contactWeight;
         if (Math.abs(sample.x) > TRACK_LENGTH * 0.34) {
           colliderCornerContacts += 1;
         }
@@ -7715,7 +7740,9 @@ class Simulator {
       }
 
       if (colliderContactCount === 0) {
-        const bodyHit = this.resolveColliderHit(collider, base, 1.62);
+        const bodyPoint = base.clone();
+        bodyPoint.y = this.terrain.getHeightAt(bodyPoint.x, bodyPoint.z) + CRAWLER_BODY_CONTACT_HEIGHT;
+        const bodyHit = this.resolveColliderHit(collider, bodyPoint, 1.62);
         if (!bodyHit) {
           continue;
         }
@@ -7728,6 +7755,8 @@ class Simulator {
         colliderMaxClosingSpeed = closingSpeed;
         colliderSeverity = severity;
         correctionNormal.copy(bodyHit.normal);
+        contactPoint.copy(bodyHit.point);
+        contactPointWeight = 1;
         result.centerContact = true;
       }
 
@@ -7752,6 +7781,10 @@ class Simulator {
         continue;
       }
 
+      const impulsePoint =
+        contactPointWeight > 0
+          ? contactPoint.clone().divideScalar(contactPointWeight)
+          : collider.mesh.position.clone().addScaledVector(correctionNormal, collider.radius);
       const impulse = clamp(
         (colliderSeverity * 1.55 + colliderMaxClosingSpeed * 0.5 + colliderMaxPenetration * 0.9) / Math.max(collider.mass, 0.1),
         0.045,
@@ -7763,7 +7796,7 @@ class Simulator {
       collider.velocity.y = Math.max(collider.velocity.y, 0.08 + 0.18 * colliderSeverity);
       this.applyWorldColliderAngularImpulse(
         collider,
-        collider.mesh.position.clone().addScaledVector(correctionNormal, collider.radius),
+        impulsePoint,
         correctionNormal.clone().multiplyScalar(-impulse * collider.mass),
         0.34,
       );
@@ -8157,51 +8190,54 @@ class Simulator {
     };
   }
 
-  private resolveColliderHit(collider: WorldCollider, bodyPosition: THREE.Vector3, bodyRadius: number): { normal: THREE.Vector3; penetration: number } | null {
+  private resolveColliderHit(
+    collider: WorldCollider,
+    bodyPosition: THREE.Vector3,
+    bodyRadius: number,
+  ): { normal: THREE.Vector3; penetration: number; point: THREE.Vector3 } | null {
+    const horizontalNormalFrom = (delta: THREE.Vector3): THREE.Vector3 => {
+      const normal = new THREE.Vector3(delta.x, 0, delta.z);
+      if (normal.lengthSq() > 0.000001) {
+        return normal.normalize();
+      }
+      const fallback = bodyPosition.clone().sub(collider.mesh.position).setY(0);
+      if (fallback.lengthSq() > 0.000001) {
+        return fallback.normalize();
+      }
+      return new THREE.Vector3(1, 0, 0);
+    };
+
     const capsule = this.worldColliderCapsuleWorld(collider);
     if (capsule) {
-      const axisX = capsule.b.x - capsule.a.x;
-      const axisZ = capsule.b.z - capsule.a.z;
-      const axisLenSq = axisX * axisX + axisZ * axisZ;
-      const rawT =
-        axisLenSq > 0.000001 ? ((bodyPosition.x - capsule.a.x) * axisX + (bodyPosition.z - capsule.a.z) * axisZ) / axisLenSq : 0;
-      const t = clamp(rawT, 0, 1);
-      const closestX = capsule.a.x + axisX * t;
-      const closestZ = capsule.a.z + axisZ * t;
-      const dx = bodyPosition.x - closestX;
-      const dz = bodyPosition.z - closestZ;
-      const distanceSq = dx * dx + dz * dz;
+      const axis = capsule.b.clone().sub(capsule.a);
+      const axisLenSq = axis.lengthSq();
+      const t = axisLenSq > 0.000001 ? clamp(bodyPosition.clone().sub(capsule.a).dot(axis) / axisLenSq, 0, 1) : 0;
+      const closest = capsule.a.clone().addScaledVector(axis, t);
+      const delta = bodyPosition.clone().sub(closest);
       const combinedRadius = bodyRadius + capsule.radius;
+      const distanceSq = delta.lengthSq();
       if (distanceSq >= combinedRadius * combinedRadius) {
         return null;
       }
-      if (distanceSq < 0.000001) {
-        return { normal: new THREE.Vector3(-1, 0, 0), penetration: combinedRadius };
-      }
-      const distance = Math.sqrt(distanceSq);
       return {
-        normal: new THREE.Vector3(dx / distance, 0, dz / distance),
-        penetration: combinedRadius - distance,
+        normal: horizontalNormalFrom(delta),
+        penetration: combinedRadius - Math.sqrt(Math.max(distanceSq, 0.000001)),
+        point: closest,
       };
     }
 
     const obstacle = collider.mesh.position;
-    const dx = bodyPosition.x - obstacle.x;
-    const dz = bodyPosition.z - obstacle.z;
-    const distanceSq = dx * dx + dz * dz;
+    const delta = bodyPosition.clone().sub(obstacle);
+    const distanceSq = delta.lengthSq();
     const combinedRadius = bodyRadius + collider.radius;
     if (distanceSq >= combinedRadius * combinedRadius) {
       return null;
     }
 
-    if (distanceSq < 0.000001) {
-      return { normal: new THREE.Vector3(-1, 0, 0), penetration: combinedRadius };
-    }
-
-    const distance = Math.sqrt(distanceSq);
     return {
-      normal: new THREE.Vector3(dx / distance, 0, dz / distance),
-      penetration: combinedRadius - distance,
+      normal: horizontalNormalFrom(delta),
+      penetration: combinedRadius - Math.sqrt(Math.max(distanceSq, 0.000001)),
+      point: obstacle.clone(),
     };
   }
 
