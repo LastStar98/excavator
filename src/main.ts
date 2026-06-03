@@ -820,6 +820,10 @@ interface ExcavatorDebugApi {
     excavatorSampleCount: number;
     truckSolidPartCount: number;
     truckWheelCount: number;
+    excavatorUncoveredDrawableCount: number;
+    truckUncoveredDrawableCount: number;
+    maxExcavatorCoverageGap: number;
+    maxTruckCoverageGap: number;
   };
   forceLagFreeSoilCycle: () => {
     averageStepMs: number;
@@ -4390,6 +4394,56 @@ class Simulator {
     return false;
   }
 
+  private drawableBoundingSphere(object: THREE.Object3D): THREE.Sphere | null {
+    const box = new THREE.Box3().setFromObject(object);
+    if (box.isEmpty()) {
+      return null;
+    }
+    return box.getBoundingSphere(new THREE.Sphere());
+  }
+
+  private excavatorPhysicsAuditSamples(): { point: THREE.Vector3; radius: number }[] {
+    const samples: { point: THREE.Vector3; radius: number }[] = [
+      ...this.excavator.armCollisionSamples().map((sample) => ({ point: sample.point, radius: sample.radius })),
+      ...this.excavator.upperCollisionSamples().map((sample) => ({ point: sample.point, radius: sample.radius })),
+    ];
+    const turntable = this.excavator.turntableCollisionShape();
+    samples.push({ point: turntable.center, radius: turntable.radius });
+    for (const box of this.excavator.lowerCollisionBoxes()) {
+      samples.push({
+        point: this.excavator.group.localToWorld(box.center.clone()),
+        radius: box.halfExtents.length(),
+      });
+    }
+    return samples;
+  }
+
+  private excavatorDrawableCoverageGap(object: THREE.Object3D, samples: { point: THREE.Vector3; radius: number }[]): number {
+    const sphere = this.drawableBoundingSphere(object);
+    if (!sphere) {
+      return 0;
+    }
+
+    let bestGap = Infinity;
+    for (const sample of samples) {
+      bestGap = Math.min(bestGap, sphere.center.distanceTo(sample.point) - sample.radius - sphere.radius * 0.92);
+    }
+    return Number.isFinite(bestGap) ? bestGap : 0;
+  }
+
+  private truckDrawableCoverageGap(object: THREE.Object3D): number {
+    const sphere = this.drawableBoundingSphere(object);
+    if (!sphere) {
+      return 0;
+    }
+
+    const probeRadius = Math.max(0.04, sphere.radius * 0.42);
+    if (this.truck.resolveSolidCollision(sphere.center, probeRadius)) {
+      return 0;
+    }
+    return 1;
+  }
+
   private excavatorExternalPhysicsMeshes(): THREE.Object3D[] {
     return [
       this.excavator.boomCylinder,
@@ -4409,6 +4463,7 @@ class Simulator {
     const liftableWorldColliders = this.worldColliders.filter((collider) => !collider.immovable);
     const blockedWorldColliders = this.worldColliders.length - liftableWorldColliders.length;
     const unclassifiedNames: string[] = [];
+    const excavatorAuditSamples = this.excavatorPhysicsAuditSamples();
     let visibleDrawableCount = 0;
     let physicalDrawableCount = 0;
     let worldColliderDrawableCount = 0;
@@ -4418,6 +4473,10 @@ class Simulator {
     let guideDrawableCount = 0;
     let particleDrawableCount = 0;
     let unclassifiedDrawableCount = 0;
+    let excavatorUncoveredDrawableCount = 0;
+    let truckUncoveredDrawableCount = 0;
+    let maxExcavatorCoverageGap = 0;
+    let maxTruckCoverageGap = 0;
 
     this.scene.traverse((object) => {
       if (!this.isDrawableObject(object) || !this.isVisibleInScene(object)) {
@@ -4442,9 +4501,19 @@ class Simulator {
       }
       if (isExcavator) {
         excavatorDrawableCount += 1;
+        const gap = this.excavatorDrawableCoverageGap(object, excavatorAuditSamples);
+        maxExcavatorCoverageGap = Math.max(maxExcavatorCoverageGap, gap);
+        if (gap > 0.02) {
+          excavatorUncoveredDrawableCount += 1;
+        }
       }
       if (isTruck) {
         truckDrawableCount += 1;
+        const gap = this.truckDrawableCoverageGap(object);
+        maxTruckCoverageGap = Math.max(maxTruckCoverageGap, gap);
+        if (gap > 0.02) {
+          truckUncoveredDrawableCount += 1;
+        }
       }
       if (isTerrain) {
         terrainDrawableCount += 1;
@@ -4491,6 +4560,10 @@ class Simulator {
         1,
       truckSolidPartCount: this.truck.solidPartCount(),
       truckWheelCount: this.truck.wheelColliderCount(),
+      excavatorUncoveredDrawableCount,
+      truckUncoveredDrawableCount,
+      maxExcavatorCoverageGap,
+      maxTruckCoverageGap,
     };
   }
 

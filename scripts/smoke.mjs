@@ -1323,6 +1323,10 @@ async function main() {
           visiblePhysicsAuditValue?.heaviestLiftableMass > 10 &&
           visiblePhysicsAuditValue?.excavatorDrawableCount > 30 &&
           visiblePhysicsAuditValue?.truckDrawableCount >= 11 &&
+          visiblePhysicsAuditValue?.excavatorUncoveredDrawableCount === 0 &&
+          visiblePhysicsAuditValue?.truckUncoveredDrawableCount === 0 &&
+          (visiblePhysicsAuditValue?.maxExcavatorCoverageGap ?? 1) <= 0.02 &&
+          (visiblePhysicsAuditValue?.maxTruckCoverageGap ?? 1) <= 0.02 &&
           visiblePhysicsAuditValue?.terrainDrawableCount === 1 &&
           visiblePhysicsAuditValue?.guideDrawableCount === 0 &&
           visiblePhysicsAuditValue?.particleDrawableCount >= 1 &&
