@@ -157,6 +157,8 @@ interface TruckCrawlerContactResult {
   cornerContacts: number;
   maxPenetration: number;
   minApproachSpeed: number;
+  leftSeverity: number;
+  rightSeverity: number;
   leftBlocked: boolean;
   rightBlocked: boolean;
 }
@@ -421,6 +423,12 @@ interface ExcavatorDebugApi {
     sideBeforeZ: number;
     sideAfterZ: number;
     sideBlocked: boolean;
+    frontLeftTrackVelocity: number;
+    frontRightTrackVelocity: number;
+    sideLeftTrackVelocity: number;
+    sideRightTrackVelocity: number;
+    diagonalLeftTrackVelocity: number;
+    diagonalRightTrackVelocity: number;
     diagonalBeforeX: number;
     diagonalBeforeZ: number;
     diagonalAfterX: number;
@@ -6362,6 +6370,12 @@ class Simulator {
             side.afterLocal.z < side.beforeLocal.z - 0.06 &&
             Math.abs(side.leftTrackVelocity) < TRACK_MAX_SPEED * 0.7 &&
             Math.abs(side.rightTrackVelocity) < TRACK_MAX_SPEED * 0.7,
+          frontLeftTrackVelocity: front.leftTrackVelocity,
+          frontRightTrackVelocity: front.rightTrackVelocity,
+          sideLeftTrackVelocity: side.leftTrackVelocity,
+          sideRightTrackVelocity: side.rightTrackVelocity,
+          diagonalLeftTrackVelocity: diagonal.leftTrackVelocity,
+          diagonalRightTrackVelocity: diagonal.rightTrackVelocity,
           diagonalBeforeX: diagonal.beforeLocal.x,
           diagonalBeforeZ: diagonal.beforeLocal.z,
           diagonalAfterX: diagonal.afterLocal.x,
@@ -8767,6 +8781,8 @@ class Simulator {
       cornerContacts: 0,
       maxPenetration: 0,
       minApproachSpeed: 0,
+      leftSeverity: 0,
+      rightSeverity: 0,
       leftBlocked: false,
       rightBlocked: false,
     };
@@ -8895,6 +8911,8 @@ class Simulator {
       cornerContacts,
       maxPenetration,
       minApproachSpeed,
+      leftSeverity,
+      rightSeverity,
       leftBlocked: leftSeverity > 0.18,
       rightBlocked: rightSeverity > 0.18,
     };
@@ -9105,7 +9123,7 @@ class Simulator {
         hit.normal,
         clamp(0.18 + hit.penetration * 2.2 + Math.abs(forwardSpeed) * 0.72 + Math.abs(turnRate) * 0.18, 0.04, 2.8),
       );
-      this.applyCollisionResponse(hit.normal, hit.penetration, forwardSpeed, turnRate, forward, 1.0);
+      this.applyCollisionResponse(hit.normal, hit.penetration, forwardSpeed, turnRate, forward, 1.0, !truckContact.contact);
     }
 
     const objectContact = this.resolveCrawlerWorldObjectFootprintCollision(forwardSpeed, turnRate, forward, hasDriveIntent);
@@ -9120,13 +9138,14 @@ class Simulator {
     turnRate: number,
     forward: THREE.Vector3,
     hardness: number,
+    blockTrackVelocity = true,
   ): void {
     const correction = Math.min((penetration + 0.018) * hardness, 0.44);
     this.excavator.group.position.addScaledVector(normal, correction);
     const approachSpeed = forward.clone().multiplyScalar(forwardSpeed).dot(normal);
     const collisionSeverity = clamp(penetration * 1.8 + Math.abs(approachSpeed) * 0.55 + Math.abs(turnRate) * 0.08, 0, 1);
 
-    if (approachSpeed < 0 || Math.abs(turnRate) > 0.1) {
+    if (blockTrackVelocity && (approachSpeed < 0 || Math.abs(turnRate) > 0.1)) {
       const block = clamp(1 - collisionSeverity * (1.35 + hardness * 0.55), 0, 0.46);
       this.leftTrackVelocity *= block;
       this.rightTrackVelocity *= block;

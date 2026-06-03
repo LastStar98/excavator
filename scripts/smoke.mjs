@@ -992,6 +992,14 @@ async function main() {
           truckCollisionValue?.frontContact?.contact &&
           truckCollisionValue?.sideContact?.contact &&
           truckCollisionValue?.diagonalContact?.contact &&
+          truckCollisionValue?.frontContact?.leftSeverity > 0.18 &&
+          truckCollisionValue?.frontContact?.rightSeverity > 0.18 &&
+          Math.abs(
+            (truckCollisionValue?.diagonalContact?.leftSeverity ?? 0) -
+              (truckCollisionValue?.diagonalContact?.rightSeverity ?? 0),
+          ) > 0.02 &&
+          Math.abs((truckCollisionValue?.diagonalLeftTrackVelocity ?? 0) - (truckCollisionValue?.diagonalRightTrackVelocity ?? 0)) >
+            0.02 &&
           truckCollisionValue?.frontContact?.contactCount >= 2 &&
           truckCollisionValue?.sideContact?.contactCount >= 2 &&
           truckCollisionValue?.diagonalContact?.cornerContacts >= 1 &&
