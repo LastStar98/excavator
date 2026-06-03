@@ -995,6 +995,11 @@ async function main() {
           armTruckCollisionValue?.angleBlocked &&
           Math.abs(armTruckCollisionValue?.velocityAfter ?? 1) < 0.001 &&
           armTruckCollisionValue?.penetration > 0.02 &&
+          armTruckCollisionValue?.sweptOnlyCurrentPenetration === 0 &&
+          armTruckCollisionValue?.sweptOnlyPenetration > 0.05 &&
+          armTruckCollisionValue?.sweptOnlySteps > 1 &&
+          armTruckCollisionValue?.sweptOnlyT > 0 &&
+          armTruckCollisionValue?.sweptOnlyT < 1 &&
           armTruckCollisionValue?.collisionCount > 0 &&
           armTruckCollisionValue?.pressure > 0.4,
       ],
@@ -1051,8 +1056,8 @@ async function main() {
       [
         "soil and contact physics stay responsive without resistance drag",
         lagFreeSoilCycleValue?.terrainDrag === 1 &&
-          lagFreeSoilCycleValue?.particleCount <= 18 &&
-          lagFreeSoilCycleValue?.fineGrainCount <= 56 &&
+          lagFreeSoilCycleValue?.particleCount <= 12 &&
+          lagFreeSoilCycleValue?.fineGrainCount <= 40 &&
           lagFreeSoilCycleValue?.nearbyCandidates < lagFreeSoilCycleValue?.worldColliderCount * 0.45 &&
           lagFreeSoilCycleValue?.averageStepMs < 5 &&
           lagFreeSoilCycleValue?.maxStepMs < 25 &&

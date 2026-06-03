@@ -413,6 +413,10 @@ interface ExcavatorDebugApi {
     collisionCount: number;
     penetration: number;
     blockedActions: ActionName[];
+    sweptOnlyCurrentPenetration: number;
+    sweptOnlyPenetration: number;
+    sweptOnlySteps: number;
+    sweptOnlyT: number;
   };
   forceArmSubsoilResistance: () => {
     resisted: boolean;
@@ -702,15 +706,18 @@ const WORKER_ZONE = new THREE.Vector3(2.0, 0, 2.15);
 const BUCKET_OBJECT_LIFT_LIMIT = 4000;
 const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 const WORLD_COLLIDER_GRID_SIZE = 2.4;
-const WORLD_COLLIDER_WAKE_LIMIT = 20;
-const SOIL_PARTICLE_SOFT_LIMIT = 12;
-const SOIL_PARTICLE_HARD_LIMIT = 18;
+const WORLD_COLLIDER_WAKE_LIMIT = 12;
+const WORLD_COLLIDER_PAIR_ACTIVE_LIMIT = 18;
+const SOIL_PARTICLE_SOFT_LIMIT = 8;
+const SOIL_PARTICLE_HARD_LIMIT = 12;
 const SOIL_PARTICLE_COLLISION_QUERY_PADDING = 0.28;
 const FINE_GRAIN_COLLISION_QUERY_PADDING = 0.18;
-const SOIL_DYNAMIC_COLLISION_BUDGET = 6;
-const FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 5;
+const SOIL_DYNAMIC_COLLISION_BUDGET = 3;
+const FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 2;
 const SOIL_PAIR_GRID_SIZE = 0.34;
 const FINE_GRAIN_PAIR_GRID_SIZE = 0.14;
+const DESKTOP_PIXEL_RATIO_LIMIT = 1.75;
+const MOBILE_PIXEL_RATIO_LIMIT = 1.25;
 
 const ANGLE_LIMITS: Record<ActionName, Limits> = {
   swing: { min: -Infinity, max: Infinity },
@@ -3628,7 +3635,7 @@ class Simulator {
   private readonly pooledSoilGeometry = new THREE.DodecahedronGeometry(1, 0);
   private readonly soilParticlePool: THREE.Mesh[] = [];
   private readonly soilParticlePoolLimit = 40;
-  private readonly fineGrainMax = 56;
+  private readonly fineGrainMax = 40;
   private readonly fineGrainPositions = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainVelocities = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainLife = new Float32Array(this.fineGrainMax);
@@ -3708,6 +3715,14 @@ class Simulator {
   private fps = 0;
   private lastWarning = "";
 
+  private isMobilePerformanceProfile(): boolean {
+    return window.matchMedia("(max-width: 820px), (pointer: coarse)").matches;
+  }
+
+  private pixelRatioLimit(): number {
+    return this.isMobilePerformanceProfile() ? MOBILE_PIXEL_RATIO_LIMIT : DESKTOP_PIXEL_RATIO_LIMIT;
+  }
+
   constructor() {
     this.ui = this.readUi();
     this.renderer = new THREE.WebGLRenderer({
@@ -3715,8 +3730,8 @@ class Simulator {
       antialias: true,
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioLimit()));
+    this.renderer.shadowMap.enabled = !this.isMobilePerformanceProfile();
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.scene.background = new THREE.Color(0x9fb4b6);
@@ -4226,7 +4241,8 @@ class Simulator {
     const sun = new THREE.DirectionalLight(0xfff1ca, 3.2);
     sun.position.set(-8, 13, 7);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    const shadowMapSize = this.isMobilePerformanceProfile() ? 1024 : 2048;
+    sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
     sun.shadow.camera.near = 1;
     sun.shadow.camera.far = 72;
     sun.shadow.camera.left = -30;
@@ -5830,6 +5846,11 @@ class Simulator {
         const beforeStick = this.angles.stick;
         this.excavator.applyAngles(this.angles);
         const result = this.resolveArmTruckCollisions(previousAngles);
+        const sweptStart = this.truck.group.localToWorld(new THREE.Vector3(-3.1, 1.03, 0));
+        const sweptEnd = this.truck.group.localToWorld(new THREE.Vector3(-1.1, 1.03, 0));
+        const sweptRadius = 0.12;
+        const sweptOnlyCurrentPenetration = this.truck.resolveSolidCollision(sweptEnd, sweptRadius)?.penetration ?? 0;
+        const sweptOnlyHit = this.resolveSweptTruckSampleHit(sweptStart, sweptEnd, sweptRadius);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
         this.updateUi(0);
         return {
@@ -5842,6 +5863,10 @@ class Simulator {
           collisionCount: this.collisionCount,
           penetration: result.penetration,
           blockedActions: result.blockedActions,
+          sweptOnlyCurrentPenetration,
+          sweptOnlyPenetration: sweptOnlyHit?.penetration ?? 0,
+          sweptOnlySteps: sweptOnlyHit?.sweptSteps ?? 0,
+          sweptOnlyT: sweptOnlyHit?.sweptT ?? 0,
         };
       },
       forceArmSubsoilResistance: () => {
@@ -8565,7 +8590,8 @@ class Simulator {
       collider.groundLoadCooldown = Math.max(0, collider.groundLoadCooldown - dt);
       const bucketWakeRadius = collider.radius + 1.28;
       const nearActiveBucket = dxBucket * dxBucket + dyBucket * dyBucket + dzBucket * dzBucket < bucketWakeRadius * bucketWakeRadius;
-      const nearCrawlerBody = dxMachine * dxMachine + dzMachine * dzMachine < 5.8;
+      const crawlerWakeRadius = 3.6 + collider.radius;
+      const nearCrawlerBody = dxMachine * dxMachine + dzMachine * dzMachine < crawlerWakeRadius * crawlerWakeRadius;
       if (collider.sleeping && speedSq < 0.0004 && angularSpeedSq < 0.0004 && !nearActiveBucket && !nearCrawlerBody) {
         continue;
       }
@@ -8857,7 +8883,9 @@ class Simulator {
   }
 
   private resolveLooseObjectPairCollisions(): void {
-    const activeColliders = this.worldColliders.filter((collider) => !collider.sleeping && !this.carriedWorldColliders.has(collider));
+    const activeColliders = this.worldColliders
+      .filter((collider) => !collider.sleeping && !this.carriedWorldColliders.has(collider))
+      .slice(0, WORLD_COLLIDER_PAIR_ACTIVE_LIMIT);
     let moved = false;
 
     for (const a of activeColliders) {
@@ -8906,6 +8934,20 @@ class Simulator {
           b.velocity.addScaledVector(tangent, invMassB / totalInvMass);
           this.applyWorldColliderAngularImpulse(a, hit.pointA, tangent.clone().multiplyScalar(-invMassA / totalInvMass), 0.24);
           this.applyWorldColliderAngularImpulse(b, hit.pointB, tangent.clone().multiplyScalar(invMassB / totalInvMass), 0.24);
+        }
+
+        const spinAxis = new THREE.Vector3(-normal.z, 0, normal.x);
+        if (spinAxis.lengthSq() > 0.000001) {
+          spinAxis.normalize();
+          const spinAmount = clamp(penetration * 0.55 + Math.max(0, -closingSpeed) * 0.08, 0.012, 0.22);
+          if (!a.immovable) {
+            a.angularVelocity.addScaledVector(spinAxis, spinAmount / Math.max(0.45, Math.sqrt(a.mass)));
+            this.clampWorldColliderAngularVelocity(a);
+          }
+          if (!b.immovable) {
+            b.angularVelocity.addScaledVector(spinAxis, -spinAmount / Math.max(0.45, Math.sqrt(b.mass)));
+            this.clampWorldColliderAngularVelocity(b);
+          }
         }
 
         a.sleeping = false;
@@ -9011,6 +9053,72 @@ class Simulator {
     }
   }
 
+  private sweptSampleStepCount(previousPoint: THREE.Vector3, currentPoint: THREE.Vector3, radius: number): number {
+    const travel = previousPoint.distanceTo(currentPoint);
+    return clamp(Math.ceil(travel / Math.max(radius * 0.7, 0.09)), 1, 6);
+  }
+
+  private resolveSweptTruckSampleHit(
+    previousPoint: THREE.Vector3,
+    currentPoint: THREE.Vector3,
+    radius: number,
+  ): { normal: THREE.Vector3; penetration: number; point: THREE.Vector3; motion: THREE.Vector3; sweptSteps: number; sweptT: number } | null {
+    const motion = currentPoint.clone().sub(previousPoint);
+    const steps = this.sweptSampleStepCount(previousPoint, currentPoint, radius);
+    let best: { normal: THREE.Vector3; penetration: number; point: THREE.Vector3; motion: THREE.Vector3; sweptSteps: number; sweptT: number } | null = null;
+
+    for (let step = 1; step <= steps; step += 1) {
+      const t = step / steps;
+      const point = previousPoint.clone().lerp(currentPoint, t);
+      const hit = this.truck.resolveSolidCollision(point, radius);
+      if (!hit) {
+        continue;
+      }
+      if (!best || hit.penetration > best.penetration) {
+        best = {
+          normal: hit.normal.clone().normalize(),
+          penetration: hit.penetration,
+          point,
+          motion,
+          sweptSteps: steps,
+          sweptT: t,
+        };
+      }
+    }
+    return best;
+  }
+
+  private resolveSweptWorldColliderSampleHit(
+    collider: WorldCollider,
+    previousPoint: THREE.Vector3,
+    currentPoint: THREE.Vector3,
+    radius: number,
+  ): { normal: THREE.Vector3; penetration: number; point: THREE.Vector3; motion: THREE.Vector3; sweptSteps: number; sweptT: number } | null {
+    const motion = currentPoint.clone().sub(previousPoint);
+    const steps = this.sweptSampleStepCount(previousPoint, currentPoint, radius);
+    let best: { normal: THREE.Vector3; penetration: number; point: THREE.Vector3; motion: THREE.Vector3; sweptSteps: number; sweptT: number } | null = null;
+
+    for (let step = 1; step <= steps; step += 1) {
+      const t = step / steps;
+      const point = previousPoint.clone().lerp(currentPoint, t);
+      const hit = this.resolveWorldColliderSampleHit(collider, point, radius);
+      if (!hit) {
+        continue;
+      }
+      if (!best || hit.penetration > best.penetration) {
+        best = {
+          normal: hit.normal.clone().normalize(),
+          penetration: hit.penetration,
+          point,
+          motion,
+          sweptSteps: steps,
+          sweptT: t,
+        };
+      }
+    }
+    return best;
+  }
+
   private updateAngles(dt: number): ExcavatorAngles {
     const previousAngles = { ...this.angles };
     this.angles.swing += this.velocities.swing * dt;
@@ -9056,16 +9164,15 @@ class Simulator {
     for (let i = 0; i < currentSamples.length; i += 1) {
       const sample = currentSamples[i];
       const previous = previousSamples[i] ?? sample;
-      const hit = this.truck.resolveSolidCollision(sample.point, sample.radius);
+      const hit = this.resolveSweptTruckSampleHit(previous.point, sample.point, sample.radius);
       if (!hit) {
         continue;
       }
 
-      const motion = sample.point.clone().sub(previous.point);
-      const approach = Math.max(0, -motion.dot(hit.normal));
+      const approach = Math.max(0, -hit.motion.dot(hit.normal));
       const severity = clamp(hit.penetration * 2.55 + approach * 7.2 + Math.abs(this.velocities.swing) * 0.08, 0, 1);
       const impulse = clamp(0.08 + hit.penetration * 2.4 + approach * 4.8 + sample.radius * 0.18, 0.04, 1.8);
-      this.truck.applyImpact(sample.point, hit.normal, impulse);
+      this.truck.applyImpact(hit.point, hit.normal, impulse);
       maxPenetration = Math.max(maxPenetration, hit.penetration);
       maxSeverity = Math.max(maxSeverity, severity);
       impactImpulse += impulse;
@@ -9159,14 +9266,14 @@ class Simulator {
       for (let i = 0; i < currentSamples.length; i += 1) {
         const sample = currentSamples[i];
         const previous = previousSamples[i] ?? sample;
-        const hit = this.resolveWorldColliderSampleHit(collider, sample.point, sample.radius);
+        const hit = this.resolveSweptWorldColliderSampleHit(collider, previous.point, sample.point, sample.radius);
         if (!hit) {
           continue;
         }
 
         const normal = hit.normal;
         const penetration = hit.penetration;
-        const motion = sample.point.clone().sub(previous.point);
+        const motion = hit.motion;
         const approach = Math.max(0, -motion.dot(normal));
         const severity = clamp(penetration * 2.65 + approach * 6.2 + (collider.immovable ? 0.18 : 0), 0, 1);
         maxPenetration = Math.max(maxPenetration, penetration);
@@ -9197,7 +9304,7 @@ class Simulator {
         collider.velocity.y = Math.max(collider.velocity.y, 0.045 + severity * 0.16);
         this.applyWorldColliderAngularImpulse(
           collider,
-          sample.point,
+          hit.point,
           horizontal.clone().multiplyScalar(-impulse * collider.mass),
           0.3,
         );
@@ -9239,21 +9346,28 @@ class Simulator {
     blockedActions: ActionName[];
     penetration: number;
   } {
-    const samples = this.excavator.armCollisionSamples();
+    const currentAngles = { ...this.angles };
+    const currentSamples = this.excavator.armCollisionSamples();
+    this.excavator.applyAngles(previousAngles);
+    const previousSamples = this.excavator.armCollisionSamples();
+    this.excavator.applyAngles(currentAngles);
+
     let maxPenetration = 0;
     const affected = new Set<"boom" | "stick" | "bucket">();
 
-    for (const sample of samples) {
-      const hit = this.truck.resolveSolidCollision(sample.point, sample.radius);
+    for (let i = 0; i < currentSamples.length; i += 1) {
+      const sample = currentSamples[i];
+      const previous = previousSamples[i] ?? sample;
+      const hit = this.resolveSweptTruckSampleHit(previous.point, sample.point, sample.radius);
       if (!hit) {
         continue;
       }
       maxPenetration = Math.max(maxPenetration, hit.penetration);
       affected.add(sample.action);
       this.truck.applyImpact(
-        sample.point,
+        hit.point,
         hit.normal,
-        clamp(0.06 + hit.penetration * 2.6 + sample.radius * 0.22, 0.03, 1.1),
+        clamp(0.06 + hit.penetration * 2.6 + Math.max(0, -hit.motion.dot(hit.normal)) * 3.2 + sample.radius * 0.22, 0.03, 1.1),
       );
     }
 
@@ -9372,7 +9486,7 @@ class Simulator {
       for (let i = 0; i < currentSamples.length; i += 1) {
         const sample = currentSamples[i];
         const previous = previousSamples[i] ?? sample;
-        const hit = this.resolveWorldColliderSampleHit(collider, sample.point, sample.radius);
+        const hit = this.resolveSweptWorldColliderSampleHit(collider, previous.point, sample.point, sample.radius);
         if (!hit) {
           continue;
         }
@@ -9381,9 +9495,9 @@ class Simulator {
         const normalY = hit.normal.y;
         const normalZ = hit.normal.z;
         const penetration = hit.penetration;
-        const motionX = sample.point.x - previous.point.x;
-        const motionY = sample.point.y - previous.point.y;
-        const motionZ = sample.point.z - previous.point.z;
+        const motionX = hit.motion.x;
+        const motionY = hit.motion.y;
+        const motionZ = hit.motion.z;
         const approach = Math.max(0, -(motionX * normalX + motionY * normalY + motionZ * normalZ));
         const severity = clamp(penetration * 2.8 + approach * 5.5 + (collider.immovable ? 0.18 : 0), 0, 1);
         maxPenetration = Math.max(maxPenetration, penetration);
@@ -9426,7 +9540,7 @@ class Simulator {
         collider.velocity.y = Math.max(collider.velocity.y, 0.06 + severity * 0.2);
         this.applyWorldColliderAngularImpulse(
           collider,
-          sample.point,
+          hit.point,
           new THREE.Vector3(-pushX * impulse * collider.mass, -normalY * impulse * collider.mass * 0.35, -pushZ * impulse * collider.mass),
           0.32,
         );
@@ -10776,6 +10890,7 @@ class Simulator {
   private resize(): void {
     const width = window.innerWidth;
     const height = window.innerHeight;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioLimit()));
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
