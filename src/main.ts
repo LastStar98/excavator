@@ -234,6 +234,8 @@ interface ExcavatorDebugApi {
     digHeight: number;
     bucketAngle: number;
     bucketVisualLoad: number;
+    carriedWorldObjectMass: number;
+    stability: number;
     trackSoilWork: number;
     mobileAxes: JoystickAxes;
     orbit: { azimuth: number; elevation: number; distance: number };
@@ -294,6 +296,8 @@ interface ExcavatorDebugApi {
     afterFineSettleTerrainDeficit: number;
     afterFineSettleExternalVolume: number;
     afterFineSettleResidual: number;
+    afterFineSettledDelta: number;
+    afterFineUnreflectedSettledVolume: number;
     emittedToTruck: number;
     truckGain: number;
     finalTerrainDeficit: number;
@@ -602,6 +606,10 @@ interface ExcavatorDebugApi {
     unloadedSinkage: number;
     loadedSinkage: number;
     carriedMass: number;
+    unloadedStability: number;
+    soilOnlyStability: number;
+    objectStability: number;
+    combinedStability: number;
     pressure: number;
   };
   forceWorldObjectPhysics: () => {
@@ -780,6 +788,8 @@ interface ExcavatorDebugApi {
     terrainDrag: number;
     soilPairCollisionsEnabled: boolean;
     fineGrainPairCollisionsEnabled: boolean;
+    soilDynamicCollisionBudget: number;
+    fineGrainDynamicCollisionBudget: number;
     bucketLoad: number;
   };
 }
@@ -860,6 +870,7 @@ const WORLD_COLLIDER_GRID_SIZE = 2.4;
 const TRUCK_TIRE_RADIUS = 0.35;
 const TRUCK_TIRE_WIDTH = 0.28;
 const WORLD_COLLIDER_WAKE_LIMIT = 6;
+const WORLD_COLLIDER_UPDATE_WAKE_LIMIT = 12;
 const WORLD_COLLIDER_PAIR_ACTIVE_LIMIT = 10;
 const SOIL_PARTICLE_SOFT_LIMIT = 4;
 const SOIL_PARTICLE_HARD_LIMIT = 6;
@@ -5227,6 +5238,8 @@ class Simulator {
           digHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
           bucketAngle: this.angles.bucket,
           bucketVisualLoad: this.excavator.bucketLoadVisualRatio(),
+          carriedWorldObjectMass: this.carriedWorldObjectMass(),
+          stability: this.stability,
           trackSoilWork: this.trackSoilWork,
           mobileAxes: { ...this.touchAxes },
           orbit: { azimuth: this.orbit.azimuth, elevation: this.orbit.elevation, distance: this.orbit.distance },
@@ -5460,6 +5473,7 @@ class Simulator {
         const baselineTerrain = this.terrain.terrainVolumeDelta();
         const baselineTruck = this.truckLoad;
         const baselineTotalExcavated = this.totalExcavated;
+        const baselineFineSettled = this.fineGrainSettledVolume;
         const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
         const start = new THREE.Vector3(DIG_SITE.x - 0.68, beforeHeight + 0.03, DIG_SITE.z - 0.08);
         const end = new THREE.Vector3(DIG_SITE.x + 0.68, beforeHeight - 0.24, DIG_SITE.z + 0.08);
@@ -5486,12 +5500,13 @@ class Simulator {
         }
         this.excavator.setBucketLoad(this.bucketLoad);
 
-        const externalVolume = () =>
+        const externalVolume = (settledVolumeWithoutTerrain = 0) =>
           this.bucketLoad +
           this.bucketTransitLoad +
           (this.truckLoad - baselineTruck) +
           this.activeSoilParticleVolume() +
-          this.activeFineGrainVolume();
+          this.activeFineGrainVolume() +
+          settledVolumeWithoutTerrain;
 
         const postDigTerrainDeficit = baselineTerrain - this.terrain.terrainVolumeDelta();
         const postDigExternalVolume = externalVolume();
@@ -5503,7 +5518,10 @@ class Simulator {
         }
 
         const afterFineSettleTerrainDeficit = baselineTerrain - this.terrain.terrainVolumeDelta();
-        const afterFineSettleExternalVolume = externalVolume();
+        const afterFineSettledDelta = Math.max(0, this.fineGrainSettledVolume - baselineFineSettled);
+        const afterFineTerrainGain = Math.max(0, postDigTerrainDeficit - afterFineSettleTerrainDeficit);
+        const afterFineUnreflectedSettledVolume = Math.max(0, afterFineSettledDelta - afterFineTerrainGain);
+        const afterFineSettleExternalVolume = externalVolume(afterFineUnreflectedSettledVolume);
         const afterFineSettleResidual = Math.abs(afterFineSettleTerrainDeficit - afterFineSettleExternalVolume);
 
         const emittedToTruck = this.bucketLoad;
@@ -5526,7 +5544,12 @@ class Simulator {
         const truckGain = this.truckLoad - baselineTruck;
         const finalTerrainDeficit = baselineTerrain - this.terrain.terrainVolumeDelta();
         const finalExternalVolume =
-          this.bucketLoad + this.bucketTransitLoad + truckGain + finalActiveSoilVolume + finalActiveFineVolume;
+          this.bucketLoad +
+          this.bucketTransitLoad +
+          truckGain +
+          finalActiveSoilVolume +
+          finalActiveFineVolume +
+          afterFineUnreflectedSettledVolume;
         const finalResidual = Math.abs(finalTerrainDeficit - finalExternalVolume);
 
         this.truck.updateLoad(this.truckLoad);
@@ -5541,6 +5564,8 @@ class Simulator {
           afterFineSettleTerrainDeficit,
           afterFineSettleExternalVolume,
           afterFineSettleResidual,
+          afterFineSettledDelta,
+          afterFineUnreflectedSettledVolume,
           emittedToTruck,
           truckGain,
           finalTerrainDeficit,
@@ -7288,13 +7313,25 @@ class Simulator {
         this.excavator.applyAngles(this.angles);
         const forward = new THREE.Vector3(1, 0, 0);
         this.updateExcavatorSupport(1.2, forward);
+        this.stability = 1;
+        this.updateSafety(1.2);
         const unloadedPitch = this.chassisPitch;
         const unloadedSinkage = this.chassisSinkage;
+        const unloadedStability = this.stability;
 
         const heavy = this.worldColliders.find((collider) => collider.kind === "boulder");
         let carriedMass = 0;
-        this.bucketLoad = BUCKET_CAPACITY;
-        this.bucketTransitLoad = 0.34;
+        const testBucketLoad = BUCKET_CAPACITY * 0.34;
+        const testTransitLoad = 0.08;
+        this.bucketLoad = testBucketLoad;
+        this.bucketTransitLoad = testTransitLoad;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.stability = 1;
+        this.updateSafety(1.2);
+        const soilOnlyStability = this.stability;
+
+        this.bucketLoad = 0;
+        this.bucketTransitLoad = 0;
         if (heavy) {
           const local = new THREE.Vector3(-0.62, -0.28, 0);
           heavy.mesh.position.copy(this.excavator.bucketGroup.localToWorld(local.clone()));
@@ -7304,7 +7341,17 @@ class Simulator {
           carriedMass = this.carriedWorldObjectMass();
         }
         this.excavator.setBucketLoad(this.bucketLoad);
+        this.stability = 1;
+        this.updateSafety(1.2);
+        const objectStability = this.stability;
+
+        this.bucketLoad = testBucketLoad;
+        this.bucketTransitLoad = testTransitLoad;
+        this.excavator.setBucketLoad(this.bucketLoad);
         this.updateExcavatorSupport(1.2, forward);
+        this.stability = 1;
+        this.updateSafety(1.2);
+        const combinedStability = this.stability;
         const loadedPitch = this.chassisPitch;
         const loadedSinkage = this.chassisSinkage;
 
@@ -7331,6 +7378,10 @@ class Simulator {
           unloadedSinkage,
           loadedSinkage,
           carriedMass,
+          unloadedStability,
+          soilOnlyStability,
+          objectStability,
+          combinedStability,
           pressure: this.pressure,
         };
       },
@@ -8159,6 +8210,8 @@ class Simulator {
           terrainDrag: resistance.drag,
           soilPairCollisionsEnabled: SOIL_PAIR_COLLISIONS_ENABLED,
           fineGrainPairCollisionsEnabled: FINE_GRAIN_PAIR_COLLISIONS_ENABLED,
+          soilDynamicCollisionBudget: SOIL_DYNAMIC_COLLISION_BUDGET,
+          fineGrainDynamicCollisionBudget: FINE_GRAIN_DYNAMIC_COLLISION_BUDGET,
           bucketLoad: this.bucketLoad,
         };
       },
@@ -9471,6 +9524,14 @@ class Simulator {
     return mass;
   }
 
+  private bucketPayloadMomentLoad(): number {
+    return (
+      this.bucketLoad +
+      this.bucketTransitLoad * 0.65 +
+      (this.carriedWorldObjectMass() / BUCKET_OBJECT_LOAD_REFERENCE) * 1.25
+    );
+  }
+
   private bucketCarryLocalPoint(collider: WorldCollider): THREE.Vector3 | null {
     let best: { local: THREE.Vector3; score: number } | null = null;
     const heavyReach = collider.kind === "cone" ? 0.48 : collider.kind === "twig" ? 0.52 : 0.78;
@@ -9803,13 +9864,23 @@ class Simulator {
       }
     }
     if (bucketMotionActive) {
-      for (const collider of this.nearbyWorldColliders(bucket, 2.28)) {
+      let bucketWakeCount = 0;
+      for (const collider of this.nearbyWorldColliders(bucket, 1.86)) {
         this.pushWorldUpdateCandidate(collider, updateStamp);
+        bucketWakeCount += 1;
+        if (bucketWakeCount >= WORLD_COLLIDER_UPDATE_WAKE_LIMIT) {
+          break;
+        }
       }
     }
     if (crawlerMotionActive) {
+      let crawlerWakeCount = 0;
       for (const collider of this.nearbyWorldColliders(machine, 4.55)) {
         this.pushWorldUpdateCandidate(collider, updateStamp);
+        crawlerWakeCount += 1;
+        if (crawlerWakeCount >= WORLD_COLLIDER_UPDATE_WAKE_LIMIT) {
+          break;
+        }
       }
     }
 
@@ -9922,7 +9993,9 @@ class Simulator {
       if (colliderGridMoved) {
         this.worldColliderGridDirty = true;
       }
-      this.resolveLooseObjectPairCollisions();
+      if (this.worldUpdateCandidates.length <= WORLD_COLLIDER_PAIR_ACTIVE_LIMIT || this.worldUpdateStamp % 2 === 0) {
+        this.resolveLooseObjectPairCollisions();
+      }
     }
   }
 
@@ -12165,7 +12238,7 @@ class Simulator {
     const tip = this.excavator.bucketTipWorld();
     const pin = this.excavator.bucketPinWorld();
     const reach = Math.hypot(tip.x, tip.z);
-    const loadMoment = reach * (0.4 + this.bucketLoad);
+    const loadMoment = reach * (0.4 + this.bucketPayloadMomentLoad());
     this.stability = smoothTo(this.stability, clamp(1.15 - loadMoment / 10.0, 0, 1), 2.5, dt);
 
     const nearWorker =

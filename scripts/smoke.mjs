@@ -1153,6 +1153,8 @@ async function main() {
         lagFreeSoilCycleValue?.terrainDrag === 1 &&
           lagFreeSoilCycleValue?.soilPairCollisionsEnabled === false &&
           lagFreeSoilCycleValue?.fineGrainPairCollisionsEnabled === false &&
+          lagFreeSoilCycleValue?.soilDynamicCollisionBudget <= 1 &&
+          lagFreeSoilCycleValue?.fineGrainDynamicCollisionBudget <= 1 &&
           lagFreeSoilCycleValue?.particleCount <= 12 &&
           lagFreeSoilCycleValue?.fineGrainCount <= 40 &&
           lagFreeSoilCycleValue?.nearbyCandidates < lagFreeSoilCycleValue?.worldColliderCount * 0.45 &&
@@ -1217,6 +1219,10 @@ async function main() {
           Math.abs((payloadSupportValue?.loadedPitch ?? 0) - (payloadSupportValue?.unloadedPitch ?? 0)) > 0.012 &&
           Math.abs(payloadSupportValue?.sideRoll ?? 0) > 0.018 &&
           payloadSupportValue?.carriedMass > 1 &&
+          payloadSupportValue?.soilOnlyStability < payloadSupportValue?.unloadedStability - 0.025 &&
+          payloadSupportValue?.objectStability < payloadSupportValue?.unloadedStability - 0.012 &&
+          payloadSupportValue?.combinedStability < payloadSupportValue?.soilOnlyStability - 0.01 &&
+          payloadSupportValue?.combinedStability < payloadSupportValue?.objectStability - 0.01 &&
           payloadSupportValue?.pressure > 0.1,
       ],
       [
