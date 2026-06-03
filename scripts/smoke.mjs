@@ -301,6 +301,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const soilMassConservation = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceSoilMassConservation()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const playableDig = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forcePlayableDigPass()`,
       returnByValue: true,
@@ -657,6 +662,7 @@ async function main() {
     const soilAfterDigValue = soilAfterDig.result.value;
     const soilDumpValue = soilDump.result.value;
     const soilAfterDumpValue = soilAfterDump.result.value;
+    const soilMassConservationValue = soilMassConservation.result.value;
     const playableDigValue = playableDig.result.value;
     const fineGrainSettlementValue = fineGrainSettlement.result.value;
     const soilPushValue = soilPush.result.value;
@@ -815,6 +821,26 @@ async function main() {
           soilDumpValue?.soilPairVelocityDelta > 0.04,
       ],
       ["bucket load surface clears after dumping", (soilAfterDumpValue?.bucketVisualLoad ?? 1) < 0.01],
+      [
+        "soil mass stays conserved through dig, bucket, truck, and terrain",
+        soilMassConservationValue?.removedVolume > 0.08 &&
+          Math.abs(
+            (soilMassConservationValue?.totalExcavatedDelta ?? 0) -
+              (soilMassConservationValue?.removedVolume ?? 1),
+          ) < 0.002 &&
+          soilMassConservationValue?.postDigResidual < 0.006 &&
+          soilMassConservationValue?.afterFineSettleResidual < 0.008 &&
+          soilMassConservationValue?.emittedToTruck > 0.05 &&
+          soilMassConservationValue?.truckGain > soilMassConservationValue?.emittedToTruck * 0.7 &&
+          soilMassConservationValue?.finalResidual < 0.01 &&
+          soilMassConservationValue?.finalTerrainDeficit > 0.02 &&
+          soilMassConservationValue?.finalExternalVolume > 0.02 &&
+          soilMassConservationValue?.activeAfter === 0 &&
+          soilMassConservationValue?.finalBucketLoad < 0.002 &&
+          soilMassConservationValue?.finalBucketTransitLoad < 0.002 &&
+          soilMassConservationValue?.finalActiveSoilVolume < 0.002 &&
+          soilMassConservationValue?.finalActiveFineVolume < 0.002,
+      ],
       [
         "fine grains settle into physical volume",
         fineGrainSettlementValue?.spawnedVolume > 0.05 &&
@@ -1382,6 +1408,7 @@ async function main() {
           soilAfterDig: soilAfterDigValue,
           soilDump: soilDumpValue,
           soilAfterDump: soilAfterDumpValue,
+          soilMassConservation: soilMassConservationValue,
           playableDig: playableDigValue,
           fineGrainSettlement: fineGrainSettlementValue,
           soilPush: soilPushValue,

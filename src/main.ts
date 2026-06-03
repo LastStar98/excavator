@@ -240,6 +240,7 @@ interface ExcavatorDebugApi {
     particleCount: number;
     settlingParticleCount: number;
     flowParticleCount: number;
+    activeSoilParticleVolume: number;
     fineGrainCount: number;
     activeFineGrainVolume: number;
     settledFineGrainVolume: number;
@@ -283,6 +284,26 @@ interface ExcavatorDebugApi {
     soilPairDistanceBefore: number;
     soilPairDistanceAfter: number;
     soilPairVelocityDelta: number;
+  };
+  forceSoilMassConservation: () => {
+    removedVolume: number;
+    totalExcavatedDelta: number;
+    postDigTerrainDeficit: number;
+    postDigExternalVolume: number;
+    postDigResidual: number;
+    afterFineSettleTerrainDeficit: number;
+    afterFineSettleExternalVolume: number;
+    afterFineSettleResidual: number;
+    emittedToTruck: number;
+    truckGain: number;
+    finalTerrainDeficit: number;
+    finalExternalVolume: number;
+    finalResidual: number;
+    finalBucketLoad: number;
+    finalBucketTransitLoad: number;
+    finalActiveSoilVolume: number;
+    finalActiveFineVolume: number;
+    activeAfter: number;
   };
   forceFullBucketPush: () => { displaced: number; bucketLoad: number; centerDrop: number; bermRise: number };
   forceCuttingFlowPhysics: () => {
@@ -5199,6 +5220,7 @@ class Simulator {
           particleCount: this.soilParticles.length,
           settlingParticleCount: this.soilParticles.filter((particle) => particle.settles).length,
           flowParticleCount: this.soilParticles.filter((particle) => !particle.settles).length,
+          activeSoilParticleVolume: this.activeSoilParticleVolume(),
           fineGrainCount: this.fineGrainCount(),
           activeFineGrainVolume: this.activeFineGrainVolume(),
           settledFineGrainVolume: this.fineGrainSettledVolume,
@@ -5408,6 +5430,114 @@ class Simulator {
           soilPairDistanceBefore,
           soilPairDistanceAfter,
           soilPairVelocityDelta,
+        };
+      },
+      forceSoilMassConservation: () => {
+        this.bucketLoad = 0;
+        this.bucketTransitLoad = 0;
+        this.truckLoad = 0;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.truck.updateLoad(this.truckLoad);
+        for (const particle of this.soilParticles) {
+          this.recycleSoilParticle(particle);
+        }
+        this.soilParticles.length = 0;
+        this.clearFineGrains();
+
+        const baselineTerrain = this.terrain.terrainVolumeDelta();
+        const baselineTruck = this.truckLoad;
+        const baselineTotalExcavated = this.totalExcavated;
+        const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
+        const start = new THREE.Vector3(DIG_SITE.x - 0.68, beforeHeight + 0.03, DIG_SITE.z - 0.08);
+        const end = new THREE.Vector3(DIG_SITE.x + 0.68, beforeHeight - 0.24, DIG_SITE.z + 0.08);
+        const removedVolume = this.excavateTerrainWithWake(
+          start,
+          end,
+          new THREE.Vector3(0, 0, 1),
+          1.14,
+          0.3,
+          BUCKET_CAPACITY,
+        );
+        const airborneFines = removedVolume * 0.055;
+        const accepted = Math.min(BUCKET_CAPACITY - this.bucketLoad, Math.max(0, removedVolume - airborneFines));
+        const spill = Math.max(0, removedVolume - airborneFines - accepted);
+        this.bucketLoad += accepted;
+        this.totalExcavated += removedVolume;
+        if (airborneFines > 0.001) {
+          const finesOrigin = end.clone();
+          finesOrigin.y = Math.max(finesOrigin.y, this.terrain.getHeightAt(end.x, end.z) + 0.2);
+          this.spawnFineGrains(finesOrigin, airborneFines, new THREE.Vector3(0.45, 0.12, 0.08), true, 1.25);
+        }
+        if (spill > 0.001) {
+          this.spawnSoilParticles(end, spill, new THREE.Vector3(0.25, -0.35, 0.06), 0.35);
+        }
+        this.excavator.setBucketLoad(this.bucketLoad);
+
+        const externalVolume = () =>
+          this.bucketLoad +
+          this.bucketTransitLoad +
+          (this.truckLoad - baselineTruck) +
+          this.activeSoilParticleVolume() +
+          this.activeFineGrainVolume();
+
+        const postDigTerrainDeficit = baselineTerrain - this.terrain.terrainVolumeDelta();
+        const postDigExternalVolume = externalVolume();
+        const postDigResidual = Math.abs(postDigTerrainDeficit - postDigExternalVolume);
+
+        for (let step = 0; step < 180; step += 1) {
+          this.updateSoilParticles(1 / 60);
+          this.updateFineGrains(1 / 60);
+        }
+
+        const afterFineSettleTerrainDeficit = baselineTerrain - this.terrain.terrainVolumeDelta();
+        const afterFineSettleExternalVolume = externalVolume();
+        const afterFineSettleResidual = Math.abs(afterFineSettleTerrainDeficit - afterFineSettleExternalVolume);
+
+        const emittedToTruck = this.bucketLoad;
+        const origin = this.truck.group.localToWorld(new THREE.Vector3(0.54, 1.86, 0));
+        const direction = new THREE.Vector3(0.16, -0.96, 0.06).normalize();
+        const fineVolume = emittedToTruck * 0.07;
+        const coarseVolume = Math.max(0, emittedToTruck - fineVolume);
+        this.bucketLoad = 0;
+        this.bucketTransitLoad = 0;
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.spawnSoilParticles(origin, coarseVolume, direction, 0.85);
+        this.spawnFineGrains(origin, fineVolume, direction.clone().add(new THREE.Vector3(0, -0.52, 0)), true, 1.25);
+        for (let step = 0; step < 360; step += 1) {
+          this.updateSoilParticles(1 / 60);
+          this.updateFineGrains(1 / 60);
+        }
+
+        const finalActiveSoilVolume = this.activeSoilParticleVolume();
+        const finalActiveFineVolume = this.activeFineGrainVolume();
+        const truckGain = this.truckLoad - baselineTruck;
+        const finalTerrainDeficit = baselineTerrain - this.terrain.terrainVolumeDelta();
+        const finalExternalVolume =
+          this.bucketLoad + this.bucketTransitLoad + truckGain + finalActiveSoilVolume + finalActiveFineVolume;
+        const finalResidual = Math.abs(finalTerrainDeficit - finalExternalVolume);
+
+        this.truck.updateLoad(this.truckLoad);
+        this.updateUi(0);
+
+        return {
+          removedVolume,
+          totalExcavatedDelta: this.totalExcavated - baselineTotalExcavated,
+          postDigTerrainDeficit,
+          postDigExternalVolume,
+          postDigResidual,
+          afterFineSettleTerrainDeficit,
+          afterFineSettleExternalVolume,
+          afterFineSettleResidual,
+          emittedToTruck,
+          truckGain,
+          finalTerrainDeficit,
+          finalExternalVolume,
+          finalResidual,
+          finalBucketLoad: this.bucketLoad,
+          finalBucketTransitLoad: this.bucketTransitLoad,
+          finalActiveSoilVolume,
+          finalActiveFineVolume,
+          activeAfter: this.soilParticles.length + this.fineGrainCount(),
         };
       },
       forceFullBucketPush: () => {
@@ -11319,6 +11449,14 @@ class Simulator {
       if (this.fineGrainMaxLife[i] > 0) {
         volume += this.fineGrainVolumes[i];
       }
+    }
+    return volume;
+  }
+
+  private activeSoilParticleVolume(): number {
+    let volume = 0;
+    for (const particle of this.soilParticles) {
+      volume += Math.max(0, particle.volume);
     }
     return volume;
   }
