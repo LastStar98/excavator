@@ -353,6 +353,7 @@ interface ExcavatorDebugApi {
     diagonalAfterX: number;
     diagonalAfterZ: number;
     diagonalBlocked: boolean;
+    elevatedFalseContact: boolean;
     frontContact: TruckCrawlerContactResult;
     sideContact: TruckCrawlerContactResult;
     diagonalContact: TruckCrawlerContactResult;
@@ -1945,6 +1946,13 @@ class WorkTruck {
     const maxX = 2.72;
     const minZ = -1.22;
     const maxZ = 1.22;
+    const maxLoadHeight = this.loadMesh.visible ? this.loadDistributionStats().maxHeight : 0;
+    const minY = 0.16;
+    const maxY = 1.7 + Math.min(maxLoadHeight, 0.95);
+    if (local.y + radius < minY || local.y - radius > maxY) {
+      return null;
+    }
+    const verticalPenetration = Math.min(local.y + radius - minY, maxY - (local.y - radius));
     const closestX = clamp(local.x, minX, maxX);
     const closestZ = clamp(local.z, minZ, maxZ);
     const dx = local.x - closestX;
@@ -1960,7 +1968,7 @@ class WorkTruck {
         return null;
       }
       localNormal.set(dx / distance, 0, dz / distance);
-      penetration = radius - distance;
+      penetration = Math.min(radius - distance, verticalPenetration + radius * 0.35);
     } else {
       const distances = [
         { value: local.x - minX, normal: new THREE.Vector3(-1, 0, 0) },
@@ -1969,7 +1977,7 @@ class WorkTruck {
         { value: maxZ - local.z, normal: new THREE.Vector3(0, 0, 1) },
       ].sort((a, b) => a.value - b.value);
       localNormal = distances[0].normal;
-      penetration = radius + distances[0].value;
+      penetration = Math.min(radius + distances[0].value, verticalPenetration + radius * 0.35);
     }
 
     const normal = localNormal.applyQuaternion(this.group.quaternion).normalize();
@@ -5500,6 +5508,8 @@ class Simulator {
         const front = runScenario(new THREE.Vector3(-3.1, 0, 0), new THREE.Vector3(1, 0, 0));
         const side = runScenario(new THREE.Vector3(0.24, 0, -2.72), new THREE.Vector3(0, 0, 1));
         const diagonal = runScenario(new THREE.Vector3(-3.18, 0, -2.28), new THREE.Vector3(1, 0, 0.72));
+        const highClearProbe = this.truck.group.localToWorld(new THREE.Vector3(0.2, 3.05, 0));
+        const elevatedFalseContact = Boolean(this.truck.resolveBodyCollision(highClearProbe, TRACK_WIDTH * 0.54));
         const supportForward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.excavator.group.rotation.y);
         this.updateExcavatorSupport(0.3, supportForward);
         this.updateUi(0);
@@ -5525,6 +5535,7 @@ class Simulator {
             diagonal.afterLocal.z < diagonal.beforeLocal.z - 0.04 &&
             (Math.abs(diagonal.leftTrackVelocity) < TRACK_MAX_SPEED * 0.72 ||
               Math.abs(diagonal.rightTrackVelocity) < TRACK_MAX_SPEED * 0.72),
+          elevatedFalseContact,
           frontContact: front.contact,
           sideContact: side.contact,
           diagonalContact: diagonal.contact,
@@ -7572,6 +7583,7 @@ class Simulator {
         .clone()
         .addScaledVector(forward, sample.x)
         .addScaledVector(side, sample.z);
+      world.y = this.terrain.getHeightAt(world.x, world.z) + TRACK_CONTACT_HEIGHT;
       const hit = this.truck.resolveBodyCollision(world, TRACK_WIDTH * 0.54);
       if (!hit) {
         continue;
@@ -7606,7 +7618,9 @@ class Simulator {
     }
 
     if (correctionNormal.lengthSq() < 0.000001) {
-      const centerHit = this.truck.resolveBodyCollision(base, 1.62);
+      const bodyPoint = base.clone();
+      bodyPoint.y = this.terrain.getHeightAt(bodyPoint.x, bodyPoint.z) + CRAWLER_BODY_CONTACT_HEIGHT;
+      const centerHit = this.truck.resolveBodyCollision(bodyPoint, 1.62);
       if (!centerHit) {
         return this.emptyTruckCrawlerContact();
       }
@@ -7823,7 +7837,9 @@ class Simulator {
   ): { truckContact: TruckCrawlerContactResult; objectContact: CrawlerWorldObjectContactResult; bodyHit: boolean } {
     const hasDriveIntent = Math.abs(forwardSpeed) > 0.02 || Math.abs(turnRate) > 0.05;
     const truckContact = this.resolveTruckCrawlerFootprintCollision(forwardSpeed, turnRate, forward);
-    const hit = this.truck.resolveBodyCollision(this.excavator.group.position, 1.62);
+    const bodyPoint = this.excavator.group.position.clone();
+    bodyPoint.y = this.terrain.getHeightAt(bodyPoint.x, bodyPoint.z) + CRAWLER_BODY_CONTACT_HEIGHT;
+    const hit = this.truck.resolveBodyCollision(bodyPoint, 1.62);
     if (hit) {
       this.truck.applyImpact(
         this.excavator.group.position,
