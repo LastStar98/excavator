@@ -6039,8 +6039,6 @@ class Simulator {
           const started = performance.now();
           this.withBucketDumpPressureSilenced(() => {
             this.spillBucketLoadToWorld(1 / 60, 3.1, 1.1, this.bucketLoad);
-            this.updateSoilParticles(1 / 60);
-            this.updateFineGrains(1 / 60);
           });
           this.bucketDumpPressureSilence = Math.max(0, this.bucketDumpPressureSilence - 1 / 60);
           const elapsed = performance.now() - started;
@@ -11776,7 +11774,9 @@ class Simulator {
       this.releaseCarriedWorldObjects(releaseVelocity);
     }
     if (dumpIntent && this.bucketLoad > 0.002) {
-      const dumpRate = (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95 + lipDumpBias * 0.62) * dt;
+      const dumpRate = BUCKET_SOIL_FAST_DUMP_ENABLED
+        ? this.bucketLoad
+        : (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95 + lipDumpBias * 0.62) * dt;
       this.spillBucketLoadToWorld(
         dt,
         1.0 + openFactor * 2.4 + Math.max(0, this.velocities.bucket) * 0.8 + lipDumpBias,
