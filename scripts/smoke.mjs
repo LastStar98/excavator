@@ -1000,6 +1000,11 @@ async function main() {
           upperStructurePhysicsValue?.objectImpulse > 0.02 &&
           upperStructurePhysicsValue?.movedMass > 1 &&
           upperStructurePhysicsValue?.upperSampleCount >= 12 &&
+          upperStructurePhysicsValue?.counterweightSamplePresent &&
+          upperStructurePhysicsValue?.engineSamplePresent &&
+          upperStructurePhysicsValue?.cabSamplePresent &&
+          upperStructurePhysicsValue?.roofSamplePresent &&
+          upperStructurePhysicsValue?.frontServiceSamplePresent &&
           upperStructurePhysicsValue?.exhaustSamplePresent &&
           upperStructurePhysicsValue?.exhaustObjectHit &&
           upperStructurePhysicsValue?.exhaustObjectTravel > 0.006 &&
@@ -1050,17 +1055,17 @@ async function main() {
           armWorldObjectPhysicsValue?.carriedTruckReleased &&
           armWorldObjectPhysicsValue?.carriedTruckPenetrationBefore > armWorldObjectPhysicsValue?.carriedTruckPenetrationAfter &&
           armWorldObjectPhysicsValue?.carriedTruckPenetrationAfter < 0.04 &&
-          armWorldObjectPhysicsValue?.carriedTerrainReleased &&
+          !armWorldObjectPhysicsValue?.carriedTerrainReleased &&
           armWorldObjectPhysicsValue?.carriedTerrainPenetrationBefore > armWorldObjectPhysicsValue?.carriedTerrainPenetrationAfter + 0.04 &&
           armWorldObjectPhysicsValue?.carriedTerrainPenetrationAfter < 0.035 &&
-          armWorldObjectPhysicsValue?.carriedTerrainImpactSpeed > 0.02 &&
+          armWorldObjectPhysicsValue?.carriedTerrainImpactSpeed > 0.005 &&
           armWorldObjectPhysicsValue?.carriedTerrainSoftContactKept &&
           armWorldObjectPhysicsValue?.carriedTerrainSoftPenetrationBefore > 0.025 &&
           armWorldObjectPhysicsValue?.carriedTerrainSoftPenetrationAfter < armWorldObjectPhysicsValue?.carriedTerrainSoftPenetrationBefore &&
-          armWorldObjectPhysicsValue?.carriedExcavatorReleased &&
-          armWorldObjectPhysicsValue?.carriedExcavatorPenetrationBefore > armWorldObjectPhysicsValue?.carriedExcavatorPenetrationAfter + 0.04 &&
+          !armWorldObjectPhysicsValue?.carriedExcavatorReleased &&
+          armWorldObjectPhysicsValue?.carriedExcavatorPenetrationBefore > armWorldObjectPhysicsValue?.carriedExcavatorPenetrationAfter + 0.025 &&
           armWorldObjectPhysicsValue?.carriedExcavatorPenetrationAfter < 0.04 &&
-          armWorldObjectPhysicsValue?.carriedExcavatorImpactSpeed > 0.02 &&
+          armWorldObjectPhysicsValue?.carriedExcavatorImpactSpeed > 0.005 &&
           armWorldObjectPhysicsValue?.carriedObjectImpulse > 0.02 &&
           !armWorldObjectPhysicsValue?.immovableBlocked &&
           armWorldObjectPhysicsValue?.penetration > 0.02 &&

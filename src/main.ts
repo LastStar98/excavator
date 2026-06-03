@@ -442,6 +442,11 @@ interface ExcavatorDebugApi {
     objectImpulse: number;
     movedMass: number;
     upperSampleCount: number;
+    counterweightSamplePresent: boolean;
+    engineSamplePresent: boolean;
+    cabSamplePresent: boolean;
+    roofSamplePresent: boolean;
+    frontServiceSamplePresent: boolean;
     exhaustSamplePresent: boolean;
     exhaustObjectHit: boolean;
     exhaustObjectTravel: number;
@@ -786,18 +791,18 @@ const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 const WORLD_COLLIDER_GRID_SIZE = 2.4;
 const TRUCK_TIRE_RADIUS = 0.35;
 const TRUCK_TIRE_WIDTH = 0.28;
-const WORLD_COLLIDER_WAKE_LIMIT = 12;
-const WORLD_COLLIDER_PAIR_ACTIVE_LIMIT = 18;
-const SOIL_PARTICLE_SOFT_LIMIT = 6;
-const SOIL_PARTICLE_HARD_LIMIT = 9;
+const WORLD_COLLIDER_WAKE_LIMIT = 6;
+const WORLD_COLLIDER_PAIR_ACTIVE_LIMIT = 10;
+const SOIL_PARTICLE_SOFT_LIMIT = 4;
+const SOIL_PARTICLE_HARD_LIMIT = 6;
 const SOIL_PARTICLE_COLLISION_QUERY_PADDING = 0.28;
 const FINE_GRAIN_COLLISION_QUERY_PADDING = 0.18;
 const SOIL_DYNAMIC_COLLISION_BUDGET = 1;
 const FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 1;
 const MOBILE_SOIL_DYNAMIC_COLLISION_BUDGET = 0;
 const MOBILE_FINE_GRAIN_DYNAMIC_COLLISION_BUDGET = 0;
-const BUCKET_LOAD_SLUMP_INTERVAL = 1 / 24;
-const BUCKET_LOAD_SLUMP_MAX_DT = 1 / 12;
+const BUCKET_LOAD_SLUMP_INTERVAL = 1 / 12;
+const BUCKET_LOAD_SLUMP_MAX_DT = 1 / 10;
 const SOIL_PAIR_COLLISIONS_ENABLED = false;
 const FINE_GRAIN_PAIR_COLLISIONS_ENABLED = false;
 const SOIL_PAIR_GRID_SIZE = 0.34;
@@ -3892,8 +3897,8 @@ class Simulator {
   ];
   private readonly pooledSoilGeometry = new THREE.DodecahedronGeometry(1, 0);
   private readonly soilParticlePool: THREE.Mesh[] = [];
-  private readonly soilParticlePoolLimit = 40;
-  private readonly fineGrainMax = 28;
+  private readonly soilParticlePoolLimit = 28;
+  private readonly fineGrainMax = 20;
   private readonly fineGrainPositions = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainVelocities = new Float32Array(this.fineGrainMax * 3);
   private readonly fineGrainLife = new Float32Array(this.fineGrainMax);
@@ -4308,27 +4313,22 @@ class Simulator {
 
   private wakeWorldCollidersNear(center: THREE.Vector3, radius: number): number {
     let woke = 0;
-    const candidates = [...this.nearbyWorldColliders(center, radius + 1.2)]
-      .filter((collider) => {
-        if (collider.immovable || this.carriedWorldColliders.has(collider)) {
-          return false;
-        }
-        const pos = collider.mesh.position;
-        const horizontalDistance = Math.hypot(pos.x - center.x, pos.z - center.z);
-        return horizontalDistance <= radius + collider.radius;
-      })
-      .sort((a, b) => {
-        const ap = a.mesh.position;
-        const bp = b.mesh.position;
-        const adx = ap.x - center.x;
-        const adz = ap.z - center.z;
-        const bdx = bp.x - center.x;
-        const bdz = bp.z - center.z;
-        return adx * adx + adz * adz - (bdx * bdx + bdz * bdz);
-      })
-      .slice(0, WORLD_COLLIDER_WAKE_LIMIT);
-    for (const collider of candidates) {
+    let checked = 0;
+    for (const collider of this.nearbyWorldColliders(center, radius + 1.2)) {
+      if (checked >= WORLD_COLLIDER_WAKE_LIMIT) {
+        break;
+      }
+      if (collider.immovable || this.carriedWorldColliders.has(collider)) {
+        continue;
+      }
       const pos = collider.mesh.position;
+      const dx = pos.x - center.x;
+      const dz = pos.z - center.z;
+      const reach = radius + collider.radius;
+      if (dx * dx + dz * dz > reach * reach) {
+        continue;
+      }
+      checked += 1;
       const support = this.worldColliderTerrainSupport(collider);
       const buriedDepth = support.penetration;
       const unsupportedDrop = support.unsupportedDrop;
@@ -6103,6 +6103,11 @@ class Simulator {
         let objectImpulse = 0;
         let movedMass = 0;
         let upperSampleCount = 0;
+        let counterweightSamplePresent = false;
+        let engineSamplePresent = false;
+        let cabSamplePresent = false;
+        let roofSamplePresent = false;
+        let frontServiceSamplePresent = false;
         let exhaustSamplePresent = false;
         let exhaustObjectHit = false;
         let exhaustObjectTravel = 0;
@@ -6162,9 +6167,24 @@ class Simulator {
           this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
           this.excavator.applyAngles(this.angles);
           const upperSamples = this.excavator.upperCollisionSamples();
+          const upperSampleKeys = new Set(upperSamples.map((sample) => sample.key));
           upperSampleCount = upperSamples.length;
+          counterweightSamplePresent =
+            upperSampleKeys.has("counterweight-center") &&
+            upperSampleKeys.has("counterweight-left") &&
+            upperSampleKeys.has("counterweight-right");
+          engineSamplePresent =
+            upperSampleKeys.has("engine-center") &&
+            upperSampleKeys.has("engine-left") &&
+            upperSampleKeys.has("engine-right");
+          cabSamplePresent = upperSampleKeys.has("cab-low");
+          roofSamplePresent = upperSampleKeys.has("cab-roof");
+          frontServiceSamplePresent = upperSampleKeys.has("front-service");
           const exhaustSample = upperSamples.find((sample) => sample.key === "exhaust-mid");
-          exhaustSamplePresent = Boolean(exhaustSample);
+          exhaustSamplePresent =
+            upperSampleKeys.has("exhaust-base") &&
+            upperSampleKeys.has("exhaust-mid") &&
+            upperSampleKeys.has("exhaust-top");
           if (exhaustSample) {
             const overlap = Math.max(0.035, (exhaustSample.radius + exhaustObstacle.radius) * 0.42);
             exhaustObstacle.mesh.position.copy(exhaustSample.point).add(new THREE.Vector3(overlap, 0, 0));
@@ -6188,8 +6208,24 @@ class Simulator {
           exhaustObstacle.sleeping = savedSleeping;
           this.worldColliderGridDirty = true;
         } else {
-          upperSampleCount = this.excavator.upperCollisionSamples().length;
-          exhaustSamplePresent = this.excavator.upperCollisionSamples().some((sample) => sample.key === "exhaust-mid");
+          const upperSamples = this.excavator.upperCollisionSamples();
+          const upperSampleKeys = new Set(upperSamples.map((sample) => sample.key));
+          upperSampleCount = upperSamples.length;
+          counterweightSamplePresent =
+            upperSampleKeys.has("counterweight-center") &&
+            upperSampleKeys.has("counterweight-left") &&
+            upperSampleKeys.has("counterweight-right");
+          engineSamplePresent =
+            upperSampleKeys.has("engine-center") &&
+            upperSampleKeys.has("engine-left") &&
+            upperSampleKeys.has("engine-right");
+          cabSamplePresent = upperSampleKeys.has("cab-low");
+          roofSamplePresent = upperSampleKeys.has("cab-roof");
+          frontServiceSamplePresent = upperSampleKeys.has("front-service");
+          exhaustSamplePresent =
+            upperSampleKeys.has("exhaust-base") &&
+            upperSampleKeys.has("exhaust-mid") &&
+            upperSampleKeys.has("exhaust-top");
         }
 
         this.updateUi(0);
@@ -6206,6 +6242,11 @@ class Simulator {
           objectImpulse,
           movedMass,
           upperSampleCount,
+          counterweightSamplePresent,
+          engineSamplePresent,
+          cabSamplePresent,
+          roofSamplePresent,
+          frontServiceSamplePresent,
           exhaustSamplePresent,
           exhaustObjectHit,
           exhaustObjectTravel,
@@ -8968,7 +9009,27 @@ class Simulator {
       }
     }
 
-    return best?.local ?? null;
+    if (best) {
+      return best.local;
+    }
+
+    const centerLocal = this.excavator.bucketGroup.worldToLocal(collider.mesh.position.clone());
+    const captureReach = collider.radius + (collider.capsule ? 0.96 : 0.78);
+    const closeEnoughToBucket =
+      centerLocal.x >= -BUCKET_LEN - 0.82 - captureReach &&
+      centerLocal.x <= 0.42 + captureReach &&
+      centerLocal.y >= -1.2 - captureReach &&
+      centerLocal.y <= 0.58 + captureReach &&
+      Math.abs(centerLocal.z) <= 0.94 + captureReach;
+    if (!closeEnoughToBucket) {
+      return null;
+    }
+
+    return new THREE.Vector3(
+      clamp(centerLocal.x, -1.0, -0.16),
+      clamp(centerLocal.y, -0.62, -0.04),
+      clamp(centerLocal.z, -0.54, 0.54),
+    );
   }
 
   private canCarryWorldCollider(collider: WorldCollider): boolean {
@@ -9087,58 +9148,28 @@ class Simulator {
       const normal = terrainSupport.normal.clone().normalize();
       const normalSpeed = collider.velocity.dot(normal);
       let maxPenetration = terrainSupport.penetration;
-      let contactPoint = terrainSupport.point.clone();
-      for (let pass = 0; pass < 4; pass += 1) {
+      for (let pass = 0; pass < 2; pass += 1) {
         const passSupport = this.worldColliderTerrainSupport(collider);
         if (passSupport.penetration <= 0.003) {
           break;
         }
         maxPenetration = Math.max(maxPenetration, passSupport.penetration);
-        contactPoint = passSupport.point.clone();
-        collider.mesh.position.addScaledVector(passSupport.normal, Math.min(passSupport.penetration + 0.004, 0.42));
+        collider.mesh.position.addScaledVector(passSupport.normal, Math.min(passSupport.penetration + 0.003, 0.32));
       }
 
-      const bucketIsLiftingObject = collider.velocity.y > -0.12 && normalSpeed > -0.18 && maxPenetration < 0.24;
-      if (bucketIsLiftingObject) {
-        const adjustedLocal = this.excavator.bucketGroup.worldToLocal(collider.mesh.position.clone());
-        this.carriedWorldColliders.set(collider, adjustedLocal);
-        this.carriedWorldPreviousPositions.set(collider, collider.mesh.position.clone());
-        collider.velocity.addScaledVector(normal, Math.max(0, -normalSpeed) + clamp(maxPenetration * 0.35, 0, 0.1));
-        this.pressure = Math.max(this.pressure, clamp(0.12 + maxPenetration * 0.72, 0, 0.46));
-        return false;
-      }
-
-      const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed).multiplyScalar(0.58);
-      const bounceSpeed =
-        normalSpeed < 0
-          ? -normalSpeed * clamp(collider.restitution + 0.06, 0.06, 0.34)
-          : Math.max(normalSpeed, 0.02 + maxPenetration * 0.08);
-      const impactSpeed = Math.max(0, -normalSpeed) + maxPenetration * 2.2;
-      const footprint = this.compactWorldObjectFootprint(collider, contactPoint, impactSpeed, dt);
-      collider.velocity.copy(tangent).addScaledVector(normal, bounceSpeed + clamp(maxPenetration * 0.42, 0, 0.18));
-      this.applyWorldColliderAngularImpulse(
-        collider,
-        contactPoint,
-        normal.clone().multiplyScalar(Math.max(impactSpeed, 0.08) * collider.mass),
-        0.22,
-      );
-      this.releaseCarriedWorldCollider(collider);
-      this.pressure = Math.max(
-        this.pressure,
-        clamp(0.34 + maxPenetration * 1.45 + impactSpeed * 0.12 + footprint.rutDrop * 2.8, 0, 1),
-      );
-      if (this.collisionCooldown <= 0 && maxPenetration > 0.018) {
-        this.collisionCount += 1;
-        this.collisionCooldown = 0.34;
-      }
-      return true;
+      const adjustedLocal = this.excavator.bucketGroup.worldToLocal(collider.mesh.position.clone());
+      this.carriedWorldColliders.set(collider, adjustedLocal);
+      this.carriedWorldPreviousPositions.set(collider, collider.mesh.position.clone());
+      collider.velocity.addScaledVector(normal, Math.max(0, -normalSpeed) + clamp(maxPenetration * 0.24, 0, 0.08));
+      this.pressure = Math.max(this.pressure, clamp(0.08 + maxPenetration * 0.42, 0, 0.32));
+      return false;
     }
 
     let excavatorHit = this.resolveCarriedWorldObjectExcavatorHit(collider);
     if (excavatorHit) {
       const responseNormal = excavatorHit.normal.clone().normalize();
       let maxPenetration = excavatorHit.penetration;
-      for (let pass = 0; pass < 8 && excavatorHit; pass += 1) {
+      for (let pass = 0; pass < 7 && excavatorHit; pass += 1) {
         const normal = excavatorHit.normal.clone().normalize();
         maxPenetration = Math.max(maxPenetration, excavatorHit.penetration);
         collider.mesh.position.addScaledVector(normal, Math.min(excavatorHit.penetration + 0.008, 0.68));
@@ -9149,26 +9180,13 @@ class Simulator {
       }
 
       const normalSpeed = collider.velocity.dot(responseNormal);
-      const tangent = collider.velocity.clone().addScaledVector(responseNormal, -normalSpeed);
-      const bounceSpeed =
-        normalSpeed < 0
-          ? -normalSpeed * clamp(collider.restitution + 0.08, 0.08, 0.42)
-          : Math.max(normalSpeed, 0.02 + maxPenetration * 0.08);
-      const impactSpeed = Math.max(0, -normalSpeed) + maxPenetration * 2.0;
-      collider.velocity.copy(tangent.multiplyScalar(0.62)).addScaledVector(responseNormal, bounceSpeed + clamp(maxPenetration * 0.32, 0, 0.16));
-      this.applyWorldColliderAngularImpulse(
-        collider,
-        collider.mesh.position.clone().addScaledVector(responseNormal, collider.radius),
-        responseNormal.clone().multiplyScalar(Math.max(impactSpeed, 0.08) * collider.mass),
-        0.24,
-      );
-      this.releaseCarriedWorldCollider(collider);
-      this.pressure = Math.max(this.pressure, clamp(0.36 + maxPenetration * 1.4 + impactSpeed * 0.1 + collider.mass * 0.006, 0, 1));
-      if (this.collisionCooldown <= 0 && maxPenetration > 0.018) {
-        this.collisionCount += 1;
-        this.collisionCooldown = 0.34;
-      }
-      return true;
+      const tangent = collider.velocity.clone().addScaledVector(responseNormal, -normalSpeed).multiplyScalar(0.48);
+      collider.velocity.copy(tangent).addScaledVector(responseNormal, Math.max(0, -normalSpeed) + clamp(maxPenetration * 0.18, 0, 0.08));
+      const adjustedLocal = this.excavator.bucketGroup.worldToLocal(collider.mesh.position.clone());
+      this.carriedWorldColliders.set(collider, adjustedLocal);
+      this.carriedWorldPreviousPositions.set(collider, collider.mesh.position.clone());
+      this.pressure = Math.max(this.pressure, clamp(0.14 + maxPenetration * 0.52, 0, 0.42));
+      return false;
     }
 
     let checkedLooseObjects = 0;
@@ -9254,7 +9272,15 @@ class Simulator {
     this.flushWorldColliderGridRefresh();
     const bucket = this.excavator.bucketPocketWorld();
     const machine = this.excavator.group.position;
+    const bucketMotionActive =
+      Math.abs(this.velocities.boom) +
+        Math.abs(this.velocities.stick) +
+        Math.abs(this.velocities.bucket) +
+        Math.abs(this.velocities.swing) >
+      0.035;
+    const crawlerMotionActive = Math.abs(this.leftTrackVelocity) + Math.abs(this.rightTrackVelocity) > 0.045;
     let activeObjectMoved = false;
+    let colliderGridMoved = false;
     for (const collider of this.worldColliders) {
       if (collider.immovable || this.carriedWorldColliders.has(collider)) {
         continue;
@@ -9270,9 +9296,13 @@ class Simulator {
       const angularSpeedSq = collider.angularVelocity.lengthSq();
       collider.groundLoadCooldown = Math.max(0, collider.groundLoadCooldown - dt);
       const bucketWakeRadius = collider.radius + 1.28;
-      const nearActiveBucket = dxBucket * dxBucket + dyBucket * dyBucket + dzBucket * dzBucket < bucketWakeRadius * bucketWakeRadius;
+      const nearActiveBucket =
+        bucketMotionActive &&
+        dxBucket * dxBucket + dyBucket * dyBucket + dzBucket * dzBucket < bucketWakeRadius * bucketWakeRadius;
       const crawlerWakeRadius = 3.6 + collider.radius;
-      const nearCrawlerBody = dxMachine * dxMachine + dzMachine * dzMachine < crawlerWakeRadius * crawlerWakeRadius;
+      const nearCrawlerBody =
+        crawlerMotionActive &&
+        dxMachine * dxMachine + dzMachine * dzMachine < crawlerWakeRadius * crawlerWakeRadius;
       if (collider.sleeping && speedSq < 0.0004 && angularSpeedSq < 0.0004 && !nearActiveBucket && !nearCrawlerBody) {
         continue;
       }
@@ -9356,14 +9386,28 @@ class Simulator {
       if (Math.abs(pos.x - previousX) + Math.abs(pos.y - previousY) + Math.abs(pos.z - previousZ) > 0.00001) {
         activeObjectMoved = true;
       }
+      if (Math.abs(pos.x - previousX) + Math.abs(pos.z - previousZ) > 0.00001) {
+        colliderGridMoved = true;
+      }
     }
     if (activeObjectMoved) {
-      this.worldColliderGridDirty = true;
+      if (colliderGridMoved) {
+        this.worldColliderGridDirty = true;
+      }
       this.resolveLooseObjectPairCollisions();
     }
   }
 
   private resolveLooseObjectBucketLoadCollision(collider: WorldCollider): boolean {
+    if (this.bucketLoad <= 0.01) {
+      return false;
+    }
+    const pocket = this.excavator.bucketPocketWorld();
+    const reach = collider.radius + 1.18;
+    if (collider.mesh.position.distanceToSquared(pocket) > reach * reach) {
+      return false;
+    }
+
     const hit = this.resolveWorldColliderShapeHit(collider, (point, radius) => this.excavator.resolveBucketLoadCollision(point, radius));
     if (!hit) {
       return false;
@@ -9663,9 +9707,16 @@ class Simulator {
   }
 
   private resolveLooseObjectPairCollisions(): void {
-    const activeColliders = this.worldColliders
-      .filter((collider) => !collider.sleeping && !this.carriedWorldColliders.has(collider))
-      .slice(0, WORLD_COLLIDER_PAIR_ACTIVE_LIMIT);
+    const activeColliders: WorldCollider[] = [];
+    for (const collider of this.worldColliders) {
+      if (collider.sleeping || this.carriedWorldColliders.has(collider)) {
+        continue;
+      }
+      activeColliders.push(collider);
+      if (activeColliders.length >= WORLD_COLLIDER_PAIR_ACTIVE_LIMIT) {
+        break;
+      }
+    }
     let moved = false;
 
     for (const a of activeColliders) {
@@ -10438,7 +10489,8 @@ class Simulator {
       const weighted = Math.pow(submerged, 1.08) * (1 + subsoil * 0.48) * yieldingScale;
       const intrusionLoad = localIntrusion * yieldingScale;
       const motionLoad = (verticalIntrusion + horizontalMotion) * (cuttingBucketContact ? 0.55 : 1);
-      if (motionLoad > 0.006) {
+      const shouldDisplaceTerrain = !isBucket || !cuttingBucketContact;
+      if (shouldDisplaceTerrain && motionLoad > 0.006) {
         const horizontalMotionVector = new THREE.Vector3(motion.x, 0, motion.z);
         const sideways =
           horizontalMotionVector.lengthSq() > 0.0001
@@ -10599,7 +10651,7 @@ class Simulator {
       if (removed > 0) {
         this.pressure = Math.max(this.pressure, clamp(0.42 + removed * 1.8 + contactRatio * 0.22, 0, 1));
         if (bucketAccepted > 0.001) {
-          const directCaptureRatio = clamp(0.68 + attackEfficiency * 0.18 + curlInSpeed * 0.06 + contactRatio * 0.06, 0.62, 0.9);
+          const directCaptureRatio = clamp(0.9 + attackEfficiency * 0.06 + curlInSpeed * 0.025 + contactRatio * 0.025, 0.88, 0.985);
           const directCapture = Math.min(bucketAccepted, bucketAccepted * directCaptureRatio);
           const flowVolume = bucketAccepted - directCapture;
           this.bucketLoad += directCapture;
@@ -10704,7 +10756,7 @@ class Simulator {
     const direction = spill.worldPoint.clone().sub(this.excavator.bucketPocketWorld());
     const forward = direction.lengthSq() > 0.0001 ? direction.normalize() : this.excavator.bucketForwardWorld();
     const openness = clamp(lipBias, 0, 1.2);
-    const fineVolume = spilledVolume * clamp(0.035 + openness * 0.055, 0.035, 0.1);
+    const fineVolume = spilledVolume * clamp(0.018 + openness * 0.026, 0.018, 0.055);
     const coarseVolume = Math.max(0, spilledVolume - fineVolume);
     this.spawnSoilParticles(spill.worldPoint, coarseVolume, forward, openness);
     this.spawnFineGrains(spill.worldPoint, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openness, 0)), true, 1.05 + openness);
@@ -10715,7 +10767,7 @@ class Simulator {
     if (volume <= 0) {
       return;
     }
-    const count = clamp(Math.ceil(volume * 5), 1, 2);
+    const count = 1;
     const perParticle = volume / count;
     for (let i = 0; i < count; i += 1) {
       if (this.soilParticles.length > SOIL_PARTICLE_HARD_LIMIT || (this.soilParticles.length > SOIL_PARTICLE_SOFT_LIMIT && i % 2 === 0)) {
@@ -10748,7 +10800,7 @@ class Simulator {
     if (volume <= 0) {
       return;
     }
-    const count = clamp(Math.ceil(volume * 4.5), 1, 2);
+    const count = 1;
     const perParticle = volume / count;
     const flowDirection =
       bucketForward.lengthSq() > 0.0001 ? bucketForward.clone().normalize() : new THREE.Vector3(0, -1, 0);
@@ -10815,7 +10867,7 @@ class Simulator {
       return;
     }
 
-    const count = clamp(Math.ceil(volume * 7 * burst), 1, 2);
+    const count = 1;
     const perGrain = volume / count;
     const baseDirection = direction.clone();
     if (baseDirection.lengthSq() < 0.0001) {
