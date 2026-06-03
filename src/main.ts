@@ -406,6 +406,7 @@ interface ExcavatorDebugApi {
   forceTruckWheelPhysics: () => {
     wheelPenetrationBefore: number;
     wheelPenetrationAfter: number;
+    wheelCapFalsePenetration: number;
     solidPenetrationBefore: number;
     objectTravel: number;
     objectImpulse: number;
@@ -765,6 +766,8 @@ const WORKER_ZONE = new THREE.Vector3(2.0, 0, 2.15);
 const BUCKET_OBJECT_LOAD_REFERENCE = 24;
 const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 const WORLD_COLLIDER_GRID_SIZE = 2.4;
+const TRUCK_TIRE_RADIUS = 0.35;
+const TRUCK_TIRE_WIDTH = 0.28;
 const WORLD_COLLIDER_WAKE_LIMIT = 12;
 const WORLD_COLLIDER_PAIR_ACTIVE_LIMIT = 18;
 const SOIL_PARTICLE_SOFT_LIMIT = 6;
@@ -1880,7 +1883,7 @@ class WorkTruck {
 
     for (const x of [-1.7, 1.45]) {
       for (const z of [-1.02, 1.02]) {
-        const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.28, 24), tireMat);
+        const tire = new THREE.Mesh(new THREE.CylinderGeometry(TRUCK_TIRE_RADIUS, TRUCK_TIRE_RADIUS, TRUCK_TIRE_WIDTH, 24), tireMat);
         tire.rotation.x = Math.PI / 2;
         tire.position.set(x, 0.32, z);
         tire.castShadow = true;
@@ -2163,22 +2166,53 @@ class WorkTruck {
 
   private resolveWheelSolidCollision(local: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
     let best: { normal: THREE.Vector3; penetration: number } | null = null;
-    const tireRadius = 0.36;
-    const halfTireWidth = 0.18;
+    const halfTireWidth = TRUCK_TIRE_WIDTH * 0.5;
 
     for (const wheel of this.wheelLocals) {
       const center = new THREE.Vector3(wheel.x, 0.32, wheel.z);
-      const closest = new THREE.Vector3(center.x, center.y, clamp(local.z, center.z - halfTireWidth, center.z + halfTireWidth));
-      const delta = local.clone().sub(closest);
-      const distanceSq = delta.lengthSq();
-      const combined = tireRadius + radius;
-      if (distanceSq >= combined * combined) {
-        continue;
+      const dx = local.x - center.x;
+      const dy = local.y - center.y;
+      const dz = local.z - center.z;
+      const radial = Math.hypot(dx, dy);
+      const axial = Math.abs(dz);
+      const radialGap = Math.max(0, radial - TRUCK_TIRE_RADIUS);
+      const axialGap = Math.max(0, axial - halfTireWidth);
+      let normal: THREE.Vector3 | null = null;
+      let penetration = 0;
+
+      if (radialGap > 0 || axialGap > 0) {
+        const distanceSq = radialGap * radialGap + axialGap * axialGap;
+        if (distanceSq >= radius * radius) {
+          continue;
+        }
+        const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
+        const radialX = radial > 0.000001 ? dx / radial : 0;
+        const radialY = radial > 0.000001 ? dy / radial : 1;
+        normal = new THREE.Vector3(
+          (radialX * radialGap) / distance,
+          (radialY * radialGap) / distance,
+          ((Math.sign(dz) || 1) * axialGap) / distance,
+        ).normalize();
+        penetration = radius - distance;
+      } else {
+        const radialClearance = TRUCK_TIRE_RADIUS - radial;
+        const axialClearance = halfTireWidth - axial;
+        if (radialClearance <= axialClearance) {
+          normal = new THREE.Vector3(
+            radial > 0.000001 ? dx / radial : 0,
+            radial > 0.000001 ? dy / radial : 1,
+            0,
+          );
+          penetration = radius + radialClearance;
+        } else {
+          normal = new THREE.Vector3(0, 0, Math.sign(dz) || 1);
+          penetration = radius + axialClearance;
+        }
       }
 
-      const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-      const normal = distanceSq < 0.000001 ? new THREE.Vector3(0, 1, 0) : delta.divideScalar(distance);
-      const penetration = combined - distance;
+      if (!normal || penetration <= 0) {
+        continue;
+      }
       if (!best || penetration > best.penetration) {
         best = { normal, penetration };
       }
@@ -5888,9 +5922,11 @@ class Simulator {
         this.truck.reset(this.terrain);
         this.truckLoad = 0;
         this.truck.updateLoad(this.truckLoad);
-        const wheelProbe = this.truck.group.localToWorld(new THREE.Vector3(-1.7, 0.32, -1.22));
+        const wheelProbe = this.truck.group.localToWorld(new THREE.Vector3(-1.7, 0.32, -1.12));
+        const wheelFalseProbe = this.truck.group.localToWorld(new THREE.Vector3(-1.7, 0.32, -1.26));
         const probeRadius = 0.08;
         const wheelPenetrationBefore = this.truck.resolveWheelCollision(wheelProbe, probeRadius)?.penetration ?? 0;
+        const wheelCapFalsePenetration = this.truck.resolveWheelCollision(wheelFalseProbe, probeRadius)?.penetration ?? 0;
         const solidPenetrationBefore = this.truck.resolveSolidCollision(wheelProbe, probeRadius)?.penetration ?? 0;
         const impactStart = this.truck.physicsState().impactImpulse;
 
@@ -5950,6 +5986,7 @@ class Simulator {
         return {
           wheelPenetrationBefore,
           wheelPenetrationAfter,
+          wheelCapFalsePenetration,
           solidPenetrationBefore,
           objectTravel,
           objectImpulse,

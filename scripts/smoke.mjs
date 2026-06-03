@@ -973,6 +973,7 @@ async function main() {
         "truck wheels are solid physical colliders",
         truckWheelPhysicsValue?.wheelPenetrationBefore > 0.08 &&
           truckWheelPhysicsValue?.solidPenetrationBefore >= truckWheelPhysicsValue?.wheelPenetrationBefore - 0.02 &&
+          truckWheelPhysicsValue?.wheelCapFalsePenetration === 0 &&
           truckWheelPhysicsValue?.wheelPenetrationAfter < truckWheelPhysicsValue?.wheelPenetrationBefore - 0.02 &&
           truckWheelPhysicsValue?.objectTravel > 0.01 &&
           truckWheelPhysicsValue?.objectImpulse > 0.01 &&
