@@ -331,6 +331,11 @@ async function main() {
       returnByValue: true,
     });
     await resetSim();
+    const fastBucketDumpTrajectory = await cdp.send("Runtime.evaluate", {
+      expression: `window.__excavatorSim?.forceFastBucketDumpTrajectory()`,
+      returnByValue: true,
+    });
+    await resetSim();
     const bucketKinematics = await cdp.send("Runtime.evaluate", {
       expression: `window.__excavatorSim?.forceBucketKinematics()`,
       returnByValue: true,
@@ -678,6 +683,7 @@ async function main() {
     const soilPushValue = soilPush.result.value;
     const cuttingFlowPhysicsValue = cuttingFlowPhysics.result.value;
     const bucketSoilNoDragPhysicsValue = bucketSoilNoDragPhysics.result.value;
+    const fastBucketDumpTrajectoryValue = fastBucketDumpTrajectory.result.value;
     const bucketKinematicsValue = bucketKinematics.result.value;
     const bucketLoadSurfacePhysicsValue = bucketLoadSurfacePhysics.result.value;
     const bucketDirectionalDigPhysicsValue = bucketDirectionalDigPhysics.result.value;
@@ -910,6 +916,23 @@ async function main() {
           bucketSoilNoDragPhysicsValue?.activeFineGrains === 0 &&
           bucketSoilNoDragPhysicsValue?.dumpAverageStepMs < 4 &&
           bucketSoilNoDragPhysicsValue?.dumpMaxStepMs < 16,
+      ],
+      [
+        "fast bucket dump follows ballistic mass deposition",
+        fastBucketDumpTrajectoryValue?.truckTarget === "truck" &&
+          fastBucketDumpTrajectoryValue?.terrainTarget === "terrain" &&
+          fastBucketDumpTrajectoryValue?.truckFallTime > 0.2 &&
+          fastBucketDumpTrajectoryValue?.terrainFallTime > 0.2 &&
+          fastBucketDumpTrajectoryValue?.truckImpactSpeed > 2 &&
+          fastBucketDumpTrajectoryValue?.terrainImpactSpeed > 2 &&
+          Math.abs((fastBucketDumpTrajectoryValue?.truckVolume ?? 0) - 0.42) < 0.002 &&
+          Math.abs((fastBucketDumpTrajectoryValue?.truckGain ?? 0) - 0.42) < 0.002 &&
+          Math.abs((fastBucketDumpTrajectoryValue?.terrainVolume ?? 0) - 0.42) < 0.002 &&
+          Math.abs((fastBucketDumpTrajectoryValue?.terrainGain ?? 0) - 0.42) < 0.018 &&
+          fastBucketDumpTrajectoryValue?.terrainLandingDistance > 0.25 &&
+          fastBucketDumpTrajectoryValue?.activeParticles === 0 &&
+          fastBucketDumpTrajectoryValue?.activeFineGrains === 0 &&
+          fastBucketDumpTrajectoryValue?.stepMs < 4,
       ],
       [
         "bucket linkage and scoop geometry are coherent",
@@ -1496,6 +1519,7 @@ async function main() {
           soilPush: soilPushValue,
           cuttingFlowPhysics: cuttingFlowPhysicsValue,
           bucketSoilNoDragPhysics: bucketSoilNoDragPhysicsValue,
+          fastBucketDumpTrajectory: fastBucketDumpTrajectoryValue,
           bucketKinematics: bucketKinematicsValue,
           bucketLoadSurfacePhysics: bucketLoadSurfacePhysicsValue,
           bucketDirectionalDigPhysics: bucketDirectionalDigPhysicsValue,

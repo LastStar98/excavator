@@ -234,6 +234,18 @@ interface BucketLoadSurfaceHit {
   loadHeight: number;
 }
 
+interface BallisticDepositHit {
+  point: THREE.Vector3;
+  fallTime: number;
+  impactSpeed: number;
+}
+
+interface BucketSpillDepositResult extends BallisticDepositHit {
+  target: "truck" | "terrain";
+  truckVolume: number;
+  terrainVolume: number;
+}
+
 interface ExcavatorDebugApi {
   snapshot: () => {
     bucketLoad: number;
@@ -353,6 +365,22 @@ interface ExcavatorDebugApi {
     bucketSoilFastDumpEnabled: boolean;
     activeSoilParticles: number;
     activeFineGrains: number;
+  };
+  forceFastBucketDumpTrajectory: () => {
+    truckTarget: string;
+    truckFallTime: number;
+    truckImpactSpeed: number;
+    truckVolume: number;
+    truckGain: number;
+    terrainTarget: string;
+    terrainFallTime: number;
+    terrainImpactSpeed: number;
+    terrainVolume: number;
+    terrainGain: number;
+    terrainLandingDistance: number;
+    activeParticles: number;
+    activeFineGrains: number;
+    stepMs: number;
   };
   forceBucketKinematics: () => {
     edgeWidth: number;
@@ -2220,6 +2248,58 @@ class WorkTruck {
     );
   }
 
+  ballisticBedImpact(origin: THREE.Vector3, initialVelocity: THREE.Vector3, maxTime = 1.45): BallisticDepositHit | null {
+    const inverseRotation = this.group.quaternion.clone().invert();
+    const localOrigin = this.group.worldToLocal(origin.clone());
+    const localVelocity = initialVelocity.clone().applyQuaternion(inverseRotation);
+    const gravity = 9.81;
+    const stepCount = 42;
+    const stepDt = maxTime / stepCount;
+    const positionAt = (t: number) =>
+      new THREE.Vector3(
+        localOrigin.x + localVelocity.x * t,
+        localOrigin.y + localVelocity.y * t - 0.5 * gravity * t * t,
+        localOrigin.z + localVelocity.z * t,
+      );
+
+    for (let step = 1; step <= stepCount; step += 1) {
+      const t = step * stepDt;
+      const pos = positionAt(t);
+      const sample = this.sampleBedCatchSurfaceLocal(pos.x, pos.z);
+      if (!sample) {
+        continue;
+      }
+      const verticalSpeed = localVelocity.y - gravity * t;
+      if (verticalSpeed > 0.02 || pos.y > sample.surfaceY + 0.035) {
+        continue;
+      }
+
+      let lo = Math.max(0, t - stepDt);
+      let hi = t;
+      for (let i = 0; i < 8; i += 1) {
+        const mid = (lo + hi) * 0.5;
+        const midPos = positionAt(mid);
+        const midSample = this.sampleBedCatchSurfaceLocal(midPos.x, midPos.z);
+        if (midSample && midPos.y <= midSample.surfaceY + 0.035) {
+          hi = mid;
+        } else {
+          lo = mid;
+        }
+      }
+
+      const hitPos = positionAt(hi);
+      const hitSample = this.sampleBedCatchSurfaceLocal(hitPos.x, hitPos.z) ?? sample;
+      const point = this.group.localToWorld(new THREE.Vector3(hitPos.x, hitSample.surfaceY + 0.04, hitPos.z));
+      return {
+        point,
+        fallTime: hi,
+        impactSpeed: Math.max(0, -(localVelocity.y - gravity * hi)),
+      };
+    }
+
+    return null;
+  }
+
   resolveBodyCollision(worldCenter: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
     const local = this.group.worldToLocal(worldCenter.clone());
     const minX = -2.58;
@@ -2516,6 +2596,24 @@ class WorkTruck {
     const dHeightDz = (THREE.MathUtils.lerp(h01 - h00, h11 - h10, fx)) / Math.max(stepZ, 0.001);
     const normal = new THREE.Vector3(-dHeightDx, 1, -dHeightDz).normalize();
     return { surfaceY: this.bedFloorY + 0.045 + loadHeight, loadHeight, normal };
+  }
+
+  private sampleBedCatchSurfaceLocal(localX: number, localZ: number): { surfaceY: number; loadHeight: number; normal: THREE.Vector3 } | null {
+    const minX = this.bedCenterX - this.bedLength / 2;
+    const maxX = this.bedCenterX + this.bedLength / 2;
+    const minZ = -this.bedWidth / 2;
+    const maxZ = this.bedWidth / 2;
+    if (localX < minX || localX > maxX || localZ < minZ || localZ > maxZ) {
+      return null;
+    }
+
+    return (
+      this.sampleLoadSurfaceLocal(localX, localZ) ?? {
+        surfaceY: this.bedFloorY + 0.045,
+        loadHeight: 0,
+        normal: new THREE.Vector3(0, 1, 0),
+      }
+    );
   }
 
   updateLoad(load: number): void {
@@ -5987,6 +6085,51 @@ class Simulator {
           bucketSoilFastDumpEnabled: BUCKET_SOIL_FAST_DUMP_ENABLED,
           activeSoilParticles,
           activeFineGrains,
+        };
+      },
+      forceFastBucketDumpTrajectory: () => {
+        this.truck.reset(this.terrain);
+        this.truckLoad = 0;
+        this.truck.updateLoad(this.truckLoad);
+        for (const particle of [...this.soilParticles]) {
+          this.recycleSoilParticle(particle);
+        }
+        this.soilParticles.length = 0;
+        this.clearFineGrains();
+
+        const volume = 0.42;
+        const truckOrigin = this.truck.group.localToWorld(new THREE.Vector3(0.46, 2.42, -0.18));
+        const truckVelocity = new THREE.Vector3(0.2, -0.35, 0.05).applyQuaternion(this.truck.group.quaternion);
+        const truckLoadBefore = this.truckLoad;
+        const started = performance.now();
+        const truckDeposit = this.depositBucketSpillFast(truckOrigin, volume, 0.85, truckVelocity);
+        const truckStepMs = performance.now() - started;
+        const truckGain = this.truckLoad - truckLoadBefore;
+
+        const terrainOrigin = this.truck.group.localToWorld(new THREE.Vector3(3.45, 2.15, 1.36));
+        const terrainVelocity = new THREE.Vector3(0.58, -0.24, 0.24).applyQuaternion(this.truck.group.quaternion);
+        const terrainBefore = this.terrain.terrainVolumeDelta();
+        const terrainStarted = performance.now();
+        const terrainDeposit = this.depositBucketSpillFast(terrainOrigin, volume, 0.62, terrainVelocity);
+        const terrainStepMs = performance.now() - terrainStarted;
+        const terrainGain = this.terrain.terrainVolumeDelta() - terrainBefore;
+
+        this.updateUi(0);
+        return {
+          truckTarget: truckDeposit.target,
+          truckFallTime: truckDeposit.fallTime,
+          truckImpactSpeed: truckDeposit.impactSpeed,
+          truckVolume: truckDeposit.truckVolume,
+          truckGain,
+          terrainTarget: terrainDeposit.target,
+          terrainFallTime: terrainDeposit.fallTime,
+          terrainImpactSpeed: terrainDeposit.impactSpeed,
+          terrainVolume: terrainDeposit.terrainVolume,
+          terrainGain,
+          terrainLandingDistance: terrainDeposit.point.distanceTo(terrainOrigin),
+          activeParticles: this.soilParticles.length,
+          activeFineGrains: this.fineGrainCount(),
+          stepMs: truckStepMs + terrainStepMs,
         };
       },
       forceBucketKinematics: () => {
@@ -11671,9 +11814,13 @@ class Simulator {
     const side = this.excavator.bucketSidewaysWorld();
     const worldPoint = this.excavator.bucketTipWorld().addScaledVector(forward, 0.08 + openDump * 0.18).addScaledVector(side, (Math.random() - 0.5) * 0.18);
     const openness = openDump;
+    const spillVelocity = forward
+      .clone()
+      .multiplyScalar(0.24 + openness * 0.76)
+      .add(new THREE.Vector3(0, -0.45 - openness * 1.15, 0));
     if (BUCKET_SOIL_FAST_DUMP_ENABLED) {
-      this.depositBucketSpillFast(worldPoint, spilledVolume, openness);
-      return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint };
+      const deposit = this.depositBucketSpillFast(worldPoint, spilledVolume, openness, spillVelocity);
+      return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint: deposit.point };
     }
     const fineVolume = spilledVolume * clamp(0.018 + openness * 0.026, 0.018, 0.055);
     const coarseVolume = Math.max(0, spilledVolume - fineVolume);
@@ -11682,24 +11829,89 @@ class Simulator {
     return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint };
   }
 
-  private depositBucketSpillFast(worldPoint: THREE.Vector3, volume: number, openness: number): void {
+  private depositBucketSpillFast(
+    worldPoint: THREE.Vector3,
+    volume: number,
+    openness: number,
+    initialVelocity: THREE.Vector3,
+  ): BucketSpillDepositResult {
     if (volume <= 0) {
-      return;
+      return { target: "terrain", point: worldPoint, fallTime: 0, impactSpeed: 0, truckVolume: 0, terrainVolume: 0 };
     }
 
-    const inTruck = this.truck.containsWorldPoint(worldPoint) && worldPoint.y < TRUCK_CENTER.y + 1.72;
-    if (inTruck) {
-      const accepted = this.truck.depositSoilAt(worldPoint, volume, TRUCK_CAPACITY - this.truckLoad);
+    const truckHit = this.truck.ballisticBedImpact(worldPoint, initialVelocity) ??
+      (this.truck.containsWorldPoint(worldPoint)
+        ? { point: worldPoint, fallTime: 0, impactSpeed: Math.max(0, -initialVelocity.y) }
+        : null);
+    if (truckHit) {
+      const accepted = this.truck.depositSoilAt(truckHit.point, volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < volume) {
-        this.raiseTerrainWithWake(new THREE.Vector3(worldPoint.x, 0, worldPoint.z), 0.3 + Math.cbrt(volume - accepted) * 0.1, volume - accepted, 0);
+        this.raiseTerrainWithWake(new THREE.Vector3(truckHit.point.x, 0, truckHit.point.z), 0.3 + Math.cbrt(volume - accepted) * 0.1, volume - accepted, 0);
       }
-    } else {
-      const ground = this.terrain.getHeightAt(worldPoint.x, worldPoint.z);
-      const radius = 0.3 + Math.cbrt(volume) * 0.15 + clamp(openness, 0, 1) * 0.06;
-      this.raiseTerrainWithWake(new THREE.Vector3(worldPoint.x, ground, worldPoint.z), radius, volume, 0);
+      this.truck.updateLoad(this.truckLoad);
+      return {
+        target: "truck",
+        point: truckHit.point,
+        fallTime: truckHit.fallTime,
+        impactSpeed: truckHit.impactSpeed,
+        truckVolume: accepted,
+        terrainVolume: Math.max(0, volume - accepted),
+      };
     }
+
+    const terrainHit = this.ballisticTerrainImpact(worldPoint, initialVelocity);
+    const radius = 0.3 + Math.cbrt(volume) * 0.15 + clamp(openness, 0, 1) * 0.06;
+    this.raiseTerrainWithWake(terrainHit.point, radius, volume, 0);
     this.truck.updateLoad(this.truckLoad);
+    return {
+      target: "terrain",
+      point: terrainHit.point,
+      fallTime: terrainHit.fallTime,
+      impactSpeed: terrainHit.impactSpeed,
+      truckVolume: 0,
+      terrainVolume: volume,
+    };
+  }
+
+  private ballisticTerrainImpact(origin: THREE.Vector3, initialVelocity: THREE.Vector3, maxTime = 1.65): BallisticDepositHit {
+    const gravity = 9.81;
+    const stepCount = 46;
+    const stepDt = maxTime / stepCount;
+    const positionAt = (t: number) =>
+      new THREE.Vector3(
+        origin.x + initialVelocity.x * t,
+        origin.y + initialVelocity.y * t - 0.5 * gravity * t * t,
+        origin.z + initialVelocity.z * t,
+      );
+
+    let last = origin.clone();
+    for (let step = 1; step <= stepCount; step += 1) {
+      const t = step * stepDt;
+      const pos = positionAt(t);
+      const ground = this.terrain.getHeightAt(pos.x, pos.z);
+      if (pos.y <= ground + 0.015) {
+        let lo = Math.max(0, t - stepDt);
+        let hi = t;
+        for (let i = 0; i < 8; i += 1) {
+          const mid = (lo + hi) * 0.5;
+          const midPos = positionAt(mid);
+          const midGround = this.terrain.getHeightAt(midPos.x, midPos.z);
+          if (midPos.y <= midGround + 0.015) {
+            hi = mid;
+          } else {
+            lo = mid;
+          }
+        }
+        const hitPos = positionAt(hi);
+        hitPos.y = this.terrain.getHeightAt(hitPos.x, hitPos.z);
+        return { point: hitPos, fallTime: hi, impactSpeed: Math.max(0, -(initialVelocity.y - gravity * hi)) };
+      }
+      last = pos;
+    }
+
+    last.y = this.terrain.getHeightAt(last.x, last.z);
+    return { point: last, fallTime: maxTime, impactSpeed: Math.max(0, -(initialVelocity.y - gravity * maxTime)) };
   }
 
   private withBucketDumpPressureSilenced(run: () => void): void {
