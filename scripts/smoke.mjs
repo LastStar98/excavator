@@ -484,6 +484,11 @@ async function main() {
         const reset = document.querySelector("[data-mobile-reset]");
         const panel = document.getElementById("mobile-menu-panel");
         const driveMenu = document.querySelector('[data-mobile-menu="drive"]');
+        const cameraMenu = document.querySelector('[data-mobile-menu="camera"]');
+        const settingsMenu = document.querySelector('[data-mobile-menu="settings"]');
+        const driveSection = document.querySelector('[data-mobile-panel="drive"]');
+        const cameraSection = document.querySelector('[data-mobile-panel="camera"]');
+        const settingsSection = document.querySelector('[data-mobile-panel="settings"]');
         const topbar = document.querySelector(".topbar");
         const fwd = document.querySelector('[data-drive="forward"]');
         const styles = controls ? getComputedStyle(controls) : null;
@@ -497,6 +502,16 @@ async function main() {
           leftReady: Boolean(left?.getBoundingClientRect().width),
           rightReady: Boolean(right?.getBoundingClientRect().width),
           panelHiddenInitially: Boolean(panel?.classList.contains("hidden")),
+          panelHiddenAttributeInitially: Boolean(panel?.hidden),
+          panelAriaHiddenInitially: panel?.getAttribute("aria-hidden") === "true",
+          menuButtonsCollapsedInitially:
+            driveMenu?.getAttribute("aria-expanded") === "false" &&
+            cameraMenu?.getAttribute("aria-expanded") === "false" &&
+            settingsMenu?.getAttribute("aria-expanded") === "false",
+          menuSectionsHiddenInitially:
+            Boolean(driveSection?.hidden) &&
+            Boolean(cameraSection?.hidden) &&
+            Boolean(settingsSection?.hidden),
           driveHiddenInitially: Boolean(drive && driveRect && driveRect.width === 0 && driveRect.height === 0),
           cameraHiddenInitially: Boolean(camera && cameraRect && cameraRect.width === 0 && cameraRect.height === 0),
           resetHiddenInitially: Boolean(reset && resetRect && resetRect.width === 0 && resetRect.height === 0),
@@ -528,16 +543,49 @@ async function main() {
         const drive = document.querySelector(".mobile-drive-pad");
         const camera = document.querySelector(".mobile-camera-pad");
         const fwd = document.querySelector('[data-drive="forward"]');
+        const driveMenu = document.querySelector('[data-mobile-menu="drive"]');
+        const cameraMenu = document.querySelector('[data-mobile-menu="camera"]');
+        const driveSection = document.querySelector('[data-mobile-panel="drive"]');
+        const cameraSection = document.querySelector('[data-mobile-panel="camera"]');
         const driveRect = drive?.getBoundingClientRect();
         const cameraRect = camera?.getBoundingClientRect();
         return {
           panelOpen: Boolean(panel && !panel.classList.contains("hidden")),
+          panelHiddenAttribute: Boolean(panel?.hidden),
+          panelAriaOpen: panel?.getAttribute("aria-hidden") === "false",
+          driveMenuExpanded: driveMenu?.getAttribute("aria-expanded") === "true",
+          cameraMenuCollapsed: cameraMenu?.getAttribute("aria-expanded") === "false",
+          driveSectionOpen: Boolean(driveSection && !driveSection.hidden && driveSection.getAttribute("aria-hidden") === "false"),
+          cameraSectionHidden: Boolean(cameraSection?.hidden && cameraSection.getAttribute("aria-hidden") === "true"),
           driveReady: Boolean(fwd?.getBoundingClientRect().width),
           cameraHidden: Boolean(cameraRect && cameraRect.width === 0 && cameraRect.height === 0),
           driveLeft: driveRect?.left ?? 999,
           driveTop: driveRect?.top ?? 999,
           driveWidth: driveRect?.width ?? 0,
           driveHeight: driveRect?.height ?? 0
+        };
+      })()`,
+      returnByValue: true,
+    });
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: window.innerWidth - 2, clientY: 2, pointerId: 9101 }))`,
+      returnByValue: true,
+    });
+    await delay(80);
+    const mobileOutsideCloseUi = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const panel = document.getElementById("mobile-menu-panel");
+        const drive = document.querySelector(".mobile-drive-pad");
+        const driveMenu = document.querySelector('[data-mobile-menu="drive"]');
+        const driveSection = document.querySelector('[data-mobile-panel="drive"]');
+        const driveRect = drive?.getBoundingClientRect();
+        return {
+          panelHidden: Boolean(panel?.classList.contains("hidden")),
+          panelHiddenAttribute: Boolean(panel?.hidden),
+          panelAriaHidden: panel?.getAttribute("aria-hidden") === "true",
+          driveMenuCollapsed: driveMenu?.getAttribute("aria-expanded") === "false",
+          driveSectionHidden: Boolean(driveSection?.hidden && driveSection.getAttribute("aria-hidden") === "true"),
+          driveHidden: Boolean(driveRect && driveRect.width === 0 && driveRect.height === 0)
         };
       })()`,
       returnByValue: true,
@@ -712,6 +760,7 @@ async function main() {
     const mapDiversityValue = mapDiversity.result.value;
     const mobileUiValue = mobileUi.result.value;
     const mobileMenuUiValue = mobileMenuUi.result.value;
+    const mobileOutsideCloseUiValue = mobileOutsideCloseUi.result.value;
     const mobileAfterMenuResetValue = mobileAfterMenuReset.result.value;
     const mobileViewUiValue = mobileViewUi.result.value;
     const mobileSettingsUiValue = mobileSettingsUi.result.value;
@@ -876,7 +925,12 @@ async function main() {
           fineGrainSettlementValue?.finePairVelocityDelta > 0.015 &&
           fineGrainSettlementValue?.terrainContactSlope > 0.035 &&
           fineGrainSettlementValue?.terrainContactSlide > 0.0001 &&
+          fineGrainSettlementValue?.terrainContactDepositRadius > 0.28 &&
+          fineGrainSettlementValue?.terrainContactDepositShift > 0.001 &&
           fineGrainSettlementValue?.terrainContactSpeedAfter < fineGrainSettlementValue?.terrainContactSpeedBefore &&
+          fineGrainSettlementValue?.terrainContactImpulse > 0.01 &&
+          fineGrainSettlementValue?.terrainContactCompactionDrop > 0.0002 &&
+          fineGrainSettlementValue?.terrainContactCompactionBerm > 0.00001 &&
           fineGrainSettlementValue?.terrainContactSettled === false,
       ],
       [
@@ -911,8 +965,11 @@ async function main() {
           (bucketSoilNoDragPhysicsValue?.dumpPressureDelta ?? 1) < 0.00001 &&
           bucketSoilNoDragPhysicsValue?.soilDynamicCollisionBudget === 0 &&
           bucketSoilNoDragPhysicsValue?.fineGrainDynamicCollisionBudget === 0 &&
+          bucketSoilNoDragPhysicsValue?.soilPairCandidateLimit === 0 &&
+          bucketSoilNoDragPhysicsValue?.fineGrainPairCandidateLimit === 0 &&
           bucketSoilNoDragPhysicsValue?.bucketSoilRuntimeCollisionsEnabled === false &&
           bucketSoilNoDragPhysicsValue?.bucketSoilRuntimePayloadEnabled === false &&
+          bucketSoilNoDragPhysicsValue?.bucketSoilSupportMassEnabled === true &&
           bucketSoilNoDragPhysicsValue?.bucketSoilFastDumpEnabled === true &&
           bucketSoilNoDragPhysicsValue?.dumpedVolume > 1.0 &&
           bucketSoilNoDragPhysicsValue?.remainingBucketLoad < 0.01 &&
@@ -932,8 +989,29 @@ async function main() {
           Math.abs((fastBucketDumpTrajectoryValue?.truckVolume ?? 0) - 0.42) < 0.002 &&
           Math.abs((fastBucketDumpTrajectoryValue?.truckGain ?? 0) - 0.42) < 0.002 &&
           Math.abs((fastBucketDumpTrajectoryValue?.terrainVolume ?? 0) - 0.42) < 0.002 &&
+          Math.abs((fastBucketDumpTrajectoryValue?.terrainDeposited ?? 0) - 0.42) < 0.018 &&
           Math.abs((fastBucketDumpTrajectoryValue?.terrainGain ?? 0) - 0.42) < 0.018 &&
           fastBucketDumpTrajectoryValue?.terrainLandingDistance > 0.25 &&
+          fastBucketDumpTrajectoryValue?.terrainFootprintRadius > 0.45 &&
+          fastBucketDumpTrajectoryValue?.terrainFootprintSlope > 0.001 &&
+          fastBucketDumpTrajectoryValue?.terrainFootprintShiftDistance > 0.001 &&
+          fastBucketDumpTrajectoryValue?.overflowTarget === "truck" &&
+          Math.abs((fastBucketDumpTrajectoryValue?.overflowTruckVolume ?? 0) - 0.16) < 0.018 &&
+          fastBucketDumpTrajectoryValue?.overflowTerrainVolume > 0.22 &&
+          Math.abs(
+            (fastBucketDumpTrajectoryValue?.overflowTerrainDeposited ?? 0) -
+              (fastBucketDumpTrajectoryValue?.overflowTerrainVolume ?? 99),
+          ) < 0.018 &&
+          Math.abs(
+            (fastBucketDumpTrajectoryValue?.overflowTruckGain ?? 0) -
+              (fastBucketDumpTrajectoryValue?.overflowTruckVolume ?? 99),
+          ) < 0.018 &&
+          Math.abs(
+            (fastBucketDumpTrajectoryValue?.overflowTerrainGain ?? 0) -
+              (fastBucketDumpTrajectoryValue?.overflowTerrainDeposited ?? 99),
+          ) < 0.018 &&
+          fastBucketDumpTrajectoryValue?.overflowFootprintRadius > 0.36 &&
+          fastBucketDumpTrajectoryValue?.overflowMassError < 0.018 &&
           fastBucketDumpTrajectoryValue?.activeParticles === 0 &&
           fastBucketDumpTrajectoryValue?.activeFineGrains === 0 &&
           fastBucketDumpTrajectoryValue?.stepMs < 4,
@@ -951,6 +1029,8 @@ async function main() {
         "bucket load soil surface is physically solid",
         bucketLoadSurfacePhysicsValue?.surfaceHeight > 0.08 &&
           bucketLoadSurfacePhysicsValue?.surfaceNormalY > 0.28 &&
+          Math.abs((bucketLoadSurfacePhysicsValue?.loadVolumeBeforeSlump ?? 0) - 1.054) < 0.035 &&
+          Math.abs((bucketLoadSurfacePhysicsValue?.loadVolumeAfterSlump ?? 0) - (bucketLoadSurfacePhysicsValue?.loadVolumeBeforeSlump ?? 99)) < 0.025 &&
           Math.hypot(bucketLoadSurfacePhysicsValue?.loadCenterShiftX ?? 0, bucketLoadSurfacePhysicsValue?.loadCenterShiftZ ?? 0) > 0.006 &&
           bucketLoadSurfacePhysicsValue?.loadHeightConserved < 0.0005 &&
           bucketLoadSurfacePhysicsValue?.loadLipRatio > 0.12 &&
@@ -964,6 +1044,15 @@ async function main() {
           bucketLoadSurfacePhysicsValue?.objectVelocity > 0.004 &&
           bucketLoadSurfacePhysicsValue?.spilledVolume > 0.015 &&
           bucketLoadSurfacePhysicsValue?.loadAfterSpill < bucketLoadSurfacePhysicsValue?.loadBeforeSpill - 0.01 &&
+          Math.abs(
+            (bucketLoadSurfacePhysicsValue?.loadVolumeBeforeSpill ?? 0) -
+              (bucketLoadSurfacePhysicsValue?.loadBeforeSpill ?? 99),
+          ) < 0.05 &&
+          Math.abs(
+            (bucketLoadSurfacePhysicsValue?.loadVolumeAfterSpill ?? 0) -
+              (bucketLoadSurfacePhysicsValue?.loadAfterSpill ?? 99),
+          ) < 0.05 &&
+          bucketLoadSurfacePhysicsValue?.loadMassSurfaceError < 0.05 &&
           bucketLoadSurfacePhysicsValue?.spillHeightDrop > 0.002 &&
           bucketLoadSurfacePhysicsValue?.spillVolumeConserved < 0.0005 &&
           bucketLoadSurfacePhysicsValue?.pressure > 0.1,
@@ -972,10 +1061,12 @@ async function main() {
         "bucket only captures soil when curling toward the machine",
         bucketDirectionalDigPhysicsValue?.scoopRemoved > 0.04 &&
           bucketDirectionalDigPhysicsValue?.scoopBucketLoad > 0.035 &&
+          bucketDirectionalDigPhysicsValue?.scoopMouthEntrySpeed > 0.08 &&
           bucketDirectionalDigPhysicsValue?.scoopCaptureGate > 0.45 &&
           bucketDirectionalDigPhysicsValue?.scoopHeightDrop > 0.008 &&
           bucketDirectionalDigPhysicsValue?.reverseRemoved < 0.006 &&
           bucketDirectionalDigPhysicsValue?.reverseBucketLoad < 0.006 &&
+          bucketDirectionalDigPhysicsValue?.reverseMouthEntrySpeed < bucketDirectionalDigPhysicsValue?.scoopMouthEntrySpeed * 0.35 &&
           bucketDirectionalDigPhysicsValue?.reverseCaptureGate < 0.02 &&
           bucketDirectionalDigPhysicsValue?.reversePressure > 0.08,
       ],
@@ -1011,6 +1102,16 @@ async function main() {
           hydraulicLinkagePhysicsValue?.subsoilResisted &&
           hydraulicLinkagePhysicsValue?.subsoilMaxSubmerged > 0.05 &&
           hydraulicLinkagePhysicsValue?.subsoilAverageSubmerged > 0.01 &&
+          hydraulicLinkagePhysicsValue?.boomCylinderStroke > 0.08 &&
+          hydraulicLinkagePhysicsValue?.stickCylinderStroke > 0.6 &&
+          hydraulicLinkagePhysicsValue?.bucketCylinderStroke > 0.08 &&
+          hydraulicLinkagePhysicsValue?.boomStrokeRatio > 0.05 &&
+          hydraulicLinkagePhysicsValue?.boomStrokeRatio < 0.95 &&
+          hydraulicLinkagePhysicsValue?.stickStrokeRatio > 0.05 &&
+          hydraulicLinkagePhysicsValue?.stickStrokeRatio < 0.95 &&
+          hydraulicLinkagePhysicsValue?.bucketStrokeRatio > 0.05 &&
+          hydraulicLinkagePhysicsValue?.bucketStrokeRatio < 0.95 &&
+          hydraulicLinkagePhysicsValue?.bucketLinkSymmetryError < 0.002 &&
           hydraulicLinkagePhysicsValue?.pressure > 0.25 &&
           hydraulicLinkagePhysicsValue?.collisionCount > 0,
       ],
@@ -1026,7 +1127,10 @@ async function main() {
         pitSinkValue?.lowered > 0.4 &&
           pitSinkValue?.afterGround < pitSinkValue?.beforeGround - 0.22 &&
           pitSinkValue?.afterY < pitSinkValue?.beforeY - 0.16 &&
-          pitSinkValue?.chassisSinkage > 0.01,
+          pitSinkValue?.chassisSinkage > 0.01 &&
+          pitSinkValue?.chassisBurialDepth > pitSinkValue?.chassisSinkage + 0.005 &&
+          pitSinkValue?.chassisGroundPressure > 0.08 &&
+          pitSinkValue?.chassisBurialCompaction > 0.0005,
       ],
       [
         "repeated bucket passes dig below the previous bedrock limit",
@@ -1035,6 +1139,7 @@ async function main() {
           deepExcavationValue?.depthReached > 3.2 &&
           deepExcavationValue?.bedrockFloor <= -5 &&
           deepExcavationValue?.deepResistance > deepExcavationValue?.shallowResistance + 0.55 &&
+          deepExcavationValue?.slopeRedistribution > 0.03 &&
           deepExcavationValue?.terrainDrag === 1,
       ],
       [
@@ -1053,11 +1158,19 @@ async function main() {
           Math.abs(truckCollisionValue?.frontContact?.impactLocalZ ?? 1) < 0.45 &&
           Math.abs(truckCollisionValue?.sideContact?.impactNormalZ ?? 0) >
             Math.abs(truckCollisionValue?.sideContact?.impactNormalX ?? 0) + 0.25 &&
+          truckCollisionValue?.sideContact?.normalSideFactor > truckCollisionValue?.sideContact?.normalForwardFactor + 0.2 &&
           truckCollisionValue?.sideContact?.impactLocalZ < -0.75 &&
           truckCollisionValue?.frontContact?.leftSeverity > 0.18 &&
           truckCollisionValue?.frontContact?.rightSeverity > 0.18 &&
+          truckCollisionValue?.frontContact?.fullStop === true &&
+          truckCollisionValue?.frontContact?.driveBlockRatio > 0.45 &&
+          truckCollisionValue?.frontContact?.normalForwardFactor > 0.55 &&
+          truckCollisionValue?.frontContact?.leftContactLoss > 0.85 &&
+          truckCollisionValue?.frontContact?.rightContactLoss > 0.85 &&
           truckCollisionValue?.frontContact?.leftSpeedDrop > 0.2 &&
           truckCollisionValue?.frontContact?.rightSpeedDrop > 0.2 &&
+          Math.abs(truckCollisionValue?.frontLeftTrackVelocity ?? 1) < 0.001 &&
+          Math.abs(truckCollisionValue?.frontRightTrackVelocity ?? 1) < 0.001 &&
           Math.abs(
             (truckCollisionValue?.diagonalContact?.leftSeverity ?? 0) -
               (truckCollisionValue?.diagonalContact?.rightSeverity ?? 0),
@@ -1124,10 +1237,12 @@ async function main() {
           upperStructurePhysicsValue?.objectTravel > 0.01 &&
           upperStructurePhysicsValue?.objectImpulse > 0.02 &&
           upperStructurePhysicsValue?.movedMass > 1 &&
-          upperStructurePhysicsValue?.upperSampleCount >= 12 &&
+          upperStructurePhysicsValue?.upperSampleCount >= 15 &&
           upperStructurePhysicsValue?.counterweightSamplePresent &&
+          upperStructurePhysicsValue?.counterweightTopSamplePresent &&
           upperStructurePhysicsValue?.engineSamplePresent &&
           upperStructurePhysicsValue?.cabSamplePresent &&
+          upperStructurePhysicsValue?.cabCornerSamplePresent &&
           upperStructurePhysicsValue?.roofSamplePresent &&
           upperStructurePhysicsValue?.frontServiceSamplePresent &&
           upperStructurePhysicsValue?.exhaustSamplePresent &&
@@ -1143,6 +1258,13 @@ async function main() {
           armTruckCollisionValue?.angleBlocked &&
           Math.abs(armTruckCollisionValue?.velocityAfter ?? 1) < 0.001 &&
           armTruckCollisionValue?.penetration > 0.02 &&
+          typeof armTruckCollisionValue?.hitSampleKey === "string" &&
+          armTruckCollisionValue.hitSampleKey.length > 0 &&
+          armTruckCollisionValue?.bucketTruckSampleHit &&
+          armTruckCollisionValue?.bucketTruckPenetration > 0.02 &&
+          armTruckCollisionValue?.bucketJointBlocked &&
+          typeof armTruckCollisionValue?.bucketHitSampleKey === "string" &&
+          armTruckCollisionValue.bucketHitSampleKey.length > 0 &&
           armTruckCollisionValue?.sweptOnlyCurrentPenetration === 0 &&
           armTruckCollisionValue?.sweptOnlyPenetration > 0.05 &&
           armTruckCollisionValue?.sweptOnlySteps > 1 &&
@@ -1155,6 +1277,8 @@ async function main() {
         "buried arm links register pressure without input lag",
         armSubsoilResistanceValue?.resisted &&
           !armSubsoilResistanceValue?.blocked &&
+          armSubsoilResistanceValue?.inputDrag === 1 &&
+          armSubsoilResistanceValue?.inputBlockingEnabled === false &&
           Math.abs(armSubsoilResistanceValue?.velocityAfter ?? 0) > 0.2 &&
           armSubsoilResistanceValue?.maxSubmerged > 0.22 &&
           armSubsoilResistanceValue?.averageSubmerged > 0.08 &&
@@ -1231,6 +1355,8 @@ async function main() {
           lagFreeSoilCycleValue?.fineGrainPairCollisionsEnabled === false &&
           lagFreeSoilCycleValue?.soilDynamicCollisionBudget === 0 &&
           lagFreeSoilCycleValue?.fineGrainDynamicCollisionBudget === 0 &&
+          lagFreeSoilCycleValue?.soilPairCandidateLimit === 0 &&
+          lagFreeSoilCycleValue?.fineGrainPairCandidateLimit === 0 &&
           lagFreeSoilCycleValue?.particleCount <= 12 &&
           lagFreeSoilCycleValue?.fineGrainCount <= 40 &&
           lagFreeSoilCycleValue?.nearbyCandidates < lagFreeSoilCycleValue?.worldColliderCount * 0.45 &&
@@ -1248,11 +1374,21 @@ async function main() {
           truckLoadPhysicsValue?.compacted > 0.004 &&
           truckLoadPhysicsValue?.rutDrop > 0.0015 &&
           truckLoadPhysicsValue?.bodyYDrop > 0.07 &&
+          truckLoadPhysicsValue?.tireLoadSkew > 0.08 &&
+          truckLoadPhysicsValue?.tireContactRatio < 0.99 &&
+          truckLoadPhysicsValue?.tireContactSkew > 0.08 &&
+          truckLoadPhysicsValue?.tireRollingResistance > 0.08 &&
+          truckLoadPhysicsValue?.tireTractionFactor < 0.98 &&
+          truckLoadPhysicsValue?.tireSlipDemand > 0.04 &&
+          Math.hypot(truckLoadPhysicsValue?.tireLoadPitchBias ?? 0, truckLoadPhysicsValue?.tireLoadRollBias ?? 0) > 0.02 &&
+          Math.abs((truckLoadPhysicsValue?.loadVolumeBeforeSlump ?? 0) - (truckLoadPhysicsValue?.accepted ?? 99)) < 0.04 &&
+          Math.abs((truckLoadPhysicsValue?.loadVolumeAfterSlump ?? 0) - (truckLoadPhysicsValue?.loadVolumeBeforeSlump ?? 99)) < 0.025 &&
           Math.hypot(truckLoadPhysicsValue?.loadCenterShiftX ?? 0, truckLoadPhysicsValue?.loadCenterShiftZ ?? 0) > 0.012 &&
           truckLoadPhysicsValue?.loadHeightConserved < 0.0005 &&
           truckLoadPhysicsValue?.loadSlumpMoved > 0.006 &&
           Math.hypot(truckLoadPhysicsValue?.impactLoadCenterShiftX ?? 0, truckLoadPhysicsValue?.impactLoadCenterShiftZ ?? 0) > 0.004 &&
           truckLoadPhysicsValue?.impactLoadHeightConserved < 0.0005 &&
+          truckLoadPhysicsValue?.impactLoadVolumeConserved < 0.025 &&
           truckLoadPhysicsValue?.loadSurfaceHeight > 0.1 &&
           truckLoadPhysicsValue?.loadSurfaceNormalY > 0.45 &&
           truckLoadPhysicsValue?.loadSurfacePenetrationBefore > 0.05 &&
@@ -1262,6 +1398,8 @@ async function main() {
           truckLoadPhysicsValue?.loadSurfaceObjectVelocity > 0.005 &&
           truckLoadPhysicsValue?.spilledVolume > 0.015 &&
           truckLoadPhysicsValue?.loadAfterSpill < truckLoadPhysicsValue?.accepted - 0.01 &&
+          Math.abs((truckLoadPhysicsValue?.loadVolumeAfterSpill ?? 99) - (truckLoadPhysicsValue?.loadAfterSpill ?? 0)) < 0.04 &&
+          truckLoadPhysicsValue?.loadMassSurfaceError < 0.04 &&
           truckLoadPhysicsValue?.spillTerrainGain > 0.01 &&
           truckLoadPhysicsValue?.loadHeightDropFromSpill > 0.002,
       ],
@@ -1293,6 +1431,7 @@ async function main() {
           Math.abs(roughTrackValue?.supportHeightDelta ?? 0) > 0.08 &&
           Math.max(roughTrackValue?.leftRoughness ?? 0, roughTrackValue?.rightRoughness ?? 0) > 0.12 &&
           Math.max(roughTrackValue?.leftSlip ?? 0, roughTrackValue?.rightSlip ?? 0) > 0.04 &&
+          Math.abs((roughTrackValue?.leftNormalLoad ?? 1) - (roughTrackValue?.rightNormalLoad ?? 1)) > 0.03 &&
           Math.abs(roughTrackValue?.lateralSlope ?? 0) > 0.025 &&
           Math.abs(roughTrackValue?.lateralSlipSpeed ?? 0) > 0.004 &&
           Math.abs(roughTrackValue?.lateralSlipDistance ?? 0) > 0.0015 &&
@@ -1303,12 +1442,13 @@ async function main() {
           Math.abs(roughTrackValue?.rightGroundSpeed ?? 0) > 0.42,
       ],
       [
-        "carried objects shift chassis while bucket soil stays drag-free",
+        "carried objects and scalar bucket soil mass shift chassis while controls stay drag-free",
         payloadSupportValue?.loadedSinkage > payloadSupportValue?.unloadedSinkage + 0.012 &&
           Math.abs((payloadSupportValue?.loadedPitch ?? 0) - (payloadSupportValue?.unloadedPitch ?? 0)) > 0.012 &&
           Math.abs(payloadSupportValue?.sideRoll ?? 0) > 0.018 &&
           payloadSupportValue?.carriedMass > 1 &&
-          Math.abs((payloadSupportValue?.soilOnlyStability ?? 0) - (payloadSupportValue?.unloadedStability ?? 1)) < 0.003 &&
+          payloadSupportValue?.soilSupportMass > 0.2 &&
+          payloadSupportValue?.soilOnlyStability < payloadSupportValue?.unloadedStability - 0.01 &&
           payloadSupportValue?.objectStability < payloadSupportValue?.unloadedStability - 0.012 &&
           payloadSupportValue?.combinedStability < payloadSupportValue?.soilOnlyStability - 0.1 &&
           payloadSupportValue?.combinedStability <= payloadSupportValue?.objectStability + 0.02 &&
@@ -1360,6 +1500,8 @@ async function main() {
           worldObjectPhysicsValue?.truckPenetrationAfter < 0.04 &&
           worldObjectPhysicsValue?.pairDistanceAfter > worldObjectPhysicsValue?.pairDistanceBefore &&
           worldObjectPhysicsValue?.pairAngularSpeed > 0.01 &&
+          worldObjectPhysicsValue?.candidatePairDistanceAfter > worldObjectPhysicsValue?.candidatePairDistanceBefore &&
+          worldObjectPhysicsValue?.candidatePairAngularSpeed > 0.01 &&
           worldObjectPhysicsValue?.softGroundDrop > 0.001 &&
           worldObjectPhysicsValue?.softGroundDrop > worldObjectPhysicsValue?.hardGroundDrop * 1.35 &&
           worldObjectPhysicsValue?.softRutDrop > worldObjectPhysicsValue?.hardRutDrop * 1.35 &&
@@ -1369,8 +1511,10 @@ async function main() {
       [
         "visible scene drawables are classified for physics",
         visiblePhysicsAuditValue?.visibleDrawableCount > 120 &&
+          visiblePhysicsAuditValue?.nonGuideVisibleDrawableCount === visiblePhysicsAuditValue?.visibleDrawableCount &&
           visiblePhysicsAuditValue?.unclassifiedDrawableCount === 0 &&
           visiblePhysicsAuditValue?.physicalDrawableCount === visiblePhysicsAuditValue?.visibleDrawableCount &&
+          visiblePhysicsAuditValue?.physicsCoverageRatio === 1 &&
           visiblePhysicsAuditValue?.worldColliderDrawableCount === visiblePhysicsAuditValue?.visibleWorldColliderCount &&
           visiblePhysicsAuditValue?.visibleWorldColliderCount === visiblePhysicsAuditValue?.worldColliderCount &&
           visiblePhysicsAuditValue?.liftableWorldColliderCount === visiblePhysicsAuditValue?.worldColliderCount &&
@@ -1401,6 +1545,8 @@ async function main() {
           terrainWakePhysicsValue?.capsuleTerrainPenetrationAfter < 0.025 &&
           terrainWakePhysicsValue?.capsuleTerrainLift > 0.04 &&
           terrainWakePhysicsValue?.capsuleTerrainSlopeKick > 0.002 &&
+          terrainWakePhysicsValue?.capsuleTerrainContactCount >= 2 &&
+          terrainWakePhysicsValue?.capsuleTerrainSupportSpan >= 0.24 &&
           terrainWakePhysicsValue?.pressure > 0.05,
       ],
       [
@@ -1416,6 +1562,8 @@ async function main() {
           mapDiversityValue?.outerWetness > 0.6 &&
           mapDiversityValue?.basaltHardpack > 0.7 &&
           mapDiversityValue?.outerHaulCompaction > 0.62 &&
+          mapDiversityValue?.looseSpoilSink > 1.45 &&
+          mapDiversityValue?.looseSpoilRepose < 0.62 &&
           mapDiversityValue?.roughSlope > 0.025 &&
           mapDiversityValue?.farColliderCount >= 40 &&
           mapDiversityValue?.colliderKinds >= 7 &&
@@ -1427,6 +1575,10 @@ async function main() {
           mobileUiValue?.leftReady &&
           mobileUiValue?.rightReady &&
           mobileUiValue?.panelHiddenInitially &&
+          mobileUiValue?.panelHiddenAttributeInitially &&
+          mobileUiValue?.panelAriaHiddenInitially &&
+          mobileUiValue?.menuButtonsCollapsedInitially &&
+          mobileUiValue?.menuSectionsHiddenInitially &&
           mobileUiValue?.driveHiddenInitially &&
           mobileUiValue?.cameraHiddenInitially &&
           mobileUiValue?.resetHiddenInitially &&
@@ -1436,12 +1588,27 @@ async function main() {
       [
         "mobile drive controls open from menu",
         mobileMenuUiValue?.panelOpen &&
+          mobileMenuUiValue?.panelHiddenAttribute === false &&
+          mobileMenuUiValue?.panelAriaOpen &&
+          mobileMenuUiValue?.driveMenuExpanded &&
+          mobileMenuUiValue?.cameraMenuCollapsed &&
+          mobileMenuUiValue?.driveSectionOpen &&
+          mobileMenuUiValue?.cameraSectionHidden &&
           mobileMenuUiValue?.driveReady &&
           mobileMenuUiValue?.cameraHidden &&
           mobileMenuUiValue?.driveLeft <= 18 &&
           mobileMenuUiValue?.driveTop <= 92 &&
           mobileMenuUiValue?.driveWidth <= 112 &&
           mobileMenuUiValue?.driveHeight <= 80,
+      ],
+      [
+        "mobile auxiliary menus close outside controls",
+        mobileOutsideCloseUiValue?.panelHidden &&
+          mobileOutsideCloseUiValue?.panelHiddenAttribute &&
+          mobileOutsideCloseUiValue?.panelAriaHidden &&
+          mobileOutsideCloseUiValue?.driveMenuCollapsed &&
+          mobileOutsideCloseUiValue?.driveSectionHidden &&
+          mobileOutsideCloseUiValue?.driveHidden,
       ],
       [
         "mobile auxiliary menus close on reset",
@@ -1562,6 +1729,7 @@ async function main() {
           mapDiversity: mapDiversityValue,
           mobileUi: mobileUiValue,
           mobileMenuUi: mobileMenuUiValue,
+          mobileOutsideCloseUi: mobileOutsideCloseUiValue,
           mobileAfterMenuReset: mobileAfterMenuResetValue,
           mobileViewUi: mobileViewUiValue,
           mobileSettingsUi: mobileSettingsUiValue,

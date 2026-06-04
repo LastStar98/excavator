@@ -21,6 +21,21 @@ interface ExcavatorAngles {
   bucket: number;
 }
 
+interface HydraulicKinematicsDiagnostics {
+  boomCylinderLength: number;
+  stickCylinderLength: number;
+  bucketCylinderLength: number;
+  bucketLeftLinkLength: number;
+  bucketRightLinkLength: number;
+  bucketLinkSymmetryError: number;
+  boomCylinderStroke: number;
+  stickCylinderStroke: number;
+  bucketCylinderStroke: number;
+  boomStrokeRatio: number;
+  stickStrokeRatio: number;
+  bucketStrokeRatio: number;
+}
+
 interface ExcavatorVelocities {
   swing: number;
   boom: number;
@@ -72,6 +87,9 @@ interface SoilTerrainContactResult {
   slideDistance: number;
   speedBefore: number;
   speedAfter: number;
+  normalImpulse: number;
+  compactionDrop: number;
+  compactionBermVolume: number;
 }
 
 type WorldColliderKind = "fence" | "boulder" | "rock" | "clod" | "twig" | "cone" | "pipe";
@@ -121,6 +139,27 @@ interface WorldCollider {
   updateStamp: number;
 }
 
+interface WorldColliderShapeSample {
+  point: THREE.Vector3;
+  radius: number;
+  supportT: number;
+}
+
+interface WorldColliderTerrainSupport {
+  supportDelta: number;
+  penetration: number;
+  unsupportedDrop: number;
+  slopeX: number;
+  slopeZ: number;
+  slope: number;
+  normal: THREE.Vector3;
+  point: THREE.Vector3;
+  contactCenter: THREE.Vector3;
+  contactCount: number;
+  sampleCount: number;
+  supportSpan: number;
+}
+
 interface ObjectFootprintCompaction {
   compacted: number;
   rutDrop: number;
@@ -140,10 +179,22 @@ interface TerrainSurfaceCondition {
   gravel: number;
   hardpack: number;
   compaction: number;
+  looseSpoil: number;
   trackSinkMultiplier: number;
   trackDragMultiplier: number;
   bucketResistanceMultiplier: number;
   reposeTan: number;
+}
+
+interface TerrainSubsoilProfile {
+  disturbedDepth: number;
+  bedrockCloseness: number;
+  density: number;
+  cohesion: number;
+  excavationYield: number;
+  compactionYield: number;
+  collapseFactor: number;
+  resistanceMultiplier: number;
 }
 
 interface TruckPhysicsState {
@@ -152,6 +203,15 @@ interface TruckPhysicsState {
   pitch: number;
   roll: number;
   supportSpread: number;
+  tireLoadSkew: number;
+  tireLoadPitchBias: number;
+  tireLoadRollBias: number;
+  tireContactRatio: number;
+  tireContactSkew: number;
+  tireLightContactCount: number;
+  tireRollingResistance: number;
+  tireTractionFactor: number;
+  tireSlipDemand: number;
   tireCompacted: number;
   tireRutDrop: number;
   bodyY: number;
@@ -173,10 +233,25 @@ interface TruckCrawlerContactResult {
   impactLocalZ: number;
   leftSpeedDrop: number;
   rightSpeedDrop: number;
+  leftContactLoss: number;
+  rightContactLoss: number;
+  normalForwardFactor: number;
+  normalSideFactor: number;
+  driveBlockRatio: number;
   leftSeverity: number;
   rightSeverity: number;
   leftBlocked: boolean;
   rightBlocked: boolean;
+  fullStop: boolean;
+}
+
+interface TrackContactLossResult {
+  leftLoss: number;
+  rightLoss: number;
+  leftApproach: number;
+  rightApproach: number;
+  normalForwardFactor: number;
+  normalSideFactor: number;
 }
 
 interface CrawlerWorldObjectContactResult {
@@ -205,6 +280,8 @@ interface TrackTractionState {
   rightGroundSpeed: number;
   leftRoughness: number;
   rightRoughness: number;
+  leftNormalLoad: number;
+  rightNormalLoad: number;
   leftGrade: number;
   rightGrade: number;
 }
@@ -256,12 +333,27 @@ interface BucketSpillDepositResult extends BallisticDepositHit {
   target: "truck" | "terrain";
   truckVolume: number;
   terrainVolume: number;
+  terrainDeposited: number;
+  footprintRadius: number;
+  footprintSlope: number;
+  footprintShiftDistance: number;
+}
+
+interface TruckLoadTerrainSpillResult {
+  spilledVolume: number;
+  terrainGain: number;
+  terrainDeposited: number;
+  worldPoint: THREE.Vector3;
+  footprintRadius: number;
+  footprintSlope: number;
+  footprintShiftDistance: number;
 }
 
 interface ExcavatorDebugApi {
   snapshot: () => {
     bucketLoad: number;
     bucketTransitLoad: number;
+    bucketSoilSupportMass: number;
     truckLoad: number;
     totalExcavated: number;
     digHeight: number;
@@ -280,6 +372,9 @@ interface ExcavatorDebugApi {
     activeFineGrainVolume: number;
     settledFineGrainVolume: number;
     chassisSinkage: number;
+    chassisBurialDepth: number;
+    chassisGroundPressure: number;
+    chassisBurialCompaction: number;
     chassisPitch: number;
     chassisRoll: number;
     supportHeight: number;
@@ -372,8 +467,11 @@ interface ExcavatorDebugApi {
     dumpMaxStepMs: number;
     soilDynamicCollisionBudget: number;
     fineGrainDynamicCollisionBudget: number;
+    soilPairCandidateLimit: number;
+    fineGrainPairCandidateLimit: number;
     bucketSoilRuntimeCollisionsEnabled: boolean;
     bucketSoilRuntimePayloadEnabled: boolean;
+    bucketSoilSupportMassEnabled: boolean;
     bucketSoilFastDumpEnabled: boolean;
     activeSoilParticles: number;
     activeFineGrains: number;
@@ -388,8 +486,21 @@ interface ExcavatorDebugApi {
     terrainFallTime: number;
     terrainImpactSpeed: number;
     terrainVolume: number;
+    terrainDeposited: number;
     terrainGain: number;
     terrainLandingDistance: number;
+    terrainFootprintRadius: number;
+    terrainFootprintSlope: number;
+    terrainFootprintShiftDistance: number;
+    overflowTarget: string;
+    overflowTruckVolume: number;
+    overflowTerrainVolume: number;
+    overflowTerrainDeposited: number;
+    overflowTruckGain: number;
+    overflowTerrainGain: number;
+    overflowFootprintRadius: number;
+    overflowFootprintShiftDistance: number;
+    overflowMassError: number;
     activeParticles: number;
     activeFineGrains: number;
     stepMs: number;
@@ -406,6 +517,11 @@ interface ExcavatorDebugApi {
     bucketLoad: number;
     surfaceHeight: number;
     surfaceNormalY: number;
+    loadVolumeBeforeSlump: number;
+    loadVolumeAfterSlump: number;
+    loadVolumeBeforeSpill: number;
+    loadVolumeAfterSpill: number;
+    loadMassSurfaceError: number;
     loadCenterShiftX: number;
     loadCenterShiftZ: number;
     loadHeightConserved: number;
@@ -429,11 +545,13 @@ interface ExcavatorDebugApi {
     scoopRemoved: number;
     scoopBucketLoad: number;
     scoopPocketPull: number;
+    scoopMouthEntrySpeed: number;
     scoopCaptureGate: number;
     scoopHeightDrop: number;
     reverseRemoved: number;
     reverseBucketLoad: number;
     reversePocketPull: number;
+    reverseMouthEntrySpeed: number;
     reverseCaptureGate: number;
     reverseHeightDrop: number;
     reversePressure: number;
@@ -470,6 +588,13 @@ interface ExcavatorDebugApi {
     subsoilResisted: boolean;
     subsoilMaxSubmerged: number;
     subsoilAverageSubmerged: number;
+    boomCylinderStroke: number;
+    stickCylinderStroke: number;
+    bucketCylinderStroke: number;
+    boomStrokeRatio: number;
+    stickStrokeRatio: number;
+    bucketStrokeRatio: number;
+    bucketLinkSymmetryError: number;
   };
   forceTrackPass: () => { compacted: number; rutDrop: number; bermRise: number; trackSoilWork: number };
   forceTrackTractionPhysics: () => {
@@ -558,8 +683,10 @@ interface ExcavatorDebugApi {
     movedMass: number;
     upperSampleCount: number;
     counterweightSamplePresent: boolean;
+    counterweightTopSamplePresent: boolean;
     engineSamplePresent: boolean;
     cabSamplePresent: boolean;
+    cabCornerSamplePresent: boolean;
     roofSamplePresent: boolean;
     frontServiceSamplePresent: boolean;
     exhaustSamplePresent: boolean;
@@ -579,6 +706,12 @@ interface ExcavatorDebugApi {
     collisionCount: number;
     penetration: number;
     blockedActions: ActionName[];
+    hitSampleKey: string;
+    hitAction: "boom" | "stick" | "bucket" | "";
+    bucketTruckSampleHit: boolean;
+    bucketTruckPenetration: number;
+    bucketJointBlocked: boolean;
+    bucketHitSampleKey: string;
     sweptOnlyCurrentPenetration: number;
     sweptOnlyPenetration: number;
     sweptOnlySteps: number;
@@ -590,6 +723,8 @@ interface ExcavatorDebugApi {
     beforeStick: number;
     afterStick: number;
     velocityAfter: number;
+    inputDrag: number;
+    inputBlockingEnabled: boolean;
     maxSubmerged: number;
     averageSubmerged: number;
     displacedVolume: number;
@@ -645,6 +780,22 @@ interface ExcavatorDebugApi {
     rutDrop: number;
     bodyYDrop: number;
     supportSpread: number;
+    tireLoadSkew: number;
+    tireLoadPitchBias: number;
+    tireLoadRollBias: number;
+    tireContactRatio: number;
+    tireContactSkew: number;
+    tireLightContactCount: number;
+    tireRollingResistance: number;
+    tireTractionFactor: number;
+    tireSlipDemand: number;
+    loadVolumeBeforeSlump: number;
+    loadVolumeAfterSlump: number;
+    loadVolumeBeforeImpact: number;
+    loadVolumeAfterImpact: number;
+    impactLoadVolumeConserved: number;
+    loadVolumeAfterSpill: number;
+    loadMassSurfaceError: number;
     loadCenterShiftX: number;
     loadCenterShiftZ: number;
     loadHeightConserved: number;
@@ -662,6 +813,10 @@ interface ExcavatorDebugApi {
     spilledVolume: number;
     loadAfterSpill: number;
     spillTerrainGain: number;
+    spillTerrainDeposited: number;
+    spillFootprintRadius: number;
+    spillFootprintSlope: number;
+    spillFootprintShiftDistance: number;
     loadHeightDropFromSpill: number;
   };
   forceTerrainMaterialPhysics: () => {
@@ -690,6 +845,8 @@ interface ExcavatorDebugApi {
     rightRoughness: number;
     leftSlip: number;
     rightSlip: number;
+    leftNormalLoad: number;
+    rightNormalLoad: number;
     lateralSlope: number;
     lateralSlipSpeed: number;
     lateralSlipDistance: number;
@@ -706,6 +863,7 @@ interface ExcavatorDebugApi {
     unloadedSinkage: number;
     loadedSinkage: number;
     carriedMass: number;
+    soilSupportMass: number;
     unloadedStability: number;
     soilOnlyStability: number;
     objectStability: number;
@@ -761,6 +919,9 @@ interface ExcavatorDebugApi {
     pairDistanceBefore: number;
     pairDistanceAfter: number;
     pairAngularSpeed: number;
+    candidatePairDistanceBefore: number;
+    candidatePairDistanceAfter: number;
+    candidatePairAngularSpeed: number;
     softGroundDrop: number;
     hardGroundDrop: number;
     softRutDrop: number;
@@ -780,6 +941,8 @@ interface ExcavatorDebugApi {
     capsuleTerrainPenetrationAfter: number;
     capsuleTerrainLift: number;
     capsuleTerrainSlopeKick: number;
+    capsuleTerrainContactCount: number;
+    capsuleTerrainSupportSpan: number;
     finalSleeping: boolean;
     pressure: number;
   };
@@ -794,6 +957,8 @@ interface ExcavatorDebugApi {
     outerWetness: number;
     basaltHardpack: number;
     outerHaulCompaction: number;
+    looseSpoilSink: number;
+    looseSpoilRepose: number;
     materialZones: number;
     roughSlope: number;
     farColliderCount: number;
@@ -820,6 +985,11 @@ interface ExcavatorDebugApi {
     terrainContactSlide: number;
     terrainContactSpeedBefore: number;
     terrainContactSpeedAfter: number;
+    terrainContactImpulse: number;
+    terrainContactCompactionDrop: number;
+    terrainContactCompactionBerm: number;
+    terrainContactDepositRadius: number;
+    terrainContactDepositShift: number;
     terrainContactSettled: boolean;
     truckLoad: number;
   };
@@ -830,6 +1000,9 @@ interface ExcavatorDebugApi {
     beforeGround: number;
     afterGround: number;
     chassisSinkage: number;
+    chassisBurialDepth: number;
+    chassisGroundPressure: number;
+    chassisBurialCompaction: number;
   };
   forceDeepExcavation: () => {
     beforeHeight: number;
@@ -838,6 +1011,7 @@ interface ExcavatorDebugApi {
     depthReached: number;
     shallowResistance: number;
     deepResistance: number;
+    slopeRedistribution: number;
     bedrockFloor: number;
     terrainDrag: number;
   };
@@ -870,7 +1044,9 @@ interface ExcavatorDebugApi {
   };
   forceVisiblePhysicsAudit: () => {
     visibleDrawableCount: number;
+    nonGuideVisibleDrawableCount: number;
     physicalDrawableCount: number;
+    physicsCoverageRatio: number;
     worldColliderDrawableCount: number;
     excavatorDrawableCount: number;
     truckDrawableCount: number;
@@ -904,6 +1080,8 @@ interface ExcavatorDebugApi {
     fineGrainPairCollisionsEnabled: boolean;
     soilDynamicCollisionBudget: number;
     fineGrainDynamicCollisionBudget: number;
+    soilPairCandidateLimit: number;
+    fineGrainPairCandidateLimit: number;
     bucketLoad: number;
   };
 }
@@ -956,6 +1134,7 @@ const BOOM_LEN = 3.65;
 const STICK_LEN = 2.85;
 const BUCKET_LEN = 1.18;
 const BUCKET_CAPACITY = 1.55;
+const BUCKET_LOAD_HEIGHT_VOLUME_SCALE = 0.22;
 const TRUCK_CAPACITY = 7.5;
 const TRACK_GAUGE = 1.48;
 const TRACK_LENGTH = 3.65;
@@ -974,11 +1153,14 @@ const LOWER_DECK_CENTER = new THREE.Vector3(0, 0.36, 0);
 const LOWER_TRACK_FRAME_SIZE = new THREE.Vector3(3.75, 0.52, 0.52);
 const LOWER_TRACK_FRAME_Y = 0.28;
 const SOIL_REPOSE_TAN = Math.tan(THREE.MathUtils.degToRad(34));
-const SOIL_BEDROCK_FLOOR = -5.2;
+const SOIL_BEDROCK_FLOOR = -7.2;
 const DIG_SITE = new THREE.Vector3(-4.1, 0, 2.3);
 const TRUCK_CENTER = new THREE.Vector3(7.2, 0, -3.8);
 const WORKER_ZONE = new THREE.Vector3(2.0, 0, 2.15);
 const BUCKET_OBJECT_LOAD_REFERENCE = 24;
+const CRAWLER_COLLISION_EFFECTIVE_MASS = 42;
+const ARM_SUBSOIL_INPUT_DRAG = 1;
+const ARM_SUBSOIL_BLOCKING_ENABLED = false;
 const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 const WORLD_COLLIDER_GRID_SIZE = 2.4;
 const TRUCK_TIRE_RADIUS = 0.35;
@@ -998,9 +1180,12 @@ const SOIL_PAIR_COLLISIONS_ENABLED = false;
 const FINE_GRAIN_PAIR_COLLISIONS_ENABLED = false;
 const BUCKET_SOIL_RUNTIME_COLLISIONS_ENABLED = false;
 const BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED = false;
+const BUCKET_SOIL_SUPPORT_MASS_ENABLED = true;
 const BUCKET_SOIL_FAST_DUMP_ENABLED = true;
 const SOIL_PAIR_GRID_SIZE = 0.34;
 const FINE_GRAIN_PAIR_GRID_SIZE = 0.14;
+const SOIL_PAIR_CANDIDATE_LIMIT = 0;
+const FINE_GRAIN_PAIR_CANDIDATE_LIMIT = 0;
 const DESKTOP_PIXEL_RATIO_LIMIT = 1.75;
 const MOBILE_PIXEL_RATIO_LIMIT = 1.25;
 
@@ -1200,8 +1385,8 @@ function setCylinderBetween(
 }
 
 class HeightfieldTerrain {
-  readonly size = 128;
-  readonly segments = 288;
+  readonly size = 144;
+  readonly segments = 320;
   readonly spacing = this.size / this.segments;
   readonly mesh: THREE.Mesh;
   readonly heights: Float32Array;
@@ -1267,7 +1452,7 @@ class HeightfieldTerrain {
     this.mesh.receiveShadow = true;
     scene.add(this.mesh);
 
-    const grid = new THREE.GridHelper(this.size, 64, 0x6e796c, 0x495045);
+    const grid = new THREE.GridHelper(this.size, 72, 0x6e796c, 0x495045);
     grid.name = "terrain-grid-guide";
     grid.userData.physicsRole = "terrain-guide";
     grid.position.y = 0.018;
@@ -1327,18 +1512,106 @@ class HeightfieldTerrain {
     return Math.max(0, this.getReferenceHeightAt(x, z) - this.getHeightAt(x, z));
   }
 
-  getSubsoilResistanceAt(x: number, z: number): number {
-    const height = this.getHeightAt(x, z);
-    const disturbedDepth = this.getDisturbedDepthAt(x, z);
-    const bedrockPressure = clamp((height - SOIL_BEDROCK_FLOOR) / 1.35, 0, 1);
-    const hardLayer = 1 - bedrockPressure;
+  getSubsoilProfileAt(x: number, z: number, height = this.getHeightAt(x, z)): TerrainSubsoilProfile {
+    const referenceHeight = this.getReferenceHeightAt(x, z);
+    const disturbedDepth = Math.max(0, referenceHeight - height);
     const surface = this.getSurfaceConditionAt(x, z);
-    return clamp(
-      (0.18 + disturbedDepth * 0.42 + hardLayer * 0.82 + this.getSlopeAt(x, z) * 0.16) *
-        surface.bucketResistanceMultiplier,
-      0.05,
-      2.25,
+    const remainingToBedrock = Math.max(0, height - SOIL_BEDROCK_FLOOR);
+    const bedrockCloseness = clamp((1.85 - remainingToBedrock) / 1.85, 0, 1);
+    const clayLayer = clamp((disturbedDepth - 0.42) / 1.25, 0, 1) * clamp((2.9 - disturbedDepth) / 1.75, 0, 1);
+    const gravelLayer = clamp(surface.gravel * 0.68 + clamp((disturbedDepth - 1.2) / 2.0, 0, 1) * 0.32, 0, 1);
+    const hardpan = clamp((disturbedDepth - 2.25) / 2.65, 0, 1);
+    const looseRelief = clamp((1 - disturbedDepth / 0.78) * (0.72 + surface.looseSpoil * 0.36 - surface.compaction * 0.18), 0, 1);
+    const density = clamp(
+      1.28 +
+        disturbedDepth * 0.11 +
+        clayLayer * 0.14 +
+        gravelLayer * 0.28 +
+        hardpan * 0.42 +
+        bedrockCloseness * 0.86 -
+        surface.wetness * 0.08 -
+        looseRelief * 0.16,
+      0.95,
+      2.85,
     );
+    const cohesion = clamp(
+      0.16 +
+        surface.compaction * 0.32 +
+        surface.hardpack * 0.42 +
+        clayLayer * 0.28 +
+        gravelLayer * 0.2 +
+        hardpan * 0.72 +
+        bedrockCloseness * 1.35 -
+        surface.wetness * 0.18 -
+        looseRelief * 0.18,
+      0.04,
+      2.6,
+    );
+    const excavationYield = clamp(
+      (1 + surface.looseSpoil * 0.18 + surface.wetness * 0.08) / (1 + density * 0.13 + cohesion * 0.32 + bedrockCloseness * 1.85),
+      0.16,
+      1.08,
+    );
+    const compactionYield = clamp(
+      0.52 + surface.wetness * 0.32 + surface.looseSpoil * 0.24 - surface.compaction * 0.18 - hardpan * 0.22 - bedrockCloseness * 0.42,
+      0.08,
+      0.92,
+    );
+    const collapseFactor = clamp(
+      0.16 + looseRelief * 0.36 + surface.wetness * 0.16 - hardpan * 0.12 - bedrockCloseness * 0.2,
+      0.035,
+      0.62,
+    );
+    const resistanceMultiplier = clamp(
+      (0.75 + density * 0.18 + cohesion * 0.46 + bedrockCloseness * 0.68) * surface.bucketResistanceMultiplier,
+      0.48,
+      3.2,
+    );
+    return {
+      disturbedDepth,
+      bedrockCloseness,
+      density,
+      cohesion,
+      excavationYield,
+      compactionYield,
+      collapseFactor,
+      resistanceMultiplier,
+    };
+  }
+
+  getSubsoilResistanceAt(x: number, z: number): number {
+    const profile = this.getSubsoilProfileAt(x, z);
+    return clamp(
+      0.12 +
+        profile.disturbedDepth * 0.32 +
+        profile.cohesion * 0.58 +
+        profile.density * 0.12 +
+        profile.bedrockCloseness * 0.88 +
+        this.getSlopeAt(x, z) * 0.16,
+      0.05,
+      2.85,
+    );
+  }
+
+  private materialLimitedLowerDelta(
+    x: number,
+    z: number,
+    currentHeight: number,
+    desiredDelta: number,
+    mode: "excavate" | "compact",
+  ): number {
+    if (desiredDelta <= 0) {
+      return 0;
+    }
+    const maxLower = Math.max(0, currentHeight - SOIL_BEDROCK_FLOOR);
+    if (maxLower <= 0) {
+      return 0;
+    }
+    const profile = this.getSubsoilProfileAt(x, z, currentHeight);
+    const yieldFactor = mode === "excavate" ? profile.excavationYield : profile.compactionYield;
+    const fractureAssist = mode === "excavate" ? clamp(desiredDelta * 0.18 + profile.collapseFactor * 0.08, 0, 0.16) : 0;
+    const limitedDelta = desiredDelta * clamp(yieldFactor + fractureAssist, 0.06, mode === "excavate" ? 1.08 : 0.95);
+    return Math.min(limitedDelta, maxLower);
   }
 
   getSurfaceConditionAt(x: number, z: number): TerrainSurfaceCondition {
@@ -1378,20 +1651,68 @@ class HeightfieldTerrain {
     const outerHaulRoad =
       Math.exp(-((z + 38.0) ** 2 / 2.2)) *
       clamp(1 - Math.abs(x - 42.0) / 28.0, 0, 1);
-    const roadCompaction = Math.max(haulRoad, farHaulRoad, outerHaulRoad);
-    const wetness = clamp(mudFlat + drainageMud + outerWetland + farWetland + 0.16 * (1 - roadCompaction), 0, 1);
-    const gravel = clamp(gravelRidge + gravelFan + hardBench * 0.45 + limestoneBench * 0.36 + basaltShelf * 0.74, 0, 1);
-    const hardpack = clamp(haulRoad * 0.82 + farHaulRoad * 0.78 + outerHaulRoad * 0.86 + gravel * 0.5 + hardBench + limestoneBench + basaltShelf, 0, 1);
-    const compaction = clamp(roadCompaction * 0.9 + hardpack * 0.5 - wetness * 0.22, 0, 1);
+    const northRockFace =
+      0.88 *
+      Math.exp(-((x + 61.0) ** 2 / 84.0 + (z + 58.0) ** 2 / 30.0));
+    const southBorrowPit =
+      0.82 *
+      Math.exp(-((x - 61.0) ** 2 / 62.0 + (z - 58.0) ** 2 / 36.0));
+    const eastSpoilField =
+      0.72 *
+      Math.exp(-((x - 65.0) ** 2 / 44.0 + (z + 8.0) ** 2 / 150.0));
+    const westWetCut =
+      0.74 *
+      Math.exp(-((x + 66.0) ** 2 / 42.0 + (z - 18.0) ** 2 / 120.0));
+    const perimeterTrack =
+      Math.max(
+        Math.exp(-((x - 63.0) ** 2 / 2.4)) * clamp(1 - Math.abs(z + 7.0) / 55.0, 0, 1),
+        Math.exp(-((z - 62.0) ** 2 / 2.6)) * clamp(1 - Math.abs(x - 8.0) / 58.0, 0, 1),
+      );
+    const looseSpoil =
+      clamp(
+        0.76 * Math.exp(-((x - 54.0) ** 2 / 34.0 + (z - 18.0) ** 2 / 92.0)) +
+          0.44 * Math.exp(-((x - 33.5) ** 2 / 20.0 + (z - 4.0) ** 2 / 88.0)) +
+          eastSpoilField * 0.74,
+        0,
+        1,
+      );
+    const roadCompaction = Math.max(haulRoad, farHaulRoad, outerHaulRoad, perimeterTrack);
+    const wetness = clamp(mudFlat + drainageMud + outerWetland + farWetland + westWetCut * 0.82 + southBorrowPit * 0.2 + 0.16 * (1 - roadCompaction), 0, 1);
+    const gravel = clamp(
+      gravelRidge +
+        gravelFan +
+        hardBench * 0.45 +
+        limestoneBench * 0.36 +
+        basaltShelf * 0.74 +
+        northRockFace * 0.68 +
+        looseSpoil * 0.18,
+      0,
+      1,
+    );
+    const hardpack = clamp(
+      haulRoad * 0.82 +
+        farHaulRoad * 0.78 +
+        outerHaulRoad * 0.86 +
+        perimeterTrack * 0.88 +
+        gravel * 0.5 +
+        hardBench +
+        limestoneBench +
+        basaltShelf +
+        northRockFace * 0.72,
+      0,
+      1,
+    );
+    const compaction = clamp(roadCompaction * 0.9 + hardpack * 0.5 - wetness * 0.22 - looseSpoil * 0.34, 0, 1);
     return {
       wetness,
       gravel,
       hardpack,
       compaction,
-      trackSinkMultiplier: clamp(1 + wetness * 1.1 - hardpack * 0.42, 0.52, 2.15),
-      trackDragMultiplier: clamp(1 + wetness * 0.9 + gravel * 0.22 - compaction * 0.28, 0.72, 2.05),
-      bucketResistanceMultiplier: clamp(1 + gravel * 0.55 + hardpack * 0.38 + wetness * 0.18, 0.82, 1.9),
-      reposeTan: SOIL_REPOSE_TAN * clamp(1 - wetness * 0.22 + gravel * 0.18 + hardpack * 0.08, 0.64, 1.28),
+      looseSpoil,
+      trackSinkMultiplier: clamp(1 + wetness * 1.1 + looseSpoil * 0.72 - hardpack * 0.42, 0.52, 2.35),
+      trackDragMultiplier: clamp(1 + wetness * 0.9 + gravel * 0.22 + looseSpoil * 0.24 - compaction * 0.28, 0.72, 2.12),
+      bucketResistanceMultiplier: clamp(1 + gravel * 0.55 + hardpack * 0.38 + wetness * 0.18 - looseSpoil * 0.12, 0.76, 1.9),
+      reposeTan: SOIL_REPOSE_TAN * clamp(1 - wetness * 0.22 + gravel * 0.18 + hardpack * 0.08 - looseSpoil * 0.16, 0.58, 1.28),
     };
   }
 
@@ -1494,8 +1815,7 @@ class HeightfieldTerrain {
         const dist = Math.hypot(x - center.x, z - center.z);
         if (dist <= radius) {
           const falloff = (1 - dist / radius) ** 2;
-          const maxLower = Math.max(0, this.heights[idx] - SOIL_BEDROCK_FLOOR);
-          const delta = Math.min(depth * falloff, maxLower);
+          const delta = this.materialLimitedLowerDelta(x, z, this.heights[idx], depth * falloff, "excavate");
           this.heights[idx] -= delta;
           removed += delta * this.spacing * this.spacing;
         }
@@ -1561,8 +1881,7 @@ class HeightfieldTerrain {
         const edgeFalloff = clamp(1 - effectiveDistance / (halfWidth + this.spacing * 0.8), 0, 1);
         const strokeFalloff = lengthSq > 0.0001 ? 0.7 + t * 0.3 : 1;
         const desiredDelta = depth * Math.pow(edgeFalloff, 1.35) * strokeFalloff;
-        const maxLower = Math.max(0, this.heights[idx] - SOIL_BEDROCK_FLOOR);
-        const delta = Math.min(desiredDelta, maxLower);
+        const delta = this.materialLimitedLowerDelta(x, z, this.heights[idx], desiredDelta, "excavate");
         if (delta <= 0) {
           continue;
         }
@@ -1671,8 +1990,7 @@ class HeightfieldTerrain {
         const endFalloff = 1 - Math.abs(longitudinal) / halfLength;
         const padNoise = 0.72 + hash2(ix * 13 + iz * 7, Math.round(center.x * 31 + center.z * 17)) * 0.28;
         const delta = depth * (0.42 + sideFalloff * 0.58) * (0.76 + endFalloff * 0.24) * padNoise;
-        const maxLower = Math.max(0, this.heights[idx] - SOIL_BEDROCK_FLOOR);
-        const applied = Math.min(delta, maxLower);
+        const applied = this.materialLimitedLowerDelta(x, z, this.heights[idx], delta, "compact");
         this.heights[idx] -= applied;
         compacted += applied * cellArea;
         weightedDrop += applied * (0.25 + sideFalloff);
@@ -1733,8 +2051,7 @@ class HeightfieldTerrain {
         const dist = Math.hypot(x - center.x, z - center.z);
         if (dist <= footprintRadius) {
           const falloff = Math.pow(1 - dist / footprintRadius, 1.55);
-          const maxLower = Math.max(0, this.heights[idx] - SOIL_BEDROCK_FLOOR);
-          const delta = Math.min(targetDepth * (0.35 + falloff * 0.65), maxLower);
+          const delta = this.materialLimitedLowerDelta(x, z, this.heights[idx], targetDepth * (0.35 + falloff * 0.65), "compact");
           if (delta > 0) {
             this.heights[idx] -= delta;
             compacted += delta * cellArea;
@@ -1773,8 +2090,8 @@ class HeightfieldTerrain {
     };
   }
 
-  settleAt(center: THREE.Vector3, radius: number, passes = 1): void {
-    this.relaxSlopes(this.gridRange(center.x, center.z, radius), passes);
+  settleAt(center: THREE.Vector3, radius: number, passes = 1): number {
+    return this.relaxSlopes(this.gridRange(center.x, center.z, radius), passes);
   }
 
   raiseAt(center: THREE.Vector3, radius: number, volume: number, relaxPasses = 2): number {
@@ -1892,8 +2209,29 @@ class HeightfieldTerrain {
       0.2 *
       Math.exp(-((x - 54.0) ** 2 / 30.0 + (z - 18.0) ** 2 / 92.0)) *
       (0.66 + 0.34 * Math.cos(z * 0.36));
+    const northRockFace =
+      0.44 *
+      Math.exp(-((x + 61.0) ** 2 / 84.0 + (z + 58.0) ** 2 / 30.0)) *
+      (0.78 + 0.22 * Math.sin(x * 0.38));
+    const southBorrowPit =
+      -0.34 *
+      Math.exp(-((x - 61.0) ** 2 / 62.0 + (z - 58.0) ** 2 / 36.0));
+    const eastSpoilField =
+      0.24 *
+      Math.exp(-((x - 65.0) ** 2 / 44.0 + (z + 8.0) ** 2 / 150.0)) *
+      (0.65 + 0.35 * Math.cos(z * 0.28));
+    const westWetCut =
+      -0.24 *
+      Math.exp(-((x + 66.0) ** 2 / 42.0 + (z - 18.0) ** 2 / 120.0));
+    const perimeterTrack =
+      -0.06 *
+      Math.max(
+        Math.exp(-((x - 63.0) ** 2 / 2.4)) * clamp(1 - Math.abs(z + 7.0) / 55.0, 0, 1),
+        Math.exp(-((z - 62.0) ** 2 / 2.6)) * clamp(1 - Math.abs(x - 8.0) / 58.0, 0, 1),
+      );
     const undulation = 0.075 * (fbm(x * 0.11 + 4.2, z * 0.11 - 2.8) - 0.5);
     const broadRoughness = 0.052 * (fbm(x * 0.23 - 8.4, z * 0.19 + 5.8) - 0.5);
+    const outerRoughness = 0.045 * (fbm(x * 0.31 + 14.7, z * 0.27 - 18.2) - 0.5) * clamp((Math.hypot(x, z) - 42) / 28, 0, 1);
     const ripple = 0.035 * Math.sin(x * 0.72) * Math.cos(z * 0.48);
     return (
       digMound +
@@ -1915,8 +2253,14 @@ class HeightfieldTerrain {
       outerHaulRoad +
       outerCut +
       farSpoilRidge +
+      northRockFace +
+      southBorrowPit +
+      eastSpoilField +
+      westWetCut +
+      perimeterTrack +
       undulation +
       broadRoughness +
+      outerRoughness +
       ripple
     );
   }
@@ -1963,27 +2307,55 @@ class HeightfieldTerrain {
     };
   }
 
-  private relaxSlopes(range: { minX: number; maxX: number; minZ: number; maxZ: number }, passes: number): void {
+  private relaxSlopes(range: { minX: number; maxX: number; minZ: number; maxZ: number }, passes: number): number {
     const relaxedRange = this.expandRange(range, passes + 2);
-    const maxDelta = this.spacing * SOIL_REPOSE_TAN;
+    const reposeWidth = relaxedRange.maxX - relaxedRange.minX + 1;
+    const reposeSamples = new Float32Array(reposeWidth * (relaxedRange.maxZ - relaxedRange.minZ + 1));
+    let redistributed = 0;
+
+    for (let iz = relaxedRange.minZ; iz <= relaxedRange.maxZ; iz += 1) {
+      const z = -this.size / 2 + iz * this.spacing;
+      const row = (iz - relaxedRange.minZ) * reposeWidth;
+      for (let ix = relaxedRange.minX; ix <= relaxedRange.maxX; ix += 1) {
+        const x = -this.size / 2 + ix * this.spacing;
+        const idx = this.index(ix, iz);
+        const profile = this.getSubsoilProfileAt(x, z, this.heights[idx]);
+        reposeSamples[row + ix - relaxedRange.minX] =
+          this.getSurfaceConditionAt(x, z).reposeTan *
+          clamp(1 + profile.cohesion * 0.08 + profile.bedrockCloseness * 0.2 - profile.collapseFactor * 0.18, 0.56, 1.36);
+      }
+    }
 
     for (let pass = 0; pass < passes; pass += 1) {
       for (let iz = relaxedRange.minZ; iz < relaxedRange.maxZ; iz += 1) {
+        const row = (iz - relaxedRange.minZ) * reposeWidth;
+        const nextRow = row + reposeWidth;
         for (let ix = relaxedRange.minX; ix < relaxedRange.maxX; ix += 1) {
-          this.transferIfTooSteep(this.index(ix, iz), this.index(ix + 1, iz), maxDelta);
-          this.transferIfTooSteep(this.index(ix, iz), this.index(ix, iz + 1), maxDelta);
+          const localIndex = row + ix - relaxedRange.minX;
+          const localRepose = reposeSamples[localIndex];
+          redistributed += this.transferIfTooSteep(
+            this.index(ix, iz),
+            this.index(ix + 1, iz),
+            this.spacing * Math.min(localRepose, reposeSamples[localIndex + 1]),
+          );
+          redistributed += this.transferIfTooSteep(
+            this.index(ix, iz),
+            this.index(ix, iz + 1),
+            this.spacing * Math.min(localRepose, reposeSamples[nextRow + ix - relaxedRange.minX]),
+          );
         }
       }
     }
 
     this.commitRange(relaxedRange);
+    return redistributed * this.spacing * this.spacing;
   }
 
-  private transferIfTooSteep(a: number, b: number, maxDelta: number): void {
+  private transferIfTooSteep(a: number, b: number, maxDelta: number): number {
     const diff = this.heights[a] - this.heights[b];
     const excess = Math.abs(diff) - maxDelta;
     if (excess <= 0) {
-      return;
+      return 0;
     }
     const transfer = excess * 0.22;
     if (diff > 0) {
@@ -1993,6 +2365,7 @@ class HeightfieldTerrain {
       this.heights[a] += transfer;
       this.heights[b] -= transfer;
     }
+    return transfer;
   }
 
   private commitRange(range: { minX: number; maxX: number; minZ: number; maxZ: number }): void {
@@ -2073,12 +2446,22 @@ class WorkTruck {
     new THREE.Vector3(1.45, 0, -1.02),
     new THREE.Vector3(1.45, 0, 1.02),
   ];
+  private readonly tireMeshes: THREE.Mesh[] = [];
   private truckPhysics: TruckPhysicsState = {
     loadRatio: 0,
     suspensionSag: 0,
     pitch: 0,
     roll: 0,
     supportSpread: 0,
+    tireLoadSkew: 0,
+    tireLoadPitchBias: 0,
+    tireLoadRollBias: 0,
+    tireContactRatio: 1,
+    tireContactSkew: 0,
+    tireLightContactCount: 0,
+    tireRollingResistance: 0,
+    tireTractionFactor: 1,
+    tireSlipDemand: 0,
     tireCompacted: 0,
     tireRutDrop: 0,
     bodyY: TRUCK_CENTER.y,
@@ -2114,6 +2497,7 @@ class WorkTruck {
         tire.position.set(x, 0.32, z);
         tire.castShadow = true;
         tire.receiveShadow = true;
+        this.tireMeshes.push(tire);
         this.group.add(tire);
       }
     }
@@ -2140,6 +2524,15 @@ class WorkTruck {
       pitch: 0,
       roll: 0,
       supportSpread: 0,
+      tireLoadSkew: 0,
+      tireLoadPitchBias: 0,
+      tireLoadRollBias: 0,
+      tireContactRatio: 1,
+      tireContactSkew: 0,
+      tireLightContactCount: 0,
+      tireRollingResistance: 0,
+      tireTractionFactor: 1,
+      tireSlipDemand: 0,
       tireCompacted: 0,
       tireRutDrop: 0,
       bodyY: this.group.position.y,
@@ -2190,19 +2583,117 @@ class WorkTruck {
     const leftAverage = this.averageGround(samples, (local) => local.z < 0);
     const rightAverage = this.averageGround(samples, (local) => local.z > 0);
     const loadCenter = this.loadCenterOffset();
+    const tireSurfaces = samples.map((sample) => terrain.getSurfaceConditionAt(sample.world.x, sample.world.z));
+    const averageSurfaceValue = (selector: (surface: TerrainSurfaceCondition) => number): number =>
+      tireSurfaces.reduce((sum, surface) => sum + selector(surface), 0) / Math.max(tireSurfaces.length, 1);
+    const averageTrackDrag = averageSurfaceValue((surface) => surface.trackDragMultiplier);
+    const averageSink = averageSurfaceValue((surface) => surface.trackSinkMultiplier);
+    const averageWetness = averageSurfaceValue((surface) => surface.wetness);
+    const averageCompaction = averageSurfaceValue((surface) => surface.compaction);
+    const maxWheelX = Math.max(...samples.map((sample) => Math.abs(sample.local.x)), 1);
+    const maxWheelZ = Math.max(...samples.map((sample) => Math.abs(sample.local.z)), 1);
+    const axleCenterX = samples.reduce((sum, sample) => sum + sample.local.x, 0) / samples.length;
+    const axleCenterZ = samples.reduce((sum, sample) => sum + sample.local.z, 0) / samples.length;
+    const payloadMomentX = clamp((this.bedCenterX + loadCenter.x - axleCenterX) / maxWheelX, -1.2, 1.2);
+    const payloadMomentZ = clamp((loadCenter.z - axleCenterZ) / maxWheelZ, -1.2, 1.2);
+    const terrainContactInfluence = clamp(supportSpread / 0.18, 0, 1);
+    const tireContactFractions = samples.map((sample) => {
+      if (supportSpread <= 0.006) {
+        return 1;
+      }
+      const heightShare = (sample.ground - groundAverage) / supportSpread;
+      const payloadSupport = loadRatio * clamp(payloadMomentX * (sample.local.x / maxWheelX) * 0.08 + payloadMomentZ * (sample.local.z / maxWheelZ) * 0.1, -0.12, 0.12);
+      return clamp(1 - terrainContactInfluence * 0.38 + heightShare * 0.82 + payloadSupport, 0.06, 1.22);
+    });
+    const rawTireLoads = samples.map((sample, index) => {
+      const xShare = sample.local.x / maxWheelX;
+      const zShare = sample.local.z / maxWheelZ;
+      const heightShare = supportSpread > 0.0001 ? (sample.ground - groundAverage) / supportSpread : 0;
+      const terrainShare = heightShare * clamp(0.52 + loadRatio * 0.28, 0.32, 0.78);
+      const payloadShare = loadRatio * (payloadMomentX * xShare * 0.52 + payloadMomentZ * zShare * 0.68);
+      const contactShare = tireContactFractions[index] ?? 1;
+      return clamp((1 + terrainShare + payloadShare) * contactShare, 0.06, 2.35);
+    });
+    const rawTireLoadAverage = rawTireLoads.reduce((sum, value) => sum + value, 0) / Math.max(rawTireLoads.length, 1);
+    const tireLoads = rawTireLoads.map((value) => value / Math.max(rawTireLoadAverage, 0.001));
+    const averageTireLoad = (predicate: (local: THREE.Vector3) => boolean): number => {
+      let total = 0;
+      let count = 0;
+      for (let i = 0; i < samples.length; i += 1) {
+        if (!predicate(samples[i].local)) {
+          continue;
+        }
+        total += tireLoads[i];
+        count += 1;
+      }
+      return count > 0 ? total / count : 1;
+    };
+    const tireLoadSkew = Math.max(...tireLoads) - Math.min(...tireLoads);
+    const tireLoadPitchBias = averageTireLoad((local) => local.x > 0) - averageTireLoad((local) => local.x < 0);
+    const tireLoadRollBias = averageTireLoad((local) => local.z > 0) - averageTireLoad((local) => local.z < 0);
+    const tireContactRatio =
+      tireContactFractions.reduce((sum, contact) => sum + clamp(contact, 0, 1), 0) / Math.max(tireContactFractions.length, 1);
+    const tireContactSkew = Math.max(...tireContactFractions) - Math.min(...tireContactFractions);
+    const tireLightContactCount = tireContactFractions.filter((contact) => contact < 0.42).length;
+    const tireRollingResistance = clamp(
+      supportSpread * 0.62 +
+        (1 - tireContactRatio) * 0.82 +
+        tireContactSkew * 0.24 +
+        tireLoadSkew * 0.1 +
+        Math.max(0, averageTrackDrag - 0.82) * 0.22 +
+        Math.max(0, averageSink - 0.82) * 0.08 +
+        loadRatio * 0.045,
+      0,
+      1.35,
+    );
+    const tireTractionFactor = clamp(
+      1 -
+        tireRollingResistance * 0.38 -
+        (1 - tireContactRatio) * 0.45 -
+        averageWetness * 0.16 +
+        averageCompaction * 0.08,
+      0.16,
+      1.05,
+    );
+    const tireSlipDemand = clamp(
+      (1 - tireTractionFactor) * 0.95 + Math.max(0, tireLoadSkew - 0.05) * 0.2 + tireContactSkew * 0.11,
+      0,
+      1,
+    );
+    const loadedTireInfluence = clamp(loadRatio, 0, 1);
     const wheelBase = 3.15;
     const axleWidth = 2.04;
-    const targetSag = clamp(loadRatio * 0.22 + supportSpread * 0.1, 0, 0.28);
-    const targetPitch = clamp((rearAverage - frontAverage) / wheelBase + loadCenter.x * loadRatio * 0.045 + this.impactPitch, -0.2, 0.2);
-    const targetRoll = clamp((leftAverage - rightAverage) / axleWidth + loadCenter.z * loadRatio * 0.055 + this.impactRoll, -0.18, 0.18);
+    const targetSag = clamp(
+      loadRatio * 0.22 + supportSpread * 0.1 + tireLoadSkew * 0.018 * loadedTireInfluence + tireRollingResistance * 0.01,
+      0,
+      0.32,
+    );
+    const targetPitch = clamp(
+      (rearAverage - frontAverage) / wheelBase + payloadMomentX * loadRatio * 0.052 + tireLoadPitchBias * 0.026 * loadedTireInfluence + this.impactPitch,
+      -0.2,
+      0.2,
+    );
+    const targetRoll = clamp(
+      (leftAverage - rightAverage) / axleWidth + payloadMomentZ * loadRatio * 0.065 + tireLoadRollBias * 0.023 * loadedTireInfluence + this.impactRoll,
+      -0.18,
+      0.18,
+    );
     const response = dt <= 0 ? 1 : 1 - Math.exp(-5.2 * dt);
     const targetY = groundAverage - targetSag + this.impactLift;
     this.group.position.y = THREE.MathUtils.lerp(this.group.position.y, targetY, response);
     this.group.rotation.x = THREE.MathUtils.lerp(this.group.rotation.x, targetRoll, response);
     this.group.rotation.y = this.baseYaw;
     this.group.rotation.z = THREE.MathUtils.lerp(this.group.rotation.z, targetPitch, response);
+    this.updateTireVisuals(samples, tireLoads, tireContactFractions, groundAverage, loadRatio, response);
     if (loadRatio > 0.025 && dt > 0) {
-      this.slumpLoadUnderGravity(dt, 0.55 + loadRatio * 0.65 + clamp(Math.abs(this.impactPitch) + Math.abs(this.impactRoll), 0, 0.18) * 2.2);
+      this.slumpLoadUnderGravity(
+        dt,
+        0.55 +
+          loadRatio * 0.65 +
+          clamp(Math.abs(this.impactPitch) + Math.abs(this.impactRoll), 0, 0.18) * 2.2 +
+          tireSlipDemand * 0.72 +
+          tireRollingResistance * 0.22,
+      );
     }
     const impactDecay = dt <= 0 ? 1 : Math.exp(-3.8 * dt);
     this.impactPitch *= impactDecay;
@@ -2216,11 +2707,24 @@ class WorkTruck {
       const forward = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.baseYaw).normalize();
       const side = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
       const depth = clamp((0.0018 + loadRatio * 0.0115 + supportSpread * 0.007) * clamp(dt * 2.4, 0.12, 1), 0.0005, 0.014);
-      for (const sample of samples) {
+      for (let i = 0; i < samples.length; i += 1) {
+        const sample = samples[i];
         const before = terrain.getHeightAt(sample.world.x, sample.world.z);
         const surface = terrain.getSurfaceConditionAt(sample.world.x, sample.world.z);
         const axleBias = sample.local.x > 0 ? 0.96 : 1.04;
-        const result = terrain.compactTrackStrip(sample.world, forward, side, 0.56, 0.38, depth * axleBias * surface.trackSinkMultiplier);
+        const tireLoad = clamp(tireLoads[i] ?? 1, 0.35, 2.4);
+        const tireContact = clamp(tireContactFractions[i] ?? 1, 0, 1.15);
+        if (tireContact < 0.08) {
+          continue;
+        }
+        const result = terrain.compactTrackStrip(
+          sample.world,
+          forward,
+          side,
+          0.56,
+          0.38,
+          depth * axleBias * tireLoad * tireContact * surface.trackSinkMultiplier,
+        );
         const after = terrain.getHeightAt(sample.world.x, sample.world.z);
         tireCompacted += result.compacted;
         tireRutDrop += Math.max(result.rutDrop, before - after);
@@ -2234,6 +2738,15 @@ class WorkTruck {
       pitch: this.group.rotation.z,
       roll: this.group.rotation.x,
       supportSpread,
+      tireLoadSkew,
+      tireLoadPitchBias,
+      tireLoadRollBias,
+      tireContactRatio,
+      tireContactSkew,
+      tireLightContactCount,
+      tireRollingResistance,
+      tireTractionFactor,
+      tireSlipDemand,
       tireCompacted,
       tireRutDrop,
       bodyY: this.group.position.y,
@@ -2242,6 +2755,37 @@ class WorkTruck {
       impactRoll: this.impactRoll,
     };
     return this.physicsState();
+  }
+
+  private updateTireVisuals(
+    samples: Array<{ local: THREE.Vector3; ground: number }>,
+    tireLoads: number[],
+    tireContactFractions: number[],
+    groundAverage: number,
+    loadRatio: number,
+    response: number,
+  ): void {
+    for (let i = 0; i < this.tireMeshes.length; i += 1) {
+      const tire = this.tireMeshes[i];
+      const sample = samples[i];
+      if (!sample) {
+        continue;
+      }
+      const tireLoad = clamp(tireLoads[i] ?? 1, 0.35, 2.4);
+      const tireContact = clamp(tireContactFractions[i] ?? 1, 0, 1.15);
+      const terrainDelta = clamp(sample.ground - groundAverage, -0.22, 0.22);
+      const loadCompression = clamp(((tireLoad - 0.7) * 0.042 + loadRatio * 0.032) * clamp(tireContact, 0.12, 1.1), 0, 0.12);
+      const terrainCompression = clamp(terrainDelta * 0.32, -0.035, 0.075);
+      const compression = clamp(loadCompression + terrainCompression, 0, 0.13);
+      const droop = clamp(1 - tireContact, 0, 1) * 0.058;
+      const targetY = 0.32 + terrainDelta * 0.46 - compression * 0.24 - droop;
+      const verticalScale = clamp(1 - (compression / TRUCK_TIRE_RADIUS) * 0.42 + droop * 0.18, 0.78, 1.06);
+      const sideBulge = clamp(1 + (compression / TRUCK_TIRE_RADIUS) * 0.08 - droop * 0.08, 0.96, 1.05);
+      tire.position.y = THREE.MathUtils.lerp(tire.position.y, targetY, response);
+      tire.scale.x = THREE.MathUtils.lerp(tire.scale.x, sideBulge, response);
+      tire.scale.y = THREE.MathUtils.lerp(tire.scale.y, sideBulge, response);
+      tire.scale.z = THREE.MathUtils.lerp(tire.scale.z, verticalScale, response);
+    }
   }
 
   applyImpact(worldPoint: THREE.Vector3, worldNormal: THREE.Vector3, impulse: number): TruckPhysicsState {
@@ -2487,16 +3031,31 @@ class WorkTruck {
 
   private resolveWheelSolidCollision(local: THREE.Vector3, radius: number): { normal: THREE.Vector3; penetration: number } | null {
     let best: { normal: THREE.Vector3; penetration: number } | null = null;
-    const halfTireWidth = TRUCK_TIRE_WIDTH * 0.5;
 
-    for (const wheel of this.wheelLocals) {
-      const center = new THREE.Vector3(wheel.x, 0.32, wheel.z);
+    for (let i = 0; i < this.wheelLocals.length; i += 1) {
+      const wheel = this.wheelLocals[i];
+      const tire = this.tireMeshes[i];
+      const radialScaleX = clamp(tire?.scale.x ?? 1, 0.72, 1.12);
+      const radialScaleY = clamp(tire?.scale.z ?? 1, 0.72, 1.12);
+      const axialScale = clamp(tire?.scale.y ?? 1, 0.86, 1.12);
+      const tireRadiusX = TRUCK_TIRE_RADIUS * radialScaleX;
+      const tireRadiusY = TRUCK_TIRE_RADIUS * radialScaleY;
+      const halfTireWidth = TRUCK_TIRE_WIDTH * axialScale * 0.5;
+      const center = new THREE.Vector3(wheel.x, tire?.position.y ?? 0.32, wheel.z);
       const dx = local.x - center.x;
       const dy = local.y - center.y;
       const dz = local.z - center.z;
       const radial = Math.hypot(dx, dy);
       const axial = Math.abs(dz);
-      const radialGap = Math.max(0, radial - TRUCK_TIRE_RADIUS);
+      const ux = radial > 0.000001 ? dx / radial : 0;
+      const uy = radial > 0.000001 ? dy / radial : 1;
+      const radiusAlongNormal =
+        1 /
+        Math.sqrt(
+          (ux * ux) / Math.max(tireRadiusX * tireRadiusX, 0.000001) +
+            (uy * uy) / Math.max(tireRadiusY * tireRadiusY, 0.000001),
+        );
+      const radialGap = Math.max(0, radial - radiusAlongNormal);
       const axialGap = Math.max(0, axial - halfTireWidth);
       let normal: THREE.Vector3 | null = null;
       let penetration = 0;
@@ -2507,23 +3066,36 @@ class WorkTruck {
           continue;
         }
         const distance = Math.sqrt(Math.max(distanceSq, 0.000001));
-        const radialX = radial > 0.000001 ? dx / radial : 0;
-        const radialY = radial > 0.000001 ? dy / radial : 1;
+        const radialNormal = new THREE.Vector3(
+          dx / Math.max(tireRadiusX * tireRadiusX, 0.000001),
+          dy / Math.max(tireRadiusY * tireRadiusY, 0.000001),
+          0,
+        );
+        if (radialNormal.lengthSq() < 0.000001) {
+          radialNormal.set(0, 1, 0);
+        } else {
+          radialNormal.normalize();
+        }
         normal = new THREE.Vector3(
-          (radialX * radialGap) / distance,
-          (radialY * radialGap) / distance,
+          (radialNormal.x * radialGap) / distance,
+          (radialNormal.y * radialGap) / distance,
           ((Math.sign(dz) || 1) * axialGap) / distance,
         ).normalize();
         penetration = radius - distance;
       } else {
-        const radialClearance = TRUCK_TIRE_RADIUS - radial;
+        const radialClearance = radiusAlongNormal - radial;
         const axialClearance = halfTireWidth - axial;
         if (radialClearance <= axialClearance) {
           normal = new THREE.Vector3(
-            radial > 0.000001 ? dx / radial : 0,
-            radial > 0.000001 ? dy / radial : 1,
+            dx / Math.max(tireRadiusX * tireRadiusX, 0.000001),
+            dy / Math.max(tireRadiusY * tireRadiusY, 0.000001),
             0,
           );
+          if (normal.lengthSq() < 0.000001) {
+            normal.set(0, 1, 0);
+          } else {
+            normal.normalize();
+          }
           penetration = radius + radialClearance;
         } else {
           normal = new THREE.Vector3(0, 0, Math.sign(dz) || 1);
@@ -2654,7 +3226,57 @@ class WorkTruck {
     if (load <= 0) {
       this.loadHeights.fill(0);
       this.commitLoadSurface();
+      return;
     }
+
+    this.normalizeLoadSurfaceToVolume(clamp(load, 0, TRUCK_CAPACITY));
+  }
+
+  loadSurfaceVolume(): number {
+    if (!this.loadMesh.visible) {
+      return 0;
+    }
+    const cellArea = (this.bedLength / this.loadSegmentsX) * (this.bedWidth / this.loadSegmentsZ);
+    let volume = 0;
+    for (let iz = 0; iz < this.loadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix < this.loadSegmentsX; ix += 1) {
+        const avgHeight =
+          (this.loadHeights[this.loadIndex(ix, iz)] +
+            this.loadHeights[this.loadIndex(ix + 1, iz)] +
+            this.loadHeights[this.loadIndex(ix, iz + 1)] +
+            this.loadHeights[this.loadIndex(ix + 1, iz + 1)]) *
+          0.25;
+        volume += (Math.max(0, avgHeight) * cellArea) / 0.72;
+      }
+    }
+    return volume;
+  }
+
+  private normalizeLoadSurfaceToVolume(targetVolume: number): void {
+    const target = clamp(targetVolume, 0, TRUCK_CAPACITY);
+    if (target <= 0.0001) {
+      this.loadHeights.fill(0);
+      this.loadMesh.visible = false;
+      this.commitLoadSurface();
+      return;
+    }
+
+    const current = this.loadSurfaceVolume();
+    if (current <= 0.0001) {
+      this.addLoadMound(this.bedCenterX, 0, target);
+      this.loadMesh.visible = true;
+      return;
+    }
+
+    const scale = target / current;
+    if (Math.abs(1 - scale) < 0.003) {
+      return;
+    }
+    for (let i = 0; i < this.loadHeights.length; i += 1) {
+      this.loadHeights[i] = Math.max(0, this.loadHeights[i] * scale);
+    }
+    this.relaxLoad(1);
+    this.commitLoadSurface();
   }
 
   settleLoad(passes = 1): void {
@@ -2987,15 +3609,32 @@ class WorkTruck {
   }
 
   private relaxLoad(passes: number): void {
-    const maxDelta = 0.13;
     for (let pass = 0; pass < passes; pass += 1) {
-      for (let iz = 0; iz < this.loadSegmentsZ; iz += 1) {
+      for (let iz = 0; iz <= this.loadSegmentsZ; iz += 1) {
         for (let ix = 0; ix < this.loadSegmentsX; ix += 1) {
-          this.transferLoadIfTooSteep(this.loadIndex(ix, iz), this.loadIndex(ix + 1, iz), maxDelta);
-          this.transferLoadIfTooSteep(this.loadIndex(ix, iz), this.loadIndex(ix, iz + 1), maxDelta);
+          this.transferLoadIfTooSteep(
+            this.loadIndex(ix, iz),
+            this.loadIndex(ix + 1, iz),
+            this.loadReposeDelta(ix, iz, ix + 1, iz),
+          );
+        }
+      }
+      for (let iz = 0; iz < this.loadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix <= this.loadSegmentsX; ix += 1) {
+          this.transferLoadIfTooSteep(
+            this.loadIndex(ix, iz),
+            this.loadIndex(ix, iz + 1),
+            this.loadReposeDelta(ix, iz, ix, iz + 1),
+          );
         }
       }
     }
+  }
+
+  private loadReposeDelta(ax: number, az: number, bx: number, bz: number): number {
+    const stepX = this.bedLength / this.loadSegmentsX;
+    const stepZ = this.bedWidth / this.loadSegmentsZ;
+    return Math.max(Math.hypot((bx - ax) * stepX, (bz - az) * stepZ), 0.001) * SOIL_REPOSE_TAN;
   }
 
   private transferLoadIfTooSteep(a: number, b: number, maxDelta: number): void {
@@ -3043,8 +3682,9 @@ class WorkTruck {
 
     const sinkHeight = this.loadHeights[sink];
     const drive = Math.abs(alignment) * tilt;
-    const imbalance = sourceHeight - sinkHeight + drive * 0.24;
-    const staticRepose = 0.07;
+    const geometricRepose = distance * SOIL_REPOSE_TAN;
+    const staticRepose = geometricRepose * clamp(1 - drive * 0.42, 0.38, 1);
+    const imbalance = sourceHeight - sinkHeight + drive * distance * 0.72;
     if (imbalance <= staticRepose) {
       return 0;
     }
@@ -3157,15 +3797,25 @@ class ExcavatorModel {
   }
 
   setBucketLoad(load: number): void {
-    const ratio = clamp(load / BUCKET_CAPACITY, 0, 1);
+    const targetLoad = clamp(load, 0, BUCKET_CAPACITY);
+    const ratio = clamp(targetLoad / BUCKET_CAPACITY, 0, 1);
     const previousRatio = this.bucketLoadRenderedRatio;
     if (Math.abs(ratio - this.bucketLoadRenderedRatio) < 0.001) {
+      if (this.bucketLoadMesh.visible) {
+        const volumeError = Math.abs(this.bucketLoadSurfaceVolume() - targetLoad);
+        if (volumeError > Math.max(0.012, targetLoad * 0.02)) {
+          this.normalizeBucketLoadSurfaceToVolume(targetLoad);
+          this.commitBucketLoadSurface();
+        }
+      }
       return;
     }
     this.bucketLoadRenderedRatio = ratio;
     this.bucketLoadMesh.visible = ratio > 0.02;
     if (ratio <= 0.02) {
       this.bucketLoadHeights.fill(0);
+      this.commitBucketLoadSurface();
+      return;
     } else if (previousRatio > 0.02) {
       const scale = ratio / Math.max(previousRatio, 0.001);
       for (let i = 0; i < this.bucketLoadHeights.length; i += 1) {
@@ -3175,7 +3825,59 @@ class ExcavatorModel {
     } else {
       this.shapeBucketLoad(ratio);
     }
+    this.normalizeBucketLoadSurfaceToVolume(targetLoad);
     this.commitBucketLoadSurface();
+  }
+
+  bucketLoadSurfaceVolume(): number {
+    if (!this.bucketLoadMesh.visible) {
+      return 0;
+    }
+    const cellArea =
+      ((this.bucketLoadMaxX - this.bucketLoadMinX) / this.bucketLoadSegmentsX) *
+      ((this.bucketLoadMaxZ - this.bucketLoadMinZ) / this.bucketLoadSegmentsZ);
+    let volume = 0;
+    for (let iz = 0; iz < this.bucketLoadSegmentsZ; iz += 1) {
+      for (let ix = 0; ix < this.bucketLoadSegmentsX; ix += 1) {
+        const avgHeight =
+          (this.bucketLoadHeights[this.bucketLoadIndex(ix, iz)] +
+            this.bucketLoadHeights[this.bucketLoadIndex(ix + 1, iz)] +
+            this.bucketLoadHeights[this.bucketLoadIndex(ix, iz + 1)] +
+            this.bucketLoadHeights[this.bucketLoadIndex(ix + 1, iz + 1)]) *
+          0.25;
+        volume += (Math.max(0, avgHeight) * cellArea) / BUCKET_LOAD_HEIGHT_VOLUME_SCALE;
+      }
+    }
+    return volume;
+  }
+
+  private normalizeBucketLoadSurfaceToVolume(targetVolume: number): void {
+    const target = clamp(targetVolume, 0, BUCKET_CAPACITY);
+    if (target <= 0.0001) {
+      this.bucketLoadHeights.fill(0);
+      this.bucketLoadMesh.visible = false;
+      this.bucketLoadRenderedRatio = 0;
+      return;
+    }
+
+    this.bucketLoadMesh.visible = true;
+    let current = this.bucketLoadSurfaceVolume();
+    if (current <= 0.0001) {
+      this.shapeBucketLoad(target / BUCKET_CAPACITY);
+      current = this.bucketLoadSurfaceVolume();
+    }
+    if (current <= 0.0001) {
+      return;
+    }
+
+    const scale = target / current;
+    if (Math.abs(1 - scale) < 0.003) {
+      return;
+    }
+    for (let i = 0; i < this.bucketLoadHeights.length; i += 1) {
+      this.bucketLoadHeights[i] = clamp(this.bucketLoadHeights[i] * scale, 0, 0.68);
+    }
+    this.relaxBucketLoad(1);
   }
 
   bucketLoadVisualRatio(): number {
@@ -3304,15 +4006,15 @@ class ExcavatorModel {
     const verticalSupport = Math.max(Math.abs(localGravity.y), 0.2);
     const openLipDrive = clamp(lipBias, 0, 1.8);
     const tilt = clamp(downhillLen / verticalSupport + openLipDrive * 0.54, 0, 1.8);
-    const spillDrive = clamp((tilt - 0.035) * clamp(intensity, 0.25, 4.2), 0, 2.4);
+    const spillDrive = clamp((tilt - 0.015) * clamp(intensity, 0.25, 4.2), 0, 2.4);
     if (spillDrive <= 0.001) {
       const worldPoint = this.bucketGroup.localToWorld(fallbackLocal.clone());
       return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z, heightRemoved: 0 };
     }
 
     const volumePerHeight = currentLoad / stats.totalHeight;
-    const timeScale = clamp(dt * 1.8, 0.08, 1.4);
-    const spillThreshold = clamp(0.24 - spillDrive * 0.09 - openLipDrive * 0.08, 0.05, 0.24);
+    const timeScale = clamp(dt * 2.6, 0.1, 1.8);
+    const spillThreshold = clamp(0.21 - spillDrive * 0.13 - openLipDrive * 0.1, 0.025, 0.21);
     let spilledVolume = 0;
     let heightRemoved = 0;
     let weightedX = 0;
@@ -3321,8 +4023,9 @@ class ExcavatorModel {
     for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
       for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
         let edgeAlignment = 0;
-        if (ix === 0) {
-          edgeAlignment = Math.max(edgeAlignment, -downhill.x, openLipDrive);
+        if (ix <= 2) {
+          const lipBand = 1 - ix * 0.28;
+          edgeAlignment = Math.max(edgeAlignment, Math.max(-downhill.x, openLipDrive) * lipBand);
         }
         if (iz === 0) {
           edgeAlignment = Math.max(edgeAlignment, -downhill.y * 0.62);
@@ -3341,11 +4044,11 @@ class ExcavatorModel {
         }
 
         const overflow = Math.max(0, sourceHeight - spillThreshold);
-        const shakeOverflow = Math.max(0, spillDrive - 0.4) * 0.014 * edgeAlignment;
+        const shakeOverflow = Math.max(0, spillDrive - 0.16) * (0.022 + openLipDrive * 0.014) * edgeAlignment;
         const removeHeight = clamp(
-          (overflow * (0.18 + edgeAlignment * 0.28) + shakeOverflow) * timeScale,
+          (overflow * (0.24 + edgeAlignment * 0.36) + shakeOverflow) * timeScale,
           0,
-          sourceHeight * 0.42,
+          sourceHeight * 0.62,
         );
         const remainingVolume = Math.max(0, maxSpillVolume - spilledVolume);
         const actualRemoveHeight = Math.min(removeHeight, remainingVolume / Math.max(volumePerHeight, 0.000001));
@@ -3377,17 +4080,20 @@ class ExcavatorModel {
       return { spilledVolume: 0, worldPoint, localX: fallbackLocal.x, localZ: fallbackLocal.z, heightRemoved: 0 };
     }
 
-    const remainingRatio = clamp((currentLoad - spilledVolume) / BUCKET_CAPACITY, 0, 1);
+    const remainingLoad = Math.max(0, currentLoad - spilledVolume);
+    const remainingRatio = clamp(remainingLoad / BUCKET_CAPACITY, 0, 1);
     this.bucketLoadRenderedRatio = remainingRatio;
     this.bucketLoadMesh.visible = remainingRatio > 0.02;
     if (!this.bucketLoadMesh.visible) {
       this.bucketLoadHeights.fill(0);
+    } else {
+      this.normalizeBucketLoadSurfaceToVolume(remainingLoad);
     }
     this.commitBucketLoadSurface();
 
     const localX = weightedX / spilledVolume;
     const localZ = weightedZ / spilledVolume;
-    const worldPoint = this.bucketGroup.localToWorld(new THREE.Vector3(localX, this.bucketLoadBaseY(this.bucketLoadMinX, localZ), localZ));
+    const worldPoint = this.bucketGroup.localToWorld(new THREE.Vector3(localX, this.bucketLoadBaseY(localX, localZ), localZ));
     return { spilledVolume, worldPoint, localX, localZ, heightRemoved };
   }
 
@@ -3489,6 +4195,80 @@ class ExcavatorModel {
     };
   }
 
+  hydraulicKinematicsDiagnostics(angles: ExcavatorAngles): HydraulicKinematicsDiagnostics {
+    const saved = {
+      swing: this.upperGroup.rotation.y,
+      boom: this.boomGroup.rotation.z,
+      stick: this.stickGroup.rotation.z,
+      bucket: this.bucketGroup.rotation.z - Math.PI,
+    };
+
+    type HydraulicLengthSet = Pick<
+      HydraulicKinematicsDiagnostics,
+      | "boomCylinderLength"
+      | "stickCylinderLength"
+      | "bucketCylinderLength"
+      | "bucketLeftLinkLength"
+      | "bucketRightLinkLength"
+      | "bucketLinkSymmetryError"
+    >;
+
+    const measure = (probe: ExcavatorAngles): HydraulicLengthSet => {
+      this.upperGroup.rotation.y = probe.swing;
+      this.boomGroup.rotation.z = probe.boom;
+      this.stickGroup.rotation.z = probe.stick;
+      this.bucketGroup.rotation.z = probe.bucket + Math.PI;
+      this.group.updateMatrixWorld(true);
+      const boomStart = this.upperGroup.localToWorld(new THREE.Vector3(0.26, 0.35, -0.28));
+      const boomEnd = this.boomGroup.localToWorld(new THREE.Vector3(1.65, -0.14, -0.28));
+      const stickStart = this.boomGroup.localToWorld(new THREE.Vector3(2.55, 0.12, 0.27));
+      const stickEnd = this.stickGroup.localToWorld(new THREE.Vector3(1.55, -0.1, 0.27));
+      const bucketCenter = this.bucketLinkageWorldPoints(-0.24);
+      const bucketLeft = this.bucketLinkageWorldPoints(-0.32);
+      const bucketRight = this.bucketLinkageWorldPoints(0.32);
+      const bucketLeftLinkLength = bucketLeft.rockerOutput.distanceTo(bucketLeft.bucketEar);
+      const bucketRightLinkLength = bucketRight.rockerOutput.distanceTo(bucketRight.bucketEar);
+      return {
+        boomCylinderLength: boomStart.distanceTo(boomEnd),
+        stickCylinderLength: stickStart.distanceTo(stickEnd),
+        bucketCylinderLength: bucketCenter.cylinderBase.distanceTo(bucketCenter.rockerInput),
+        bucketLeftLinkLength,
+        bucketRightLinkLength,
+        bucketLinkSymmetryError: Math.abs(bucketLeftLinkLength - bucketRightLinkLength),
+      };
+    };
+
+    const current = measure(angles);
+    const boomMin = measure({ ...angles, boom: ANGLE_LIMITS.boom.min }).boomCylinderLength;
+    const boomMax = measure({ ...angles, boom: ANGLE_LIMITS.boom.max }).boomCylinderLength;
+    const stickMin = measure({ ...angles, stick: ANGLE_LIMITS.stick.min }).stickCylinderLength;
+    const stickMax = measure({ ...angles, stick: ANGLE_LIMITS.stick.max }).stickCylinderLength;
+    const bucketMin = measure({ ...angles, bucket: ANGLE_LIMITS.bucket.min }).bucketCylinderLength;
+    const bucketMax = measure({ ...angles, bucket: ANGLE_LIMITS.bucket.max }).bucketCylinderLength;
+    const strokeRatio = (value: number, a: number, b: number): number => {
+      const low = Math.min(a, b);
+      const high = Math.max(a, b);
+      return clamp((value - low) / Math.max(high - low, 0.0001), 0, 1);
+    };
+
+    this.upperGroup.rotation.y = saved.swing;
+    this.boomGroup.rotation.z = saved.boom;
+    this.stickGroup.rotation.z = saved.stick;
+    this.bucketGroup.rotation.z = saved.bucket + Math.PI;
+    this.group.updateMatrixWorld(true);
+    this.updateCylinders();
+
+    return {
+      ...current,
+      boomCylinderStroke: Math.abs(boomMax - boomMin),
+      stickCylinderStroke: Math.abs(stickMax - stickMin),
+      bucketCylinderStroke: Math.abs(bucketMax - bucketMin),
+      boomStrokeRatio: strokeRatio(current.boomCylinderLength, boomMin, boomMax),
+      stickStrokeRatio: strokeRatio(current.stickCylinderLength, stickMin, stickMax),
+      bucketStrokeRatio: strokeRatio(current.bucketCylinderLength, bucketMin, bucketMax),
+    };
+  }
+
   armCollisionSamples(): ArmCollisionSample[] {
     const samples: ArmCollisionSample[] = [];
     for (const t of [0.18, 0.38, 0.58, 0.78, 0.94]) {
@@ -3550,20 +4330,25 @@ class ExcavatorModel {
       });
     };
 
-    for (const x of [-0.96, -0.68, -0.38]) {
+    for (const x of [-1.02, -0.72, -0.42, -0.18]) {
       for (const z of [-0.34, 0, 0.34]) {
-        add(`bucket-floor-${x}-${z}`, new THREE.Vector3(x, -0.5, z), 0.13);
+        add(`bucket-floor-${x}-${z}`, new THREE.Vector3(x, -0.52, z), 0.13);
       }
     }
-    for (const z of [-0.52, 0.52]) {
-      for (const x of [-0.94, -0.62, -0.28]) {
-        add(`bucket-side-${x}-${z}`, new THREE.Vector3(x, -0.34, z), 0.12);
+    for (const z of [-0.55, 0.55]) {
+      for (const x of [-1.16, -0.78, -0.38, 0.02]) {
+        const profileT = clamp((x + 1.16) / 1.18, 0, 1);
+        add(`bucket-side-${x}-${z}`, new THREE.Vector3(x, -0.48 + profileT * 0.28, z), 0.12);
       }
-      add(`bucket-side-lip-${z}`, new THREE.Vector3(-1.12, -0.48, z), 0.11);
+      add(`bucket-side-cutter-${z}`, new THREE.Vector3(-1.32, -0.47, z), 0.1);
+      add(`bucket-side-lip-${z}`, new THREE.Vector3(-1.14, -0.5, z), 0.11);
+      add(`bucket-hinge-cheek-${z}`, new THREE.Vector3(-0.02, -0.06, z * 0.82), 0.12);
     }
     for (const z of [-0.34, 0, 0.34]) {
-      add(`bucket-back-${z}`, new THREE.Vector3(0.16, -0.2, z), 0.14);
+      add(`bucket-back-upper-${z}`, new THREE.Vector3(0.14, -0.08, z), 0.14);
+      add(`bucket-back-lower-${z}`, new THREE.Vector3(0.16, -0.34, z), 0.14);
       add(`bucket-lip-${z}`, new THREE.Vector3(-1.18, -0.5, z), 0.13);
+      add(`bucket-wear-strip-${z}`, new THREE.Vector3(-0.6, -0.59, z), 0.08);
     }
     for (const z of [-0.36, -0.12, 0.12, 0.36]) {
       add(`bucket-tooth-tip-${z}`, new THREE.Vector3(-1.5, -0.54, z), 0.07);
@@ -3614,10 +4399,13 @@ class ExcavatorModel {
       sample("counterweight-center", -1.1, 0.38, 0, 0.48),
       sample("counterweight-left", -1.0, 0.38, -0.48, 0.38),
       sample("counterweight-right", -1.0, 0.38, 0.48, 0.38),
+      sample("counterweight-top", -1.05, 0.68, 0, 0.34),
       sample("engine-center", -0.22, 0.36, 0, 0.5),
       sample("engine-left", -0.1, 0.34, -0.52, 0.34),
       sample("engine-right", -0.1, 0.34, 0.52, 0.34),
       sample("cab-low", 0.52, 0.62, -0.46, 0.34),
+      sample("cab-front", 0.86, 0.8, -0.46, 0.28),
+      sample("cab-rear", 0.16, 0.8, -0.46, 0.28),
       sample("cab-roof", 0.55, 1.04, -0.46, 0.28),
       sample("front-service", 0.88, 0.34, 0.24, 0.32),
       sample("exhaust-base", -1.1, 0.74, 0.47, 0.105),
@@ -3861,15 +4649,32 @@ class ExcavatorModel {
   }
 
   private relaxBucketLoad(passes: number): void {
-    const maxDelta = 0.095;
     for (let pass = 0; pass < passes; pass += 1) {
-      for (let iz = 0; iz < this.bucketLoadSegmentsZ; iz += 1) {
+      for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
         for (let ix = 0; ix < this.bucketLoadSegmentsX; ix += 1) {
-          this.transferBucketLoadIfTooSteep(this.bucketLoadIndex(ix, iz), this.bucketLoadIndex(ix + 1, iz), maxDelta);
-          this.transferBucketLoadIfTooSteep(this.bucketLoadIndex(ix, iz), this.bucketLoadIndex(ix, iz + 1), maxDelta);
+          this.transferBucketLoadIfTooSteep(
+            this.bucketLoadIndex(ix, iz),
+            this.bucketLoadIndex(ix + 1, iz),
+            this.bucketLoadReposeDelta(ix, iz, ix + 1, iz),
+          );
+        }
+      }
+      for (let iz = 0; iz < this.bucketLoadSegmentsZ; iz += 1) {
+        for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
+          this.transferBucketLoadIfTooSteep(
+            this.bucketLoadIndex(ix, iz),
+            this.bucketLoadIndex(ix, iz + 1),
+            this.bucketLoadReposeDelta(ix, iz, ix, iz + 1),
+          );
         }
       }
     }
+  }
+
+  private bucketLoadReposeDelta(ax: number, az: number, bx: number, bz: number): number {
+    const stepX = (this.bucketLoadMaxX - this.bucketLoadMinX) / this.bucketLoadSegmentsX;
+    const stepZ = (this.bucketLoadMaxZ - this.bucketLoadMinZ) / this.bucketLoadSegmentsZ;
+    return Math.max(Math.hypot((bx - ax) * stepX, (bz - az) * stepZ), 0.001) * SOIL_REPOSE_TAN;
   }
 
   private transferBucketLoadIfTooSteep(a: number, b: number, maxDelta: number): void {
@@ -3917,8 +4722,9 @@ class ExcavatorModel {
 
     const sinkHeight = this.bucketLoadHeights[sink];
     const drive = Math.abs(alignment) * tilt;
-    const imbalance = sourceHeight - sinkHeight + drive * 0.13;
-    const staticRepose = 0.045;
+    const geometricRepose = distance * SOIL_REPOSE_TAN;
+    const staticRepose = geometricRepose * clamp(1 - drive * 0.48, 0.34, 1);
+    const imbalance = sourceHeight - sinkHeight + drive * distance * 0.92;
     if (imbalance <= staticRepose) {
       return 0;
     }
@@ -4051,18 +4857,44 @@ class ExcavatorModel {
     const sideA = this.makeBucketSide(-0.54, bucketMat);
     const sideB = this.makeBucketSide(0.54, bucketMat);
     const shell = this.makeBucketShell(bucketMat);
-    const back = makeBox([0.18, 0.74, 1.08], bucketMat, [0.2, -0.18, 0]);
-    back.rotation.z = -0.18;
-    const floor = makeBox([1.1, 0.12, 1.02], bucketMat, [-0.56, -0.5, 0]);
-    floor.rotation.z = 0.18;
+    const back = makeBox([0.2, 0.72, 1.08], bucketMat, [0.18, -0.18, 0]);
+    back.rotation.z = -0.22;
+    const floor = makeBox([1.16, 0.12, 1.02], bucketMat, [-0.56, -0.51, 0]);
+    floor.rotation.z = 0.16;
     const lip = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 1.12, 16), wearMat);
     lip.rotation.x = Math.PI / 2;
     lip.position.set(-1.17, -0.52, 0);
     lip.castShadow = true;
     const cuttingBar = makeBox([0.18, 0.08, 1.12], wearMat, [-1.2, -0.5, 0]);
     cuttingBar.rotation.z = 0.14;
-    this.bucketGroup.add(shell, back, floor, sideA, sideB, lip, cuttingBar);
+    const hingeBoss = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.14, 24), wearMat);
+    hingeBoss.rotation.x = Math.PI / 2;
+    hingeBoss.position.set(0, 0, 0);
+    hingeBoss.castShadow = true;
+    this.bucketGroup.add(shell, back, floor, sideA, sideB, lip, cuttingBar, hingeBoss);
     this.addPin(this.bucketGroup, [-0.18, -0.18, 0], 0.11);
+
+    for (const z of [-0.45, 0.45]) {
+      const hingeEar = makeBox([0.24, 0.42, 0.08], bucketMat, [-0.03, -0.08, z]);
+      hingeEar.rotation.z = -0.18;
+      const linkEar = makeBox([0.18, 0.3, 0.07], bucketMat, [-0.18, -0.18, z]);
+      linkEar.rotation.z = 0.28;
+      this.bucketGroup.add(hingeEar, linkEar);
+    }
+
+    for (const z of [-0.57, 0.57]) {
+      const sideCutter = makeBox([0.42, 0.08, 0.08], wearMat, [-1.19, -0.48, z]);
+      sideCutter.rotation.z = 0.46;
+      sideCutter.castShadow = true;
+      this.bucketGroup.add(sideCutter);
+    }
+
+    for (const z of [-0.34, 0, 0.34]) {
+      const wearStrip = makeBox([0.82, 0.035, 0.045], wearMat, [-0.6, -0.585, z]);
+      wearStrip.rotation.z = 0.16;
+      wearStrip.castShadow = true;
+      this.bucketGroup.add(wearStrip);
+    }
 
     for (const z of [-0.36, -0.12, 0.12, 0.36]) {
       const tooth = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.36, 4), wearMat);
@@ -4076,12 +4908,13 @@ class ExcavatorModel {
 
   private makeBucketShell(material: THREE.Material): THREE.Mesh {
     const profile = [
-      [0.14, 0.04],
-      [0.0, -0.22],
-      [-0.32, -0.43],
-      [-0.74, -0.54],
-      [-1.1, -0.5],
-      [-1.24, -0.4],
+      [0.18, 0.07],
+      [0.1, -0.1],
+      [-0.06, -0.28],
+      [-0.34, -0.45],
+      [-0.72, -0.55],
+      [-1.08, -0.51],
+      [-1.27, -0.42],
     ] as const;
     const zValues = [-0.48, -0.3, -0.12, 0.12, 0.3, 0.48];
     const positions: number[] = [];
@@ -4118,13 +4951,18 @@ class ExcavatorModel {
 
   private makeBucketSide(z: number, material: THREE.Material): THREE.Mesh {
     const vertices = new Float32Array([
-      0.05, 0.18, z,
-      0.22, -0.52, z,
-      -1.12, -0.58, z,
-      -1.22, -0.38, z,
-      -0.76, 0.02, z,
+      0.08, 0.16, z,
+      0.24, -0.18, z,
+      0.14, -0.48, z,
+      -0.34, -0.59, z,
+      -1.14, -0.56, z,
+      -1.36, -0.44, z,
+      -0.84, 0.02, z,
     ]);
-    const indices = z < 0 ? [0, 1, 4, 1, 2, 4, 2, 3, 4] : [0, 4, 1, 1, 4, 2, 2, 4, 3];
+    const indices =
+      z < 0
+        ? [0, 1, 6, 1, 2, 6, 2, 3, 6, 3, 4, 6, 4, 5, 6]
+        : [0, 6, 1, 1, 6, 2, 2, 6, 3, 3, 6, 4, 4, 6, 5];
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
     geometry.setIndex(indices);
@@ -4243,6 +5081,7 @@ class Simulator {
   private readonly orbit = { azimuth: -0.95, elevation: 0.48, distance: 9.0, dragging: false, lastX: 0, lastY: 0 };
   private readonly cameraLookTarget = new THREE.Vector3(0.8, 1.1, 0);
   private readonly previousBucketTip = new THREE.Vector3();
+  private readonly previousBucketPocket = new THREE.Vector3();
   private pinchDistance = 0;
   private cameraMode: CameraMode = "orbit";
   private activeMobileMenu: string | null = null;
@@ -4269,6 +5108,9 @@ class Simulator {
   private bucketLoadSlumpAccumulator = 0;
   private bucketDumpPressureSilence = 0;
   private chassisSinkage = 0;
+  private chassisBurialDepth = 0;
+  private chassisGroundPressure = 0;
+  private chassisBurialCompaction = 0;
   private chassisPitch = 0;
   private chassisRoll = 0;
   private supportHeight = 0;
@@ -4285,6 +5127,8 @@ class Simulator {
     rightGroundSpeed: 0,
     leftRoughness: 0,
     rightRoughness: 0,
+    leftNormalLoad: 1,
+    rightNormalLoad: 1,
     leftGrade: 0,
     rightGrade: 0,
   };
@@ -4335,6 +5179,7 @@ class Simulator {
     this.supportHeight = this.terrain.getHeightAt(0, 0);
     this.excavator.group.position.y = this.supportHeight;
     this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+    this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
     this.buildWorksiteMarkers();
     this.scatterSoilDetails();
     this.warmWorldColliderGrid();
@@ -4385,6 +5230,9 @@ class Simulator {
     this.bucketLoadSlumpAccumulator = 0;
     this.bucketDumpPressureSilence = 0;
     this.chassisSinkage = 0;
+    this.chassisBurialDepth = 0;
+    this.chassisGroundPressure = 0;
+    this.chassisBurialCompaction = 0;
     this.chassisPitch = 0;
     this.chassisRoll = 0;
     this.supportHeight = this.terrain.getHeightAt(0, 0);
@@ -4406,6 +5254,7 @@ class Simulator {
     this.excavator.setBucketLoad(0);
     this.excavator.applyAngles(this.angles);
     this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+    this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
     this.warmWorldColliderGrid();
   }
 
@@ -4722,7 +5571,9 @@ class Simulator {
 
     return {
       visibleDrawableCount,
+      nonGuideVisibleDrawableCount: Math.max(0, visibleDrawableCount - guideDrawableCount),
       physicalDrawableCount,
+      physicsCoverageRatio: physicalDrawableCount / Math.max(1, visibleDrawableCount - guideDrawableCount),
       worldColliderDrawableCount,
       excavatorDrawableCount,
       truckDrawableCount,
@@ -4787,7 +5638,12 @@ class Simulator {
           if (!bucket) {
             continue;
           }
-          this.soilParticlePairCandidates.push(...bucket);
+          for (const particle of bucket) {
+            this.soilParticlePairCandidates.push(particle);
+            if (this.soilParticlePairCandidates.length >= SOIL_PAIR_CANDIDATE_LIMIT) {
+              return this.soilParticlePairCandidates;
+            }
+          }
         }
       }
     }
@@ -4831,7 +5687,12 @@ class Simulator {
           if (!bucket) {
             continue;
           }
-          this.fineGrainPairCandidates.push(...bucket);
+          for (const index of bucket) {
+            this.fineGrainPairCandidates.push(index);
+            if (this.fineGrainPairCandidates.length >= FINE_GRAIN_PAIR_CANDIDATE_LIMIT) {
+              return this.fineGrainPairCandidates;
+            }
+          }
         }
       }
     }
@@ -4973,9 +5834,12 @@ class Simulator {
     return deposited;
   }
 
-  private settleTerrainWithWake(center: THREE.Vector3, radius: number, passes = 1): void {
-    this.terrain.settleAt(center, radius, passes);
-    this.wakeWorldCollidersNear(center, radius + 0.45);
+  private settleTerrainWithWake(center: THREE.Vector3, radius: number, passes = 1): number {
+    const redistributed = this.terrain.settleAt(center, radius, passes);
+    if (redistributed > 0) {
+      this.wakeWorldCollidersNear(center, radius + 0.45);
+    }
+    return redistributed;
   }
 
   private wakeTruckWheelColliders(): number {
@@ -5050,11 +5914,11 @@ class Simulator {
     const shadowMapSize = this.isMobilePerformanceProfile() ? 1024 : 2048;
     sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 72;
-    sun.shadow.camera.left = -30;
-    sun.shadow.camera.right = 30;
-    sun.shadow.camera.top = 30;
-    sun.shadow.camera.bottom = -30;
+    sun.shadow.camera.far = 92;
+    sun.shadow.camera.left = -42;
+    sun.shadow.camera.right = 42;
+    sun.shadow.camera.top = 42;
+    sun.shadow.camera.bottom = -42;
     this.scene.add(sun);
 
     const yardMat = makeMat(0x3d453d, 0.86, 0.03);
@@ -5119,10 +5983,17 @@ class Simulator {
     const dryClodMat = makeMat(0x8a6238, 0.96, 0.02);
     const twigMat = makeMat(0x2f281f, 0.8, 0.06);
 
-    for (let i = 0; i < 430; i += 1) {
+    for (let i = 0; i < 520; i += 1) {
       const aroundDig = i < 104;
       const farField = i > 250;
-      const radius = aroundDig ? 0.85 + Math.random() * 4.25 : farField ? 24.0 + Math.random() * 34.0 : 5.0 + Math.random() * 27.0;
+      const outerField = i > 430;
+      const radius = aroundDig
+        ? 0.85 + Math.random() * 4.25
+        : outerField
+          ? 48.0 + Math.random() * 19.0
+          : farField
+            ? 24.0 + Math.random() * 38.0
+            : 5.0 + Math.random() * 27.0;
       const angle = Math.random() * Math.PI * 2;
       const x = (aroundDig ? DIG_SITE.x : 0) + Math.cos(angle) * radius;
       const z = (aroundDig ? DIG_SITE.z : 0) + Math.sin(angle) * radius;
@@ -5175,6 +6046,14 @@ class Simulator {
       [-48.4, -45.2, 0.35],
       [47.6, -51.4, 0.34],
       [-55.5, 25.2, 0.31],
+      [-64.6, -58.4, 0.44],
+      [-58.2, -63.8, 0.38],
+      [63.5, 58.5, 0.36],
+      [67.2, 50.4, 0.41],
+      [66.5, -6.8, 0.34],
+      [62.4, -18.2, 0.37],
+      [-66.4, 16.8, 0.3],
+      [-62.8, 31.4, 0.33],
     ] as const;
     for (const [x, z, radius] of boulders) {
       const boulder = new THREE.Mesh(new THREE.IcosahedronGeometry(radius, 1), boulderMat);
@@ -5192,9 +6071,10 @@ class Simulator {
       });
     }
 
-    for (let i = 0; i < 16; i += 1) {
-      const x = DIG_SITE.x + (Math.random() - 0.5) * 8.5;
-      const z = DIG_SITE.z + (Math.random() - 0.5) * 5.5;
+    for (let i = 0; i < 24; i += 1) {
+      const outer = i >= 16;
+      const x = outer ? (Math.random() > 0.5 ? 60 + Math.random() * 8 : -60 - Math.random() * 8) : DIG_SITE.x + (Math.random() - 0.5) * 8.5;
+      const z = outer ? -48 + Math.random() * 92 : DIG_SITE.z + (Math.random() - 0.5) * 5.5;
       const twigLength = 0.45 + Math.random() * 0.42;
       const twig = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.018, twigLength, 7), twigMat);
       twig.position.set(x, this.terrain.getHeightAt(x, z) + 0.035, z);
@@ -5223,6 +6103,11 @@ class Simulator {
       [54.2, 41.8, 0.95, -0.35],
       [44.8, -44.6, 1.1, 0.15],
       [57.0, -36.2, 0.92, -0.62],
+      [-63.5, -55.0, 1.35, 0.28],
+      [-60.2, -52.6, 1.05, -0.55],
+      [65.8, 54.2, 1.22, 0.92],
+      [68.0, -12.0, 1.18, -0.08],
+      [-67.0, 24.5, 0.98, 0.48],
     ] as const;
     for (const [x, z, length, yaw] of pipes) {
       const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, length, 18), pipeMat);
@@ -5248,6 +6133,11 @@ class Simulator {
   private bindEvents(): void {
     window.addEventListener("resize", () => this.resize());
     window.addEventListener("keydown", (event) => {
+      if (event.code === "Escape" && this.activeMobileMenu !== null) {
+        event.preventDefault();
+        this.closeMobileMenu();
+        return;
+      }
       if (this.isSimKey(event.code)) {
         event.preventDefault();
         this.keys.add(event.code);
@@ -5325,6 +6215,7 @@ class Simulator {
     window.addEventListener("pointermove", (event) => this.handleMobilePointerMove(event));
     window.addEventListener("pointerup", (event) => this.handleMobilePointerEnd(event));
     window.addEventListener("pointercancel", (event) => this.handleMobilePointerEnd(event));
+    window.addEventListener("pointerdown", (event) => this.handleMobileOutsidePointerDown(event));
   }
 
   private toggleMobileMenu(menu: string): void {
@@ -5338,13 +6229,37 @@ class Simulator {
   }
 
   private syncMobileMenu(): void {
-    this.ui.mobileMenuPanel.classList.toggle("hidden", this.activeMobileMenu === null);
+    const panelOpen = this.activeMobileMenu !== null;
+    this.ui.mobileMenuPanel.classList.toggle("hidden", !panelOpen);
+    this.ui.mobileMenuPanel.hidden = !panelOpen;
+    this.ui.mobileMenuPanel.setAttribute("aria-hidden", String(!panelOpen));
     this.ui.mobileMenuButtons.forEach((button) => {
-      button.classList.toggle("active", button.dataset.mobileMenu === this.activeMobileMenu);
+      const active = button.dataset.mobileMenu === this.activeMobileMenu;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-expanded", String(active));
     });
     this.ui.mobileMenuSections.forEach((section) => {
-      section.classList.toggle("hidden", section.dataset.mobilePanel !== this.activeMobileMenu);
+      const active = section.dataset.mobilePanel === this.activeMobileMenu;
+      section.classList.toggle("hidden", !active);
+      section.hidden = !active;
+      section.setAttribute("aria-hidden", String(!active));
     });
+  }
+
+  private handleMobileOutsidePointerDown(event: PointerEvent): void {
+    if (this.activeMobileMenu === null) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return;
+    }
+    const insideMenuPanel = this.ui.mobileMenuPanel.contains(target);
+    const insideMenuButton = this.ui.mobileMenuButtons.some((button) => button.contains(target));
+    const insideJoystick = this.ui.mobileJoysticks.some((joystick) => joystick.contains(target));
+    if (!insideMenuPanel && !insideMenuButton && !insideJoystick) {
+      this.closeMobileMenu();
+    }
   }
 
   private setCameraMode(mode: CameraMode): void {
@@ -5355,6 +6270,9 @@ class Simulator {
   }
 
   private handleCanvasPointerDown(event: PointerEvent): void {
+    if (this.activeMobileMenu !== null) {
+      this.closeMobileMenu();
+    }
     if (this.cameraMode !== "orbit" && this.cameraMode !== "task") {
       return;
     }
@@ -5426,6 +6344,9 @@ class Simulator {
     knob: HTMLElement,
   ): void {
     event.preventDefault();
+    if (this.activeMobileMenu !== null) {
+      this.closeMobileMenu();
+    }
     const pad = element.querySelector<HTMLElement>(".mobile-stick-pad") ?? element;
     const rect = pad.getBoundingClientRect();
     const radius = Math.max(32, Math.min(rect.width, rect.height) * 0.36);
@@ -5536,6 +6457,7 @@ class Simulator {
         return {
           bucketLoad: this.bucketLoad,
           bucketTransitLoad: this.bucketTransitLoad,
+          bucketSoilSupportMass: this.bucketSoilSupportMass(),
           truckLoad: this.truckLoad,
           totalExcavated: this.totalExcavated,
           digHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
@@ -5554,6 +6476,9 @@ class Simulator {
           activeFineGrainVolume: this.activeFineGrainVolume(),
           settledFineGrainVolume: this.fineGrainSettledVolume,
           chassisSinkage: this.chassisSinkage,
+          chassisBurialDepth: this.chassisBurialDepth,
+          chassisGroundPressure: this.chassisGroundPressure,
+          chassisBurialCompaction: this.chassisBurialCompaction,
           chassisPitch: this.chassisPitch,
           chassisRoll: this.chassisRoll,
           supportHeight: this.supportHeight,
@@ -5623,6 +6548,7 @@ class Simulator {
 
         this.excavator.applyAngles(previousAngles);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         Object.assign(this.angles, diggingAngles);
         this.excavator.applyAngles(this.angles);
         this.velocities.boom = -0.04;
@@ -6101,6 +7027,7 @@ class Simulator {
         Object.assign(this.angles, { swing: 0, boom: 0.42, stick: -1.08, bucket: ANGLE_LIMITS.bucket.max });
         this.excavator.applyAngles(this.angles);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         this.velocities.bucket = 0.62;
 
         const bucketLoadBeforeDump = this.bucketLoad;
@@ -6151,8 +7078,11 @@ class Simulator {
           dumpMaxStepMs,
           soilDynamicCollisionBudget: SOIL_DYNAMIC_COLLISION_BUDGET,
           fineGrainDynamicCollisionBudget: FINE_GRAIN_DYNAMIC_COLLISION_BUDGET,
+          soilPairCandidateLimit: SOIL_PAIR_CANDIDATE_LIMIT,
+          fineGrainPairCandidateLimit: FINE_GRAIN_PAIR_CANDIDATE_LIMIT,
           bucketSoilRuntimeCollisionsEnabled: BUCKET_SOIL_RUNTIME_COLLISIONS_ENABLED,
           bucketSoilRuntimePayloadEnabled: BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED,
+          bucketSoilSupportMassEnabled: BUCKET_SOIL_SUPPORT_MASS_ENABLED,
           bucketSoilFastDumpEnabled: BUCKET_SOIL_FAST_DUMP_ENABLED,
           activeSoilParticles,
           activeFineGrains,
@@ -6185,6 +7115,19 @@ class Simulator {
         const terrainStepMs = performance.now() - terrainStarted;
         const terrainGain = this.terrain.terrainVolumeDelta() - terrainBefore;
 
+        this.truckLoad = TRUCK_CAPACITY - 0.16;
+        this.truck.updateLoad(this.truckLoad);
+        const overflowOrigin = this.truck.group.localToWorld(new THREE.Vector3(0.32, 2.34, 0.28));
+        const overflowVelocity = new THREE.Vector3(0.12, -0.28, 0.18).applyQuaternion(this.truck.group.quaternion);
+        const overflowTruckBefore = this.truckLoad;
+        const overflowTerrainBefore = this.terrain.terrainVolumeDelta();
+        const overflowStarted = performance.now();
+        const overflowDeposit = this.depositBucketSpillFast(overflowOrigin, volume, 0.92, overflowVelocity);
+        const overflowStepMs = performance.now() - overflowStarted;
+        const overflowTruckGain = this.truckLoad - overflowTruckBefore;
+        const overflowTerrainGain = this.terrain.terrainVolumeDelta() - overflowTerrainBefore;
+        const overflowMassError = Math.abs(volume - overflowDeposit.truckVolume - overflowDeposit.terrainDeposited);
+
         this.updateUi(0);
         return {
           truckTarget: truckDeposit.target,
@@ -6196,11 +7139,24 @@ class Simulator {
           terrainFallTime: terrainDeposit.fallTime,
           terrainImpactSpeed: terrainDeposit.impactSpeed,
           terrainVolume: terrainDeposit.terrainVolume,
+          terrainDeposited: terrainDeposit.terrainDeposited,
           terrainGain,
           terrainLandingDistance: terrainDeposit.point.distanceTo(terrainOrigin),
+          terrainFootprintRadius: terrainDeposit.footprintRadius,
+          terrainFootprintSlope: terrainDeposit.footprintSlope,
+          terrainFootprintShiftDistance: terrainDeposit.footprintShiftDistance,
+          overflowTarget: overflowDeposit.target,
+          overflowTruckVolume: overflowDeposit.truckVolume,
+          overflowTerrainVolume: overflowDeposit.terrainVolume,
+          overflowTerrainDeposited: overflowDeposit.terrainDeposited,
+          overflowTruckGain,
+          overflowTerrainGain,
+          overflowFootprintRadius: overflowDeposit.footprintRadius,
+          overflowFootprintShiftDistance: overflowDeposit.footprintShiftDistance,
+          overflowMassError,
           activeParticles: this.soilParticles.length,
           activeFineGrains: this.fineGrainCount(),
-          stepMs: truckStepMs + terrainStepMs,
+          stepMs: truckStepMs + terrainStepMs + overflowStepMs,
         };
       },
       forceBucketKinematics: () => {
@@ -6214,6 +7170,7 @@ class Simulator {
         Object.assign(this.angles, saved);
         this.excavator.applyAngles(this.angles);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         this.updateUi(0);
         const current = this.excavator.bucketLinkageDiagnostics();
         return {
@@ -6235,11 +7192,13 @@ class Simulator {
         this.excavator.applyAngles(this.angles);
         this.excavator.setBucketLoad(this.bucketLoad);
         const loadStatsBeforeSlump = this.excavator.bucketLoadDistributionStats();
+        const loadVolumeBeforeSlump = this.excavator.bucketLoadSurfaceVolume();
         const loadHeightBeforeSlump = loadStatsBeforeSlump.totalHeight;
         Object.assign(this.angles, { swing: 0, boom: 0.54, stick: -1.16, bucket: -1.92 });
         this.excavator.applyAngles(this.angles);
         const loadSlumpMoved = this.excavator.slumpBucketLoadUnderGravity(1.1, 2.2);
         const loadStatsAfterSlump = this.excavator.bucketLoadDistributionStats();
+        const loadVolumeAfterSlump = this.excavator.bucketLoadSurfaceVolume();
 
         const probe = this.excavator.bucketGroup.localToWorld(new THREE.Vector3(-0.56, -0.18, 0.02));
         const surface = this.excavator.bucketLoadSurfaceAtWorld(probe);
@@ -6314,6 +7273,7 @@ class Simulator {
         }
 
         loadBeforeSpill = this.bucketLoad;
+        const loadVolumeBeforeSpill = this.excavator.bucketLoadSurfaceVolume();
         const heightBeforeSpill = this.excavator.bucketLoadDistributionStats().totalHeight;
         Object.assign(this.angles, { swing: 0, boom: 0.54, stick: -1.16, bucket: 0.28 });
         this.excavator.applyAngles(this.angles);
@@ -6322,6 +7282,7 @@ class Simulator {
         spilledVolume = spill.spilledVolume;
         this.bucketLoad = Math.max(0, this.bucketLoad - spilledVolume);
         loadAfterSpill = this.bucketLoad;
+        const loadVolumeAfterSpill = this.excavator.bucketLoadSurfaceVolume();
         spillHeightDrop = Math.max(0, heightBeforeSpill - this.excavator.bucketLoadDistributionStats().totalHeight);
         spillVolumeConserved = Math.abs(loadBeforeSpill - loadAfterSpill - spilledVolume);
 
@@ -6330,6 +7291,11 @@ class Simulator {
           bucketLoad: this.bucketLoad,
           surfaceHeight: surface?.loadHeight ?? 0,
           surfaceNormalY: surface?.normal.y ?? 0,
+          loadVolumeBeforeSlump,
+          loadVolumeAfterSlump,
+          loadVolumeBeforeSpill,
+          loadVolumeAfterSpill,
+          loadMassSurfaceError: Math.abs(loadVolumeAfterSpill - this.bucketLoad),
           loadCenterShiftX: loadStatsAfterSlump.centerX - loadStatsBeforeSlump.centerX,
           loadCenterShiftZ: loadStatsAfterSlump.centerZ - loadStatsBeforeSlump.centerZ,
           loadHeightConserved: Math.abs(loadStatsAfterSlump.totalHeight - loadHeightBeforeSlump),
@@ -6361,7 +7327,8 @@ class Simulator {
         const directionalGate = (
           previousTip: THREE.Vector3,
           currentTip: THREE.Vector3,
-          pocket: THREE.Vector3,
+          previousPocket: THREE.Vector3,
+          currentPocket: THREE.Vector3,
           velocities: ExcavatorVelocities,
           dt: number,
         ) => {
@@ -6369,20 +7336,35 @@ class Simulator {
           const strokeDistance = stroke.length();
           const tipSpeed = strokeDistance / Math.max(dt, 0.001);
           const strokeDirection = strokeDistance > 0.0001 ? stroke.clone().divideScalar(strokeDistance) : new THREE.Vector3();
-          const pocketDirection = pocket.clone().sub(currentTip);
+          const pocketDirection = currentPocket.clone().sub(currentTip);
           if (pocketDirection.lengthSq() > 0.000001) {
             pocketDirection.normalize();
           }
           const pocketPull = strokeDistance > 0.0001 ? strokeDirection.dot(pocketDirection) : 0;
+          const pocketStroke = currentPocket.clone().sub(previousPocket);
+          const mouthEntrySpeed = clamp(
+            (Math.max(0, stroke.dot(pocketDirection)) + Math.max(0, pocketStroke.dot(pocketDirection)) * 0.35) /
+              Math.max(dt, 0.001),
+            0,
+            1.6,
+          );
+          const mouthEscapeSpeed = clamp(
+            (Math.max(0, -stroke.dot(pocketDirection)) + Math.max(0, -pocketStroke.dot(pocketDirection)) * 0.25) /
+              Math.max(dt, 0.001),
+            0,
+            1.6,
+          );
           const curlInSpeed = Math.max(0, -velocities.bucket);
           const stickPullSpeed = Math.max(0, -velocities.stick);
           const openOutSpeed = Math.max(0, velocities.bucket);
-          const reverseAlignmentPenalty = Math.max(0, -pocketPull) * clamp(openOutSpeed * 1.2, 0, 0.5);
+          const reverseAlignmentPenalty =
+            Math.max(0, -pocketPull) * clamp(openOutSpeed * 1.2, 0, 0.5) + mouthEscapeSpeed * 0.18;
           const rawGate = clamp(
-            0.2 +
+            0.16 +
               curlInSpeed * 0.88 +
               stickPullSpeed * 0.42 +
-              Math.max(0, pocketPull) * 0.38 -
+              Math.max(0, pocketPull) * 0.34 +
+              mouthEntrySpeed * 0.24 -
               reverseAlignmentPenalty -
               openOutSpeed * 0.42,
             0,
@@ -6391,8 +7373,9 @@ class Simulator {
           const scooping =
             curlInSpeed > 0.035 ||
             stickPullSpeed > 0.035 ||
-            (tipSpeed > 0.08 && pocketPull > 0.18 && openOutSpeed < 0.08);
-          return { pocketPull, gate: scooping ? rawGate : 0 };
+            (tipSpeed > 0.08 && pocketPull > 0.18 && openOutSpeed < 0.08) ||
+            (mouthEntrySpeed > 0.12 && openOutSpeed < 0.08);
+          return { pocketPull, mouthEntrySpeed, gate: scooping ? rawGate : 0 };
         };
         const runPass = (
           site: THREE.Vector3,
@@ -6418,7 +7401,9 @@ class Simulator {
 
           this.excavator.applyAngles(previousAngles);
           const previousTip = this.excavator.bucketTipWorld();
+          const previousPocket = this.excavator.bucketPocketWorld();
           this.previousBucketTip.copy(previousTip);
+          this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
           Object.assign(this.angles, currentAngles);
           this.excavator.applyAngles(this.angles);
           Object.assign(this.velocities, velocities);
@@ -6427,12 +7412,13 @@ class Simulator {
           this.updateSoil(0.14);
           const currentTip = this.excavator.bucketTipWorld();
           const pocket = this.excavator.bucketPocketWorld();
-          const gate = directionalGate(previousTip, currentTip, pocket, velocities, 0.14);
+          const gate = directionalGate(previousTip, currentTip, previousPocket, pocket, velocities, 0.14);
 
           return {
             removed: this.totalExcavated - beforeTotal,
             bucketLoad: this.bucketLoad,
             pocketPull: gate.pocketPull,
+            mouthEntrySpeed: gate.mouthEntrySpeed,
             captureGate: gate.gate,
             heightDrop: beforeHeight - this.terrain.getHeightAt(site.x, site.z),
             pressure: this.pressure,
@@ -6457,11 +7443,13 @@ class Simulator {
           scoopRemoved: scoop.removed,
           scoopBucketLoad: scoop.bucketLoad,
           scoopPocketPull: scoop.pocketPull,
+          scoopMouthEntrySpeed: scoop.mouthEntrySpeed,
           scoopCaptureGate: scoop.captureGate,
           scoopHeightDrop: scoop.heightDrop,
           reverseRemoved: reverse.removed,
           reverseBucketLoad: reverse.bucketLoad,
           reversePocketPull: reverse.pocketPull,
+          reverseMouthEntrySpeed: reverse.mouthEntrySpeed,
           reverseCaptureGate: reverse.captureGate,
           reverseHeightDrop: reverse.heightDrop,
           reversePressure: reverse.pressure,
@@ -6534,6 +7522,7 @@ class Simulator {
         this.excavator.applyAngles(this.angles);
         this.excavator.setBucketLoad(this.bucketLoad);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         this.updateUi(0);
 
         return {
@@ -6560,9 +7549,11 @@ class Simulator {
         this.excavator.group.rotation.set(0, 0, 0);
         this.excavator.applyAngles(this.angles);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
 
         const samples = this.excavator.hydraulicCollisionSamples();
         const pinSamples = this.excavator.visualPinCollisionSamples();
+        const kinematics = this.excavator.hydraulicKinematicsDiagnostics(this.angles);
         const objectSample = samples.find((sample) => sample.key === "stick-cylinder-0.50") ?? samples.find((sample) => sample.action === "stick") ?? samples[0];
         const pinObjectSample = pinSamples.find((sample) => sample.key === "stick-link-pin") ?? pinSamples.find((sample) => sample.action === "stick") ?? pinSamples[0];
         const subsoilSamples = this.excavator.armSubsoilSamples().filter((sample) =>
@@ -6676,6 +7667,13 @@ class Simulator {
           subsoilResisted: subsoilResult.resisted,
           subsoilMaxSubmerged: subsoilResult.maxSubmerged,
           subsoilAverageSubmerged: subsoilResult.averageSubmerged,
+          boomCylinderStroke: kinematics.boomCylinderStroke,
+          stickCylinderStroke: kinematics.stickCylinderStroke,
+          bucketCylinderStroke: kinematics.bucketCylinderStroke,
+          boomStrokeRatio: kinematics.boomStrokeRatio,
+          stickStrokeRatio: kinematics.stickStrokeRatio,
+          bucketStrokeRatio: kinematics.bucketStrokeRatio,
+          bucketLinkSymmetryError: kinematics.bucketLinkSymmetryError,
         };
       },
       forceTrackPass: () => {
@@ -7066,8 +8064,10 @@ class Simulator {
         let movedMass = 0;
         let upperSampleCount = 0;
         let counterweightSamplePresent = false;
+        let counterweightTopSamplePresent = false;
         let engineSamplePresent = false;
         let cabSamplePresent = false;
+        let cabCornerSamplePresent = false;
         let roofSamplePresent = false;
         let frontServiceSamplePresent = false;
         let exhaustSamplePresent = false;
@@ -7135,11 +8135,13 @@ class Simulator {
             upperSampleKeys.has("counterweight-center") &&
             upperSampleKeys.has("counterweight-left") &&
             upperSampleKeys.has("counterweight-right");
+          counterweightTopSamplePresent = upperSampleKeys.has("counterweight-top");
           engineSamplePresent =
             upperSampleKeys.has("engine-center") &&
             upperSampleKeys.has("engine-left") &&
             upperSampleKeys.has("engine-right");
           cabSamplePresent = upperSampleKeys.has("cab-low");
+          cabCornerSamplePresent = upperSampleKeys.has("cab-front") && upperSampleKeys.has("cab-rear");
           roofSamplePresent = upperSampleKeys.has("cab-roof");
           frontServiceSamplePresent = upperSampleKeys.has("front-service");
           const exhaustSample = upperSamples.find((sample) => sample.key === "exhaust-mid");
@@ -7177,11 +8179,13 @@ class Simulator {
             upperSampleKeys.has("counterweight-center") &&
             upperSampleKeys.has("counterweight-left") &&
             upperSampleKeys.has("counterweight-right");
+          counterweightTopSamplePresent = upperSampleKeys.has("counterweight-top");
           engineSamplePresent =
             upperSampleKeys.has("engine-center") &&
             upperSampleKeys.has("engine-left") &&
             upperSampleKeys.has("engine-right");
           cabSamplePresent = upperSampleKeys.has("cab-low");
+          cabCornerSamplePresent = upperSampleKeys.has("cab-front") && upperSampleKeys.has("cab-rear");
           roofSamplePresent = upperSampleKeys.has("cab-roof");
           frontServiceSamplePresent = upperSampleKeys.has("front-service");
           exhaustSamplePresent =
@@ -7205,8 +8209,10 @@ class Simulator {
           movedMass,
           upperSampleCount,
           counterweightSamplePresent,
+          counterweightTopSamplePresent,
           engineSamplePresent,
           cabSamplePresent,
+          cabCornerSamplePresent,
           roofSamplePresent,
           frontServiceSamplePresent,
           exhaustSamplePresent,
@@ -7233,23 +8239,63 @@ class Simulator {
         const beforeStick = this.angles.stick;
         this.excavator.applyAngles(this.angles);
         const result = this.resolveArmTruckCollisions(previousAngles);
+        const afterStick = this.angles.stick;
+        const velocityAfter = this.velocities.stick;
         const sweptStart = this.truck.group.localToWorld(new THREE.Vector3(-3.1, 1.03, 0));
         const sweptEnd = this.truck.group.localToWorld(new THREE.Vector3(-1.1, 1.03, 0));
         const sweptRadius = 0.12;
         const sweptOnlyCurrentPenetration = this.truck.resolveSolidCollision(sweptEnd, sweptRadius)?.penetration ?? 0;
         const sweptOnlyHit = this.resolveSweptTruckSampleHit(sweptStart, sweptEnd, sweptRadius);
+        let bucketJointBlocked = false;
+        let bucketTruckSampleHit = false;
+        let bucketTruckPenetration = 0;
+        let bucketHitSampleKey = "";
+        const previousBucketAngles: ExcavatorAngles = { swing: 0, boom: 0.44, stick: -1.18, bucket: -2.58 };
+        const bucketAngles: ExcavatorAngles = { ...previousBucketAngles, bucket: -1.34 };
+        Object.assign(this.angles, bucketAngles);
+        this.excavator.group.rotation.set(0, this.truck.group.rotation.y, 0);
+        this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
+        this.excavator.applyAngles(this.angles);
+        const bucketSample =
+          this.excavator.armCollisionSamples().find((sample) => sample.key?.startsWith("bucket-tooth-tip")) ??
+          this.excavator.armCollisionSamples().find((sample) => sample.key === "bucket-pocket") ??
+          this.excavator.armCollisionSamples().find((sample) => sample.action === "bucket");
+        if (bucketSample) {
+          const truckProbe = this.truck.group.localToWorld(
+            new THREE.Vector3(-2.12, clamp(bucketSample.point.y - this.truck.group.position.y, 0.58, 1.42), 0),
+          );
+          const bucketOffset = bucketSample.point.clone().sub(this.excavator.group.position);
+          this.excavator.group.position.x = truckProbe.x - bucketOffset.x;
+          this.excavator.group.position.z = truckProbe.z - bucketOffset.z;
+          this.excavator.group.position.y = this.terrain.getHeightAt(this.excavator.group.position.x, this.excavator.group.position.z);
+          this.excavator.applyAngles(this.angles);
+          this.velocities.bucket = 0.92;
+          this.collisionCooldown = 0;
+          const bucketResult = this.resolveArmTruckCollisions(previousBucketAngles);
+          bucketJointBlocked = bucketResult.blockedActions.includes("bucket");
+          bucketTruckSampleHit = bucketResult.bucketTruckSampleHit;
+          bucketTruckPenetration = bucketResult.bucketTruckPenetration;
+          bucketHitSampleKey = bucketResult.hitAction === "bucket" ? bucketResult.hitSampleKey : bucketSample.key ?? "bucket";
+        }
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         this.updateUi(0);
         return {
           collided: result.collided,
-          angleBlocked: this.angles.stick < beforeStick - 0.08 && result.blockedActions.includes("stick"),
+          angleBlocked: afterStick < beforeStick - 0.08 && result.blockedActions.includes("stick"),
           beforeStick,
-          afterStick: this.angles.stick,
-          velocityAfter: this.velocities.stick,
+          afterStick,
+          velocityAfter,
           pressure: this.pressure,
           collisionCount: this.collisionCount,
           penetration: result.penetration,
           blockedActions: result.blockedActions,
+          hitSampleKey: result.hitSampleKey,
+          hitAction: result.hitAction,
+          bucketTruckSampleHit,
+          bucketTruckPenetration,
+          bucketJointBlocked,
+          bucketHitSampleKey,
           sweptOnlyCurrentPenetration,
           sweptOnlyPenetration: sweptOnlyHit?.penetration ?? 0,
           sweptOnlySteps: sweptOnlyHit?.sweptSteps ?? 0,
@@ -7300,6 +8346,7 @@ class Simulator {
         const afterSurface = this.terrain.getHeightAt(sweepCenter.x, sweepCenter.z);
         const afterBerm = sampleBerm();
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         this.updateUi(0);
         return {
           resisted: result.resisted,
@@ -7307,6 +8354,8 @@ class Simulator {
           beforeStick,
           afterStick: this.angles.stick,
           velocityAfter: this.velocities.stick,
+          inputDrag: result.drag,
+          inputBlockingEnabled: ARM_SUBSOIL_BLOCKING_ENABLED,
           maxSubmerged: result.maxSubmerged,
           averageSubmerged: result.averageSubmerged,
           displacedVolume: result.displacedVolume,
@@ -7563,6 +8612,7 @@ class Simulator {
         }
 
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         this.updateExcavatorSupport(0.2, forward);
         this.updateUi(0);
         return {
@@ -7615,11 +8665,13 @@ class Simulator {
         this.truck.updateLoad(this.truckLoad);
         this.truck.settleLoad(2);
         const loadStatsBeforeSlump = this.truck.loadDistributionStats();
+        const loadVolumeBeforeSlump = this.truck.loadSurfaceVolume();
         const loadHeightBeforeSlump = loadStatsBeforeSlump.totalHeight;
         this.truck.group.rotation.x = 0.16;
         this.truck.group.rotation.z = -0.12;
         const loadSlumpMoved = this.truck.slumpLoadUnderGravity(1.2, 2.2);
         const loadStatsAfterSlump = this.truck.loadDistributionStats();
+        const loadVolumeAfterSlump = this.truck.loadSurfaceVolume();
         const state = this.truck.updatePhysics(this.terrain, this.truckLoad, 0.95, true);
         this.wakeTruckWheelColliders();
         const afterRut = this.terrain.getHeightAt(roughWheel.x, roughWheel.z);
@@ -7634,6 +8686,10 @@ class Simulator {
         let loadSurfaceObjectVelocity = 0;
         let spilledVolume = 0;
         let spillTerrainGain = 0;
+        let spillTerrainDeposited = 0;
+        let spillFootprintRadius = 0;
+        let spillFootprintSlope = 0;
+        let spillFootprintShiftDistance = 0;
         let loadHeightDropFromSpill = 0;
         let impactLoadCenterShiftX = 0;
         let impactLoadCenterShiftZ = 0;
@@ -7675,16 +8731,23 @@ class Simulator {
         }
 
         const loadStatsBeforeSpill = this.truck.loadDistributionStats();
+        const loadVolumeBeforeImpact = this.truck.loadSurfaceVolume();
         this.truck.group.rotation.x = 0.24;
         this.truck.group.rotation.z = -0.22;
         this.truck.applyImpact(this.truck.group.localToWorld(new THREE.Vector3(1.9, 1.5, 0.84)), new THREE.Vector3(0, -1, 0.75), 3.8);
         const loadStatsAfterImpact = this.truck.loadDistributionStats();
+        const loadVolumeAfterImpact = this.truck.loadSurfaceVolume();
         impactLoadCenterShiftX = loadStatsAfterImpact.centerX - loadStatsBeforeSpill.centerX;
         impactLoadCenterShiftZ = loadStatsAfterImpact.centerZ - loadStatsBeforeSpill.centerZ;
         impactLoadHeightConserved = Math.abs(loadStatsAfterImpact.totalHeight - loadStatsBeforeSpill.totalHeight);
         const spill = this.spillTruckLoadToTerrain(0.9, 3.6);
         spilledVolume = spill.spilledVolume;
         spillTerrainGain = spill.terrainGain;
+        spillTerrainDeposited = spill.terrainDeposited;
+        spillFootprintRadius = spill.footprintRadius;
+        spillFootprintSlope = spill.footprintSlope;
+        spillFootprintShiftDistance = spill.footprintShiftDistance;
+        const loadVolumeAfterSpill = this.truck.loadSurfaceVolume();
         loadHeightDropFromSpill = Math.max(0, loadStatsBeforeSpill.totalHeight - this.truck.loadDistributionStats().totalHeight);
 
         this.updateUi(0);
@@ -7698,6 +8761,22 @@ class Simulator {
           rutDrop: Math.max(state.tireRutDrop, beforeRut - afterRut),
           bodyYDrop: beforeY - this.truck.group.position.y,
           supportSpread: state.supportSpread,
+          tireLoadSkew: state.tireLoadSkew,
+          tireLoadPitchBias: state.tireLoadPitchBias,
+          tireLoadRollBias: state.tireLoadRollBias,
+          tireContactRatio: state.tireContactRatio,
+          tireContactSkew: state.tireContactSkew,
+          tireLightContactCount: state.tireLightContactCount,
+          tireRollingResistance: state.tireRollingResistance,
+          tireTractionFactor: state.tireTractionFactor,
+          tireSlipDemand: state.tireSlipDemand,
+          loadVolumeBeforeSlump,
+          loadVolumeAfterSlump,
+          loadVolumeBeforeImpact,
+          loadVolumeAfterImpact,
+          impactLoadVolumeConserved: Math.abs(loadVolumeAfterImpact - loadVolumeBeforeImpact),
+          loadVolumeAfterSpill,
+          loadMassSurfaceError: Math.abs(loadVolumeAfterSpill - this.truckLoad),
           loadCenterShiftX: loadStatsAfterSlump.centerX - loadStatsBeforeSlump.centerX,
           loadCenterShiftZ: loadStatsAfterSlump.centerZ - loadStatsBeforeSlump.centerZ,
           loadHeightConserved: Math.abs(loadStatsAfterSlump.totalHeight - loadHeightBeforeSlump),
@@ -7715,6 +8794,10 @@ class Simulator {
           spilledVolume,
           loadAfterSpill: this.truckLoad,
           spillTerrainGain,
+          spillTerrainDeposited,
+          spillFootprintRadius,
+          spillFootprintSlope,
+          spillFootprintShiftDistance,
           loadHeightDropFromSpill,
         };
       },
@@ -7795,6 +8878,8 @@ class Simulator {
           rightRoughness: this.trackTraction.rightRoughness,
           leftSlip: this.trackTraction.leftSlip,
           rightSlip: this.trackTraction.rightSlip,
+          leftNormalLoad: this.trackTraction.leftNormalLoad,
+          rightNormalLoad: this.trackTraction.rightNormalLoad,
           lateralSlope: this.trackTraction.lateralSlope,
           lateralSlipSpeed: this.trackTraction.lateralSlipSpeed,
           lateralSlipDistance,
@@ -7828,6 +8913,7 @@ class Simulator {
         let carriedMass = 0;
         const testBucketLoad = BUCKET_CAPACITY * 0.34;
         const testTransitLoad = 0.08;
+        const soilSupportMass = testBucketLoad * 0.62 + testTransitLoad * 0.4;
         this.bucketLoad = testBucketLoad;
         this.bucketTransitLoad = testTransitLoad;
         this.excavator.setBucketLoad(this.bucketLoad);
@@ -7883,6 +8969,7 @@ class Simulator {
           unloadedSinkage,
           loadedSinkage,
           carriedMass,
+          soilSupportMass,
           unloadedStability,
           soilOnlyStability,
           objectStability,
@@ -7936,6 +9023,9 @@ class Simulator {
         let pairDistanceBefore = 0;
         let pairDistanceAfter = 0;
         let pairAngularSpeed = 0;
+        let candidatePairDistanceBefore = 0;
+        let candidatePairDistanceAfter = 0;
+        let candidatePairAngularSpeed = 0;
         let softGroundDrop = 0;
         let hardGroundDrop = 0;
         let softRutDrop = 0;
@@ -8287,6 +9377,38 @@ class Simulator {
           pairAngularSpeed = debris.angularVelocity.length() + hard.angularVelocity.length();
         }
 
+        if (debris && hard) {
+          const distractors = this.worldColliders
+            .filter((collider) => collider !== debris && collider !== hard && !collider.immovable)
+            .slice(0, WORLD_COLLIDER_PAIR_ACTIVE_LIMIT);
+          const savedDistractorSleeping = distractors.map((collider) => collider.sleeping);
+          const candidateBase = new THREE.Vector3(1.15, 0, 3.65);
+          const ground = this.terrain.getHeightAt(candidateBase.x, candidateBase.z);
+          const sharedY = ground + Math.max(debris.groundOffset, hard.groundOffset) + 0.02;
+          const overlapDistance = Math.max(0.06, (debris.radius + hard.radius) * 0.42);
+          for (const collider of distractors) {
+            collider.sleeping = false;
+          }
+          debris.mesh.position.set(candidateBase.x, sharedY, candidateBase.z);
+          hard.mesh.position.set(candidateBase.x + overlapDistance, sharedY, candidateBase.z);
+          debris.velocity.set(0.22, 0, 0);
+          hard.velocity.set(-0.1, 0, 0);
+          debris.angularVelocity.set(0, 0, 0);
+          hard.angularVelocity.set(0, 0, 0);
+          debris.sleeping = false;
+          hard.sleeping = false;
+          this.worldUpdateCandidates.length = 0;
+          this.worldUpdateCandidates.push(debris, hard);
+          this.worldColliderGridDirty = true;
+          candidatePairDistanceBefore = debris.mesh.position.distanceTo(hard.mesh.position);
+          this.resolveLooseObjectPairCollisions();
+          candidatePairDistanceAfter = debris.mesh.position.distanceTo(hard.mesh.position);
+          candidatePairAngularSpeed = debris.angularVelocity.length() + hard.angularVelocity.length();
+          distractors.forEach((collider, index) => {
+            collider.sleeping = savedDistractorSleeping[index];
+          });
+        }
+
         if (hard) {
           const measureGroundLoad = (x: number, z: number) => {
             const savedPosition = hard.mesh.position.clone();
@@ -8386,6 +9508,9 @@ class Simulator {
           pairDistanceBefore,
           pairDistanceAfter,
           pairAngularSpeed,
+          candidatePairDistanceBefore,
+          candidatePairDistanceAfter,
+          candidatePairAngularSpeed,
           softGroundDrop,
           hardGroundDrop,
           softRutDrop,
@@ -8413,6 +9538,8 @@ class Simulator {
             capsuleTerrainPenetrationAfter: 0,
             capsuleTerrainLift: 0,
             capsuleTerrainSlopeKick: 0,
+            capsuleTerrainContactCount: 0,
+            capsuleTerrainSupportSpan: 0,
             finalSleeping: false,
             pressure: this.pressure,
           };
@@ -8467,6 +9594,8 @@ class Simulator {
         let capsuleTerrainPenetrationAfter = 0;
         let capsuleTerrainLift = 0;
         let capsuleTerrainSlopeKick = 0;
+        let capsuleTerrainContactCount = 0;
+        let capsuleTerrainSupportSpan = 0;
 
         if (capsuleCollider?.capsule) {
           const axis = new THREE.Vector3(1, 0, 0);
@@ -8482,12 +9611,18 @@ class Simulator {
 
           const endPoint = capsuleCenter.clone().addScaledVector(axis, halfLength);
           this.terrain.raiseAt(endPoint, 0.48, 0.42, 0);
-          capsuleTerrainPenetrationBefore = this.worldColliderTerrainSupport(capsuleCollider).penetration;
+          const capsuleSupportBefore = this.worldColliderTerrainSupport(capsuleCollider);
+          capsuleTerrainPenetrationBefore = capsuleSupportBefore.penetration;
+          capsuleTerrainContactCount = capsuleSupportBefore.contactCount;
+          capsuleTerrainSupportSpan = capsuleSupportBefore.supportSpan;
           const beforeCapsuleY = capsuleCollider.mesh.position.y;
           for (let i = 0; i < 3; i += 1) {
             this.updateLooseWorldObjects(1 / 60);
           }
-          capsuleTerrainPenetrationAfter = this.worldColliderTerrainSupport(capsuleCollider).penetration;
+          const capsuleSupportAfter = this.worldColliderTerrainSupport(capsuleCollider);
+          capsuleTerrainPenetrationAfter = capsuleSupportAfter.penetration;
+          capsuleTerrainContactCount = Math.max(capsuleTerrainContactCount, capsuleSupportAfter.contactCount);
+          capsuleTerrainSupportSpan = Math.max(capsuleTerrainSupportSpan, capsuleSupportAfter.supportSpan);
           capsuleTerrainLift = capsuleCollider.mesh.position.y - beforeCapsuleY;
           capsuleTerrainSlopeKick = Math.hypot(capsuleCollider.velocity.x, capsuleCollider.velocity.z);
         }
@@ -8529,6 +9664,8 @@ class Simulator {
           capsuleTerrainPenetrationAfter,
           capsuleTerrainLift,
           capsuleTerrainSlopeKick,
+          capsuleTerrainContactCount,
+          capsuleTerrainSupportSpan,
           finalSleeping,
           pressure,
         };
@@ -8690,6 +9827,7 @@ class Simulator {
         Object.assign(this.angles, savedAngles);
         this.excavator.applyAngles(this.angles);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         this.updateUi(0);
 
         const liftable = this.worldColliders.filter((collider) => !collider.immovable);
@@ -8769,6 +9907,8 @@ class Simulator {
           fineGrainPairCollisionsEnabled: FINE_GRAIN_PAIR_COLLISIONS_ENABLED,
           soilDynamicCollisionBudget: SOIL_DYNAMIC_COLLISION_BUDGET,
           fineGrainDynamicCollisionBudget: FINE_GRAIN_DYNAMIC_COLLISION_BUDGET,
+          soilPairCandidateLimit: SOIL_PAIR_CANDIDATE_LIMIT,
+          fineGrainPairCandidateLimit: FINE_GRAIN_PAIR_CANDIDATE_LIMIT,
           bucketLoad: this.bucketLoad,
         };
       },
@@ -8792,6 +9932,7 @@ class Simulator {
         const farWetland = this.terrain.getSurfaceConditionAt(surfacePoints.farWetland.x, surfacePoints.farWetland.z);
         const basaltShelf = this.terrain.getSurfaceConditionAt(surfacePoints.basaltShelf.x, surfacePoints.basaltShelf.z);
         const outerHaulRoad = this.terrain.getSurfaceConditionAt(surfacePoints.outerHaulRoad.x, surfacePoints.outerHaulRoad.z);
+        const farSpoil = this.terrain.getSurfaceConditionAt(surfacePoints.farSpoil.x, surfacePoints.farSpoil.z);
         const heights = Object.values(surfacePoints).map((point) => this.terrain.getHeightAt(point.x, point.z));
         const materialZones = [
           wetland.wetness > 0.6,
@@ -8801,6 +9942,7 @@ class Simulator {
           farWetland.wetness > 0.6,
           basaltShelf.hardpack > 0.7,
           outerHaulRoad.compaction > 0.62,
+          farSpoil.trackSinkMultiplier > 1.45 && farSpoil.reposeTan < SOIL_REPOSE_TAN * 0.9,
         ].filter(Boolean).length;
         const farColliderCount = this.worldColliders.filter(
           (collider) => Math.hypot(collider.mesh.position.x, collider.mesh.position.z) > 38,
@@ -8816,6 +9958,8 @@ class Simulator {
           outerWetness: farWetland.wetness,
           basaltHardpack: basaltShelf.hardpack,
           outerHaulCompaction: outerHaulRoad.compaction,
+          looseSpoilSink: farSpoil.trackSinkMultiplier,
+          looseSpoilRepose: farSpoil.reposeTan,
           materialZones,
           roughSlope: Math.max(
             this.terrain.getSlopeAt(-32.5, -27.0),
@@ -8864,6 +10008,11 @@ class Simulator {
         let terrainContactSlide = 0;
         let terrainContactSpeedBefore = 0;
         let terrainContactSpeedAfter = 0;
+        let terrainContactImpulse = 0;
+        let terrainContactCompactionDrop = 0;
+        let terrainContactCompactionBerm = 0;
+        let terrainContactDepositRadius = 0;
+        let terrainContactDepositShift = 0;
         let terrainContactSettled = false;
         const fineTarget =
           this.worldColliders.find((collider) => collider.kind === "cone") ??
@@ -9034,11 +10183,31 @@ class Simulator {
           this.fineGrainVelocities[tp + 1],
           this.fineGrainVelocities[tp + 2],
         );
-        const terrainContact = this.resolveSoilTerrainContact(terrainFinePosition, terrainFineVelocity, terrainFineRadius, 0.08, true);
+        const terrainFineMass = Math.max(0.006, this.fineGrainVolumes[terrainFineIndex] * 1.8);
+        const terrainContact = this.resolveSoilTerrainContact(
+          terrainFinePosition,
+          terrainFineVelocity,
+          terrainFineRadius,
+          0.08,
+          true,
+          terrainFineMass,
+        );
         terrainContactSlope = terrainContact.slope;
         terrainContactSlide = terrainContact.slideDistance;
         terrainContactSpeedBefore = terrainContact.speedBefore;
         terrainContactSpeedAfter = terrainContact.speedAfter;
+        terrainContactImpulse = terrainContact.normalImpulse;
+        terrainContactCompactionDrop = terrainContact.compactionDrop;
+        terrainContactCompactionBerm = terrainContact.compactionBermVolume;
+        const terrainContactFootprint = this.soilTerrainDepositFootprint(
+          terrainFinePosition,
+          this.fineGrainVolumes[terrainFineIndex],
+          Math.max(this.terrain.spacing * 0.62, 0.14 + Math.cbrt(this.fineGrainVolumes[terrainFineIndex]) * 0.08),
+          true,
+          terrainFineVelocity.length(),
+        );
+        terrainContactDepositRadius = terrainContactFootprint.radius;
+        terrainContactDepositShift = terrainContactFootprint.shiftDistance;
         terrainContactSettled = terrainContact.settled;
         this.deactivateFineGrain(terrainFineIndex);
 
@@ -9063,6 +10232,11 @@ class Simulator {
           terrainContactSlide,
           terrainContactSpeedBefore,
           terrainContactSpeedAfter,
+          terrainContactImpulse,
+          terrainContactCompactionDrop,
+          terrainContactCompactionBerm,
+          terrainContactDepositRadius,
+          terrainContactDepositShift,
           terrainContactSettled,
           truckLoad: this.truckLoad,
         };
@@ -9077,6 +10251,7 @@ class Simulator {
         this.updateExcavatorSupport(0.55, forward);
         this.excavator.applyAngles(this.angles);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
         this.updateUi(0);
         return {
           lowered,
@@ -9085,12 +10260,16 @@ class Simulator {
           beforeGround,
           afterGround,
           chassisSinkage: this.chassisSinkage,
+          chassisBurialDepth: this.chassisBurialDepth,
+          chassisGroundPressure: this.chassisGroundPressure,
+          chassisBurialCompaction: this.chassisBurialCompaction,
         };
       },
       forceDeepExcavation: () => {
         const beforeHeight = this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z);
         const shallowResistance = this.terrain.getSubsoilResistanceAt(DIG_SITE.x, DIG_SITE.z);
         let removed = 0;
+        let slopeRedistribution = 0;
 
         const lanes = [-0.82, 0, 0.82];
         for (let pass = 0; pass < 36; pass += 1) {
@@ -9107,7 +10286,7 @@ class Simulator {
             BUCKET_CAPACITY,
           );
           if (pass % lanes.length === lanes.length - 1) {
-            this.settleTerrainWithWake(DIG_SITE, 2.45, 1);
+            slopeRedistribution += this.settleTerrainWithWake(DIG_SITE, 2.45, 1);
           }
         }
 
@@ -9127,6 +10306,7 @@ class Simulator {
           depthReached: beforeHeight - afterHeight,
           shallowResistance,
           deepResistance,
+          slopeRedistribution,
           bedrockFloor: SOIL_BEDROCK_FLOOR,
           terrainDrag: resistance.drag,
         };
@@ -9173,38 +10353,71 @@ class Simulator {
     const state = this.truck.updatePhysics(this.terrain, this.truckLoad, dt, this.truckLoad > 0.02);
     const spill = this.spillTruckLoadToTerrain(
       dt,
-      0.85 + clamp(Math.abs(state.pitch) + Math.abs(state.roll) + state.impactImpulse * 0.016, 0, 1.25),
+      0.85 +
+        clamp(
+          Math.abs(state.pitch) +
+            Math.abs(state.roll) +
+            state.impactImpulse * 0.016 +
+            state.tireSlipDemand * 0.38 +
+            state.tireRollingResistance * 0.18,
+          0,
+          1.55,
+        ),
     );
     if (spill.spilledVolume > 0.001) {
       this.pressure = Math.max(this.pressure, clamp(0.12 + spill.spilledVolume * 0.32 + spill.terrainGain * 0.45, 0, 0.48));
     }
     if (state.tireCompacted > 0.001) {
       this.wakeTruckWheelColliders();
-      this.pressure = Math.max(this.pressure, clamp(0.04 + state.loadRatio * 0.18 + state.tireRutDrop * 2.4, 0, 0.42));
+      this.pressure = Math.max(
+        this.pressure,
+        clamp(0.04 + state.loadRatio * 0.18 + state.tireRutDrop * 2.4 + state.tireSlipDemand * 0.08, 0, 0.48),
+      );
     }
   }
 
-  private spillTruckLoadToTerrain(dt: number, intensity = 1): { spilledVolume: number; terrainGain: number; worldPoint: THREE.Vector3 } {
+  private spillTruckLoadToTerrain(dt: number, intensity = 1): TruckLoadTerrainSpillResult {
     if (this.truckLoad <= 0.002) {
-      return { spilledVolume: 0, terrainGain: 0, worldPoint: this.truck.group.position.clone() };
+      return {
+        spilledVolume: 0,
+        terrainGain: 0,
+        terrainDeposited: 0,
+        worldPoint: this.truck.group.position.clone(),
+        footprintRadius: 0,
+        footprintSlope: 0,
+        footprintShiftDistance: 0,
+      };
     }
 
     const spill = this.truck.spillLoadOverBed(dt, intensity, this.truckLoad);
     if (spill.spilledVolume <= 0) {
-      return { spilledVolume: 0, terrainGain: 0, worldPoint: spill.worldPoint };
+      return {
+        spilledVolume: 0,
+        terrainGain: 0,
+        terrainDeposited: 0,
+        worldPoint: spill.worldPoint,
+        footprintRadius: 0,
+        footprintSlope: 0,
+        footprintShiftDistance: 0,
+      };
     }
 
     const spilledVolume = Math.min(this.truckLoad, spill.spilledVolume);
     const depositRadius = clamp(0.34 + Math.cbrt(spilledVolume) * 0.28, 0.36, 0.78);
     const depositPoint = spill.worldPoint.clone();
     depositPoint.y = this.terrain.getHeightAt(depositPoint.x, depositPoint.z);
-    const terrainGain = this.raiseTerrainWithWake(depositPoint, depositRadius, spilledVolume, 1);
+    const footprint = this.soilTerrainDepositFootprint(depositPoint, spilledVolume, depositRadius, false, 0);
+    const terrainDeposited = this.raiseTerrainWithWake(footprint.center, footprint.radius, spilledVolume, 1);
     this.truckLoad = Math.max(0, this.truckLoad - spilledVolume);
     this.truck.updateLoad(this.truckLoad);
     return {
       spilledVolume,
-      terrainGain,
+      terrainGain: terrainDeposited,
+      terrainDeposited,
       worldPoint: spill.worldPoint,
+      footprintRadius: footprint.radius,
+      footprintSlope: footprint.slope,
+      footprintShiftDistance: footprint.shiftDistance,
     };
   }
 
@@ -9288,6 +10501,8 @@ class Simulator {
       rightGroundSpeed: this.rightTrackVelocity,
       leftRoughness: 0,
       rightRoughness: 0,
+      leftNormalLoad: 1,
+      rightNormalLoad: 1,
       leftGrade: 0,
       rightGrade: 0,
     };
@@ -9339,6 +10554,10 @@ class Simulator {
       -1.25,
       1.25,
     );
+    const roughnessLoadSkew = clamp((right.roughness - left.roughness) * 0.18, -0.14, 0.14);
+    const lateralLoadSkew = clamp(lateralSlope * 0.34 + roughnessLoadSkew, -0.48, 0.48);
+    const leftNormalLoad = clamp(1 + lateralLoadSkew, 0.58, 1.52);
+    const rightNormalLoad = clamp(1 - lateralLoadSkew, 0.58, 1.52);
     const lateralGripLoss = clamp(0.14 + averageWetness * 0.34 + averageRoughness * 0.3 + averageSlip * 0.24, 0.05, 0.84);
     const lateralDriveFactor = clamp(0.34 + (averageMotorSpeed / Math.max(TRACK_MAX_SPEED, 0.001)) * 0.66, 0.34, 1);
     const lateralSlipSpeed = clamp(-lateralSlope * lateralGripLoss * lateralDriveFactor * 1.2, -0.3, 0.3);
@@ -9354,6 +10573,8 @@ class Simulator {
       rightGroundSpeed: right.groundSpeed,
       leftRoughness: left.roughness,
       rightRoughness: right.roughness,
+      leftNormalLoad,
+      rightNormalLoad,
       leftGrade: left.grade,
       rightGrade: right.grade,
     };
@@ -9423,10 +10644,16 @@ class Simulator {
       impactLocalZ: 0,
       leftSpeedDrop: 0,
       rightSpeedDrop: 0,
+      leftContactLoss: 0,
+      rightContactLoss: 0,
+      normalForwardFactor: 0,
+      normalSideFactor: 0,
+      driveBlockRatio: 0,
       leftSeverity: 0,
       rightSeverity: 0,
       leftBlocked: false,
       rightBlocked: false,
+      fullStop: false,
     };
   }
 
@@ -9476,6 +10703,10 @@ class Simulator {
     const correctionNormal = new THREE.Vector3();
     const impactPoint = new THREE.Vector3();
     let impactWeight = 0;
+    let leftNormalLoad = 0;
+    let rightNormalLoad = 0;
+    let driveBlockSum = 0;
+    let driveBlockWeight = 0;
     const leftSpeedBefore = this.leftTrackVelocity;
     const rightSpeedBefore = this.rightTrackVelocity;
 
@@ -9496,6 +10727,17 @@ class Simulator {
         .addScaledVector(side, -turnRate * sample.x);
       const approachSpeed = sampleVelocity.dot(hit.normal);
       const severity = clamp(hit.penetration * 2.2 + Math.max(0, -approachSpeed) * 0.75 + Math.abs(turnRate) * 0.08, 0, 1);
+      const sampleSpeed = sampleVelocity.length();
+      const normalAlignment = sampleSpeed > 0.001 ? clamp(-approachSpeed / sampleSpeed, 0, 1) : 0;
+      const normalLoad = clamp(hit.penetration * 2.4 + Math.max(0, -approachSpeed) * 0.85 + normalAlignment * 0.22, 0, 1.35);
+      const motionBlock = clamp(
+        normalAlignment * 0.48 +
+          Math.max(0, -approachSpeed) * 0.55 +
+          hit.penetration * 2.0 +
+          severity * 0.22,
+        0,
+        1,
+      );
 
       contactCount += 1;
       maxPenetration = Math.max(maxPenetration, hit.penetration);
@@ -9504,13 +10746,17 @@ class Simulator {
       correctionNormal.addScaledVector(hit.normal, 0.12 + severity);
       impactPoint.addScaledVector(world, 0.1 + severity);
       impactWeight += 0.1 + severity;
+      driveBlockSum += motionBlock * (0.1 + severity);
+      driveBlockWeight += 0.1 + severity;
       if (sample.isEnd && Math.abs(sample.z) > TRACK_GAUGE * 0.34) {
         cornerContacts += 1;
       }
       if (sample.track === "left") {
         leftSeverity = Math.max(leftSeverity, severity);
+        leftNormalLoad = Math.max(leftNormalLoad, normalLoad);
       } else {
         rightSeverity = Math.max(rightSeverity, severity);
+        rightNormalLoad = Math.max(rightNormalLoad, normalLoad);
       }
     }
 
@@ -9531,14 +10777,30 @@ class Simulator {
     const correction = Math.min(0.36, correctionWeight / contactCount + 0.012);
     this.excavator.group.position.addScaledVector(correctionNormal, correction);
 
-    if (leftSeverity > 0.02) {
-      this.leftTrackVelocity *= clamp(1 - leftSeverity * 1.7, 0, 0.58);
-    }
-    if (rightSeverity > 0.02) {
-      this.rightTrackVelocity *= clamp(1 - rightSeverity * 1.7, 0, 0.58);
-    }
+    const contactLoss = this.applyTrackVelocityContactLoss(
+      correctionNormal,
+      maxPenetration,
+      forwardSpeed,
+      turnRate,
+      forward,
+      1.15,
+      leftSeverity + leftNormalLoad * 0.35,
+      rightSeverity + rightNormalLoad * 0.35,
+    );
 
-    const peakSeverity = Math.max(leftSeverity, rightSeverity, maxPenetration * 1.8);
+    const peakSeverity = Math.max(leftSeverity, rightSeverity, leftNormalLoad, rightNormalLoad, maxPenetration * 1.8);
+    const driveBlockRatio = driveBlockWeight > 0 ? clamp(driveBlockSum / driveBlockWeight, 0, 1) : 0;
+    const leftBlocked = leftSeverity > 0.18 || leftNormalLoad > 0.24;
+    const rightBlocked = rightSeverity > 0.18 || rightNormalLoad > 0.24;
+    const fullStop =
+      leftBlocked &&
+      rightBlocked &&
+      minApproachSpeed < -0.045 &&
+      (maxPenetration > 0.035 || peakSeverity > 0.36 || driveBlockRatio > 0.48);
+    if (fullStop) {
+      this.leftTrackVelocity = 0;
+      this.rightTrackVelocity = 0;
+    }
     let impactImpulse = 0;
     let impactLocalX = 0;
     let impactLocalZ = 0;
@@ -9569,10 +10831,16 @@ class Simulator {
       impactLocalZ,
       leftSpeedDrop: Math.max(0, Math.abs(leftSpeedBefore) - Math.abs(this.leftTrackVelocity)),
       rightSpeedDrop: Math.max(0, Math.abs(rightSpeedBefore) - Math.abs(this.rightTrackVelocity)),
+      leftContactLoss: contactLoss.leftLoss,
+      rightContactLoss: contactLoss.rightLoss,
+      normalForwardFactor: contactLoss.normalForwardFactor,
+      normalSideFactor: contactLoss.normalSideFactor,
+      driveBlockRatio,
       leftSeverity,
       rightSeverity,
-      leftBlocked: leftSeverity > 0.18,
-      rightBlocked: rightSeverity > 0.18,
+      leftBlocked,
+      rightBlocked,
+      fullStop,
     };
   }
 
@@ -9740,7 +11008,13 @@ class Simulator {
         1.9,
       );
       const correction = Math.min(colliderMaxPenetration * (0.72 + colliderSeverity * 0.16), 0.22);
-      collider.mesh.position.addScaledVector(correctionNormal, -correction);
+      const objectInvMass = 1 / Math.max(collider.mass, 0.05);
+      const crawlerInvMass = 1 / CRAWLER_COLLISION_EFFECTIVE_MASS;
+      const splitInvMass = objectInvMass + crawlerInvMass;
+      const objectCorrectionShare = splitInvMass > 0 ? objectInvMass / splitInvMass : 1;
+      const crawlerCorrectionShare = splitInvMass > 0 ? crawlerInvMass / splitInvMass : 0;
+      collider.mesh.position.addScaledVector(correctionNormal, -correction * objectCorrectionShare);
+      this.excavator.group.position.addScaledVector(correctionNormal, correction * crawlerCorrectionShare);
       collider.velocity.addScaledVector(correctionNormal, -impulse);
       collider.velocity.y = Math.max(collider.velocity.y, 0.08 + 0.18 * colliderSeverity);
       this.applyWorldColliderAngularImpulse(
@@ -9748,6 +11022,16 @@ class Simulator {
         impulsePoint,
         correctionNormal.clone().multiplyScalar(-impulse * collider.mass),
         0.34,
+      );
+      this.applyTrackVelocityContactLoss(
+        correctionNormal,
+        colliderMaxPenetration,
+        forwardSpeed,
+        turnRate,
+        forward,
+        clamp(collider.mass / 7.5, 0.18, 0.86),
+        colliderLeftSeverity,
+        colliderRightSeverity,
       );
       collider.sleeping = false;
       result.movedCount += 1;
@@ -9789,6 +11073,73 @@ class Simulator {
     return { truckContact, objectContact, bodyHit: Boolean(hit) };
   }
 
+  private applyTrackVelocityContactLoss(
+    normal: THREE.Vector3,
+    penetration: number,
+    forwardSpeed: number,
+    turnRate: number,
+    forward: THREE.Vector3,
+    hardness: number,
+    leftContactSeverity: number,
+    rightContactSeverity: number,
+  ): TrackContactLossResult {
+    const side = new THREE.Vector3(-forward.z, 0, forward.x);
+    if (side.lengthSq() < 0.000001) {
+      return {
+        leftLoss: 0,
+        rightLoss: 0,
+        leftApproach: 0,
+        rightApproach: 0,
+        normalForwardFactor: 0,
+        normalSideFactor: 0,
+      };
+    }
+    side.normalize();
+    const normalForwardFactor = Math.abs(normal.dot(forward));
+    const normalSideFactor = Math.abs(normal.dot(side));
+
+    const contactLoss = (trackZ: number, contactSeverity: number): { loss: number; approach: number } => {
+      if (contactSeverity <= 0.001 && penetration <= 0.001) {
+        return { loss: 0, approach: 0 };
+      }
+      const trackVelocity = forward.clone().multiplyScalar(forwardSpeed + turnRate * trackZ);
+      const approach = Math.max(0, -trackVelocity.dot(normal));
+      const normalAngle = clamp(normalForwardFactor * 0.68 + normalSideFactor * 0.32, 0.18, 1);
+      const load = contactSeverity * 0.88 + (approach / Math.max(TRACK_MAX_SPEED, 0.001)) * 0.42 + penetration * 1.4;
+      const loss = clamp(load * normalAngle * hardness, 0, 1);
+      const directBlock =
+        approach > 0.045 &&
+        (penetration > 0.055 || contactSeverity * hardness > 0.48) &&
+        normalAngle > 0.42;
+      return { loss: directBlock ? 1 : loss, approach };
+    };
+
+    const left = contactLoss(-TRACK_GAUGE * 0.5, leftContactSeverity);
+    const right = contactLoss(TRACK_GAUGE * 0.5, rightContactSeverity);
+    const leftLoss = left.loss;
+    const rightLoss = right.loss;
+    if (leftLoss > 0) {
+      this.leftTrackVelocity *= 1 - leftLoss;
+      if (Math.abs(this.leftTrackVelocity) < 0.01) {
+        this.leftTrackVelocity = 0;
+      }
+    }
+    if (rightLoss > 0) {
+      this.rightTrackVelocity *= 1 - rightLoss;
+      if (Math.abs(this.rightTrackVelocity) < 0.01) {
+        this.rightTrackVelocity = 0;
+      }
+    }
+    return {
+      leftLoss,
+      rightLoss,
+      leftApproach: left.approach,
+      rightApproach: right.approach,
+      normalForwardFactor,
+      normalSideFactor,
+    };
+  }
+
   private applyCollisionResponse(
     normal: THREE.Vector3,
     penetration: number,
@@ -9804,9 +11155,7 @@ class Simulator {
     const collisionSeverity = clamp(penetration * 1.8 + Math.abs(approachSpeed) * 0.55 + Math.abs(turnRate) * 0.08, 0, 1);
 
     if (blockTrackVelocity && (approachSpeed < 0 || Math.abs(turnRate) > 0.1)) {
-      const block = clamp(1 - collisionSeverity * (1.35 + hardness * 0.55), 0, 0.46);
-      this.leftTrackVelocity *= block;
-      this.rightTrackVelocity *= block;
+      this.applyTrackVelocityContactLoss(normal, penetration, forwardSpeed, turnRate, forward, 1.35 + hardness * 0.55, collisionSeverity, collisionSeverity);
       if (Math.abs(approachSpeed) > 0.04 || penetration > 0.035) {
         this.pressure = Math.max(this.pressure, clamp(0.48 + collisionSeverity * 0.52, 0, 1));
       }
@@ -9974,41 +11323,35 @@ class Simulator {
     };
   }
 
-  private worldColliderShapeSamples(collider: WorldCollider): { point: THREE.Vector3; radius: number }[] {
+  private worldColliderShapeSamples(collider: WorldCollider): WorldColliderShapeSample[] {
     const capsule = this.worldColliderCapsuleWorld(collider);
     if (!capsule) {
-      return [{ point: collider.mesh.position.clone(), radius: collider.radius }];
+      return [{ point: collider.mesh.position.clone(), radius: collider.radius, supportT: 0.5 }];
     }
 
-    const samples: { point: THREE.Vector3; radius: number }[] = [];
+    const samples: WorldColliderShapeSample[] = [];
     for (const t of [0, 0.25, 0.5, 0.75, 1] as const) {
       samples.push({
         point: capsule.a.clone().lerp(capsule.b, t),
         radius: capsule.radius,
+        supportT: t,
       });
     }
     return samples;
   }
 
-  private worldColliderTerrainSupport(collider: WorldCollider): {
-    supportDelta: number;
-    penetration: number;
-    unsupportedDrop: number;
-    slopeX: number;
-    slopeZ: number;
-    slope: number;
-    normal: THREE.Vector3;
-    point: THREE.Vector3;
-  } {
+  private worldColliderTerrainSupport(collider: WorldCollider): WorldColliderTerrainSupport {
     const samples = this.worldColliderShapeSamples(collider);
     let supportDelta = -Infinity;
     let supportPoint = collider.mesh.position.clone();
     let slopeX = 0;
     let slopeZ = 0;
+    const sampleDeltas: { sample: WorldColliderShapeSample; delta: number }[] = [];
 
     for (const sample of samples) {
       const supportY = this.terrain.getHeightAt(sample.point.x, sample.point.z) + collider.groundOffset;
       const delta = supportY - sample.point.y;
+      sampleDeltas.push({ sample, delta });
       if (delta > supportDelta) {
         supportDelta = delta;
         supportPoint = sample.point.clone();
@@ -10031,6 +11374,33 @@ class Simulator {
     const slope = Math.hypot(slopeX, slopeZ);
     const normal = new THREE.Vector3(-slopeX, 1, -slopeZ).normalize();
     const resolvedDelta = Number.isFinite(supportDelta) ? supportDelta : 0;
+    const contactBand = Math.max(0.025, (collider.capsule?.radius ?? collider.radius) * 0.42);
+    const contactCenter = new THREE.Vector3();
+    let contactWeight = 0;
+    let contactCount = 0;
+    let minContactT = Infinity;
+    let maxContactT = -Infinity;
+    for (const { sample, delta } of sampleDeltas) {
+      const nearTerrain = delta >= -contactBand;
+      const nearPeakSupport = delta >= resolvedDelta - contactBand;
+      if (!nearTerrain && !nearPeakSupport) {
+        continue;
+      }
+      const weight = Math.max(0.001, Math.min(contactBand, delta + contactBand) + (nearPeakSupport ? contactBand * 0.25 : 0));
+      contactCenter.addScaledVector(sample.point, weight);
+      contactWeight += weight;
+      contactCount += 1;
+      minContactT = Math.min(minContactT, sample.supportT);
+      maxContactT = Math.max(maxContactT, sample.supportT);
+    }
+    if (contactWeight > 0) {
+      contactCenter.divideScalar(contactWeight);
+    } else {
+      contactCenter.copy(supportPoint);
+      contactCount = resolvedDelta > -contactBand ? 1 : 0;
+      minContactT = maxContactT = 0.5;
+    }
+    const supportSpan = collider.capsule && contactCount > 1 ? Math.max(0, maxContactT - minContactT) : 0;
     return {
       supportDelta: resolvedDelta,
       penetration: Math.max(0, resolvedDelta),
@@ -10040,6 +11410,10 @@ class Simulator {
       slope,
       normal,
       point: supportPoint,
+      contactCenter,
+      contactCount,
+      sampleCount: count,
+      supportSpan,
     };
   }
 
@@ -10229,9 +11603,16 @@ class Simulator {
     return mass;
   }
 
+  private bucketSoilSupportMass(): number {
+    if (!BUCKET_SOIL_SUPPORT_MASS_ENABLED) {
+      return 0;
+    }
+    return this.bucketLoad * 0.62 + this.bucketTransitLoad * 0.4;
+  }
+
   private bucketPayloadMomentLoad(): number {
-    const soilLoad = BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED ? this.bucketLoad + this.bucketTransitLoad * 0.65 : 0;
-    return soilLoad + (this.carriedWorldObjectMass() / BUCKET_OBJECT_LOAD_REFERENCE) * 1.25;
+    const soilLoad = this.bucketSoilSupportMass() / Math.max(BUCKET_CAPACITY, 0.001);
+    return soilLoad * 0.62 + (this.carriedWorldObjectMass() / BUCKET_OBJECT_LOAD_REFERENCE) * 1.25;
   }
 
   private bucketCarryLocalPoint(collider: WorldCollider): THREE.Vector3 | null {
@@ -10394,11 +11775,19 @@ class Simulator {
         maxPenetration = Math.max(maxPenetration, passHit.penetration);
         collider.mesh.position.addScaledVector(passHit.normal, passHit.penetration + 0.006);
       }
-      const normalSpeed = collider.velocity.dot(normal);
-      const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed).multiplyScalar(0.72);
-      const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.08, 0.08, 0.42) : normalSpeed;
+      const normalImpulse = this.applyWorldColliderStaticSurfaceResponse(
+        collider,
+        truckHit.point,
+        normal,
+        maxPenetration,
+        2.9,
+        clamp(collider.restitution + 0.08, 0.08, 0.42),
+        clamp(collider.friction + 0.16, 0.22, 0.96),
+        0.24,
+        0.24,
+      );
       const truckImpulse = clamp(
-        0.12 + maxPenetration * 2.2 + Math.max(0, -normalSpeed) * collider.mass * 0.045 + collider.mass * 0.015,
+        0.12 + maxPenetration * 2.2 + normalImpulse * 0.045 + collider.mass * 0.015,
         0.05,
         3.2,
       );
@@ -10407,8 +11796,6 @@ class Simulator {
         normal,
         truckImpulse,
       );
-      collider.velocity.copy(tangent).addScaledVector(normal, bounceSpeed);
-      this.applyWorldColliderAngularImpulse(collider, truckHit.point, normal.clone().multiplyScalar(truckImpulse * collider.mass), 0.2);
       this.releaseCarriedWorldCollider(collider);
       this.pressure = Math.max(this.pressure, clamp(0.42 + maxPenetration * 1.6 + collider.mass * 0.008, 0, 1));
       if (this.collisionCooldown <= 0 && maxPenetration > 0.018) {
@@ -10421,22 +11808,33 @@ class Simulator {
     const terrainSupport = this.worldColliderTerrainSupport(collider);
     if (terrainSupport.penetration > 0.018) {
       const normal = terrainSupport.normal.clone().normalize();
-      const normalSpeed = collider.velocity.dot(normal);
       let maxPenetration = terrainSupport.penetration;
+      let contactPoint = terrainSupport.point.clone();
       for (let pass = 0; pass < 2; pass += 1) {
         const passSupport = this.worldColliderTerrainSupport(collider);
         if (passSupport.penetration <= 0.003) {
           break;
         }
         maxPenetration = Math.max(maxPenetration, passSupport.penetration);
+        contactPoint = passSupport.point.clone();
         collider.mesh.position.addScaledVector(passSupport.normal, Math.min(passSupport.penetration + 0.003, 0.32));
       }
 
+      const normalImpulse = this.applyWorldColliderStaticSurfaceResponse(
+        collider,
+        contactPoint,
+        normal,
+        maxPenetration,
+        2.3,
+        clamp(collider.restitution, 0.035, 0.28),
+        clamp(collider.friction + 0.12, 0.18, 0.92),
+        0.18,
+        0.2,
+      );
       const adjustedLocal = this.excavator.bucketGroup.worldToLocal(collider.mesh.position.clone());
       this.carriedWorldColliders.set(collider, adjustedLocal);
       this.carriedWorldPreviousPositions.set(collider, collider.mesh.position.clone());
-      collider.velocity.addScaledVector(normal, Math.max(0, -normalSpeed) + clamp(maxPenetration * 0.24, 0, 0.08));
-      this.pressure = Math.max(this.pressure, clamp(0.08 + maxPenetration * 0.42, 0, 0.32));
+      this.pressure = Math.max(this.pressure, clamp(0.08 + maxPenetration * 0.42 + normalImpulse * 0.012, 0, 0.36));
       return false;
     }
 
@@ -10454,13 +11852,21 @@ class Simulator {
         }
       }
 
-      const normalSpeed = collider.velocity.dot(responseNormal);
-      const tangent = collider.velocity.clone().addScaledVector(responseNormal, -normalSpeed).multiplyScalar(0.48);
-      collider.velocity.copy(tangent).addScaledVector(responseNormal, Math.max(0, -normalSpeed) + clamp(maxPenetration * 0.18, 0, 0.08));
+      const normalImpulse = this.applyWorldColliderStaticSurfaceResponse(
+        collider,
+        collider.mesh.position.clone().addScaledVector(responseNormal, collider.radius),
+        responseNormal,
+        maxPenetration,
+        2.4,
+        clamp(collider.restitution + 0.04, 0.06, 0.42),
+        clamp(collider.friction + 0.1, 0.16, 0.9),
+        0.18,
+        0.22,
+      );
       const adjustedLocal = this.excavator.bucketGroup.worldToLocal(collider.mesh.position.clone());
       this.carriedWorldColliders.set(collider, adjustedLocal);
       this.carriedWorldPreviousPositions.set(collider, collider.mesh.position.clone());
-      this.pressure = Math.max(this.pressure, clamp(0.14 + maxPenetration * 0.52, 0, 0.42));
+      this.pressure = Math.max(this.pressure, clamp(0.14 + maxPenetration * 0.52 + normalImpulse * 0.01, 0, 0.46));
       return false;
     }
 
@@ -10495,20 +11901,25 @@ class Simulator {
 
       const relativeVelocity = collider.velocity.clone().sub(other.velocity);
       const closingSpeed = relativeVelocity.dot(normal);
+      let normalImpulse = 0;
       if (closingSpeed < 0) {
         const restitution = Math.min(collider.restitution, other.restitution);
-        const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
-        collider.velocity.addScaledVector(normal, impulse * invMassA);
-        other.velocity.addScaledVector(normal, -impulse * invMassB);
-        this.applyWorldColliderAngularImpulse(other, hit.pointB, normal.clone().multiplyScalar(-impulse), 0.28);
+        normalImpulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
+        collider.velocity.addScaledVector(normal, normalImpulse * invMassA);
+        other.velocity.addScaledVector(normal, -normalImpulse * invMassB);
+        this.applyWorldColliderAngularImpulse(other, hit.pointB, normal.clone().multiplyScalar(-normalImpulse), 0.28);
       }
 
       const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
-      if (tangent.lengthSq() > 0.000001) {
-        tangent.normalize().multiplyScalar(clamp((collider.friction + other.friction) * 0.06, 0.035, 0.14));
-        collider.velocity.addScaledVector(tangent, -invMassA / totalInvMass);
-        other.velocity.addScaledVector(tangent, invMassB / totalInvMass);
-        this.applyWorldColliderAngularImpulse(other, hit.pointB, tangent.clone().multiplyScalar(invMassB / totalInvMass), 0.2);
+      const tangentSpeed = tangent.length();
+      if (tangentSpeed > 0.000001) {
+        const tangentDir = tangent.divideScalar(tangentSpeed);
+        const frictionCoefficient = clamp((collider.friction + other.friction) * 0.5, 0.08, 0.95);
+        const frictionLimit = Math.max(normalImpulse * frictionCoefficient, Math.min(collider.mass, other.mass) * (0.012 + penetration * 0.12));
+        const frictionImpulse = Math.min((tangentSpeed / totalInvMass) * frictionCoefficient, frictionLimit);
+        collider.velocity.addScaledVector(tangentDir, -frictionImpulse * invMassA);
+        other.velocity.addScaledVector(tangentDir, frictionImpulse * invMassB);
+        this.applyWorldColliderAngularImpulse(other, hit.pointB, tangentDir.clone().multiplyScalar(frictionImpulse), 0.2);
       }
 
       other.sleeping = false;
@@ -10649,13 +12060,19 @@ class Simulator {
       const groundSupport = this.worldColliderTerrainSupport(collider);
       if (groundSupport.penetration > 0) {
         const normalSpeed = collider.velocity.dot(groundSupport.normal);
-        const contactLoad = Math.max(0, -normalSpeed) + clamp(groundSupport.penetration * 1.25, 0, 0.5);
+        const restingLoad = collider.mass >= 1.8 ? clamp(collider.mass * 0.011 * (1 + slopeGradient * 0.8), 0, 0.24) : 0;
+        const contactLoad = Math.max(0, -normalSpeed) + clamp(groundSupport.penetration * 1.25, 0, 0.5) + restingLoad;
+        const distributedSupport = collider.capsule
+          ? clamp((groundSupport.contactCount - 1) * 0.055 + groundSupport.supportSpan * 0.18, 0, 0.26)
+          : 0;
+        const terrainContactPoint =
+          distributedSupport > 0.04 ? groundSupport.contactCenter.clone().lerp(groundSupport.point, 0.45) : groundSupport.point;
         const shouldCompactFootprint =
           collider.groundLoadCooldown <= 0 &&
           collider.mass >= 1.8 &&
           (contactLoad > 0.12 || groundSupport.penetration > 0.032);
         const footprint = shouldCompactFootprint
-          ? this.compactWorldObjectFootprint(collider, groundSupport.point, contactLoad, dt)
+          ? this.compactWorldObjectFootprint(collider, terrainContactPoint, contactLoad, dt)
           : { compacted: 0, rutDrop: 0, bermRise: 0 };
         if (footprint.compacted > 0) {
           collider.groundLoadCooldown = 0.42;
@@ -10667,12 +12084,12 @@ class Simulator {
           this.pressure = Math.max(this.pressure, clamp(0.08 + footprint.rutDrop * 3.8 + footprint.bermRise * 1.6, 0, 0.64));
         }
         const tangent = collider.velocity.clone().addScaledVector(groundSupport.normal, -normalSpeed);
-        const groundFriction = 1 - Math.min(dt * (1.2 + collider.friction * 3.4), 0.32);
+        const groundFriction = 1 - Math.min(dt * (1.2 + collider.friction * 3.4 + distributedSupport * 1.6), 0.34);
         if (normalSpeed < -0.05) {
           collider.velocity.copy(tangent.multiplyScalar(groundFriction)).addScaledVector(groundSupport.normal, -normalSpeed * collider.restitution);
           this.applyWorldColliderAngularImpulse(
             collider,
-            groundSupport.point,
+            terrainContactPoint,
             groundSupport.normal.clone().multiplyScalar(Math.max(0, -normalSpeed) * collider.mass * (1 + collider.restitution)),
             0.16,
           );
@@ -10680,6 +12097,10 @@ class Simulator {
           collider.velocity.copy(tangent.multiplyScalar(groundFriction));
         }
         this.applyWorldColliderRollingSpin(collider, groundSupport.normal, dt);
+        if (distributedSupport > 0) {
+          const spanDamping = 1 - Math.min(dt * (0.55 + groundSupport.contactCount * 0.08 + groundSupport.supportSpan * 0.9), 0.08);
+          collider.angularVelocity.multiplyScalar(spanDamping);
+        }
       }
 
       if (this.resolveLooseObjectTruckCollision(collider)) {
@@ -10740,20 +12161,64 @@ class Simulator {
 
     const normal = hit.normal.clone().normalize();
     collider.mesh.position.addScaledVector(normal, Math.min(hit.penetration + 0.003, 0.28));
-    const normalSpeed = collider.velocity.dot(normal);
-    const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed);
-    const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.02, 0.04, 0.24) : normalSpeed;
-    collider.velocity.copy(tangent.multiplyScalar(0.72)).addScaledVector(normal, bounceSpeed);
-    this.applyWorldColliderAngularImpulse(
+    this.applyWorldColliderStaticSurfaceResponse(
       collider,
       hit.point,
-      normal.clone().multiplyScalar((Math.max(0, -normalSpeed) + hit.penetration * 1.6) * collider.mass),
+      normal,
+      hit.penetration,
+      0.65,
+      clamp(collider.restitution + 0.02, 0.04, 0.24),
+      clamp(collider.friction + 0.14, 0.18, 0.92),
+      0.12,
       0.18,
     );
     collider.sleeping = false;
     this.worldColliderGridDirty = true;
     this.pressure = Math.max(this.pressure, clamp(0.18 + hit.penetration * 0.9 + collider.mass * 0.006, 0, 0.62));
     return true;
+  }
+
+  private applyWorldColliderStaticSurfaceResponse(
+    collider: WorldCollider,
+    contactPoint: THREE.Vector3,
+    normal: THREE.Vector3,
+    penetration: number,
+    supportScale: number,
+    restitution: number,
+    frictionCoefficient: number,
+    tangentAngularScale: number,
+    normalAngularScale: number,
+  ): number {
+    const responseNormal = normal.clone().normalize();
+    const normalSpeed = collider.velocity.dot(responseNormal);
+    const tangent = collider.velocity.clone().addScaledVector(responseNormal, -normalSpeed);
+    const tangentSpeed = tangent.length();
+    let normalImpulse = Math.max(0, penetration) * collider.mass * supportScale;
+    let nextNormalSpeed = Math.max(normalSpeed, 0);
+
+    if (normalSpeed < 0) {
+      normalImpulse += -(1 + restitution) * normalSpeed * collider.mass;
+      nextNormalSpeed = -normalSpeed * restitution + Math.min(penetration * 0.11, 0.12);
+    } else if (penetration > 0.012) {
+      nextNormalSpeed += Math.min(penetration * 0.045, 0.06);
+    }
+
+    if (tangentSpeed > 0.000001) {
+      const tangentDir = tangent.divideScalar(tangentSpeed);
+      const frictionSpeed = Math.min(tangentSpeed, (normalImpulse * frictionCoefficient) / Math.max(collider.mass, 0.05));
+      collider.velocity.copy(tangentDir.clone().multiplyScalar(tangentSpeed - frictionSpeed)).addScaledVector(responseNormal, nextNormalSpeed);
+      this.applyWorldColliderAngularImpulse(
+        collider,
+        contactPoint,
+        tangentDir.clone().multiplyScalar(-frictionSpeed * collider.mass),
+        tangentAngularScale,
+      );
+    } else {
+      collider.velocity.copy(responseNormal).multiplyScalar(nextNormalSpeed);
+    }
+
+    this.applyWorldColliderAngularImpulse(collider, contactPoint, responseNormal.clone().multiplyScalar(normalImpulse), normalAngularScale);
+    return normalImpulse;
   }
 
   private resolveLooseObjectTruckCollision(collider: WorldCollider): boolean {
@@ -10766,21 +12231,21 @@ class Simulator {
     collider.mesh.position.addScaledVector(normal, Math.min(hit.penetration + 0.004, 0.5));
     this.worldColliderGridDirty = true;
 
-    const normalSpeed = collider.velocity.dot(normal);
-    const tangent = collider.velocity.clone().addScaledVector(normal, -normalSpeed);
-    const tangentDamping = 1 - clamp(0.12 + collider.friction * 0.24, 0.12, 0.42);
-    const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution, 0.04, 0.38) : normalSpeed;
+    const normalImpulse = this.applyWorldColliderStaticSurfaceResponse(
+      collider,
+      hit.point,
+      normal,
+      hit.penetration,
+      1.8,
+      clamp(collider.restitution, 0.04, 0.38),
+      clamp(collider.friction + 0.12, 0.16, 0.94),
+      0.18,
+      0.22,
+    );
     this.truck.applyImpact(
       hit.point,
       normal,
-      clamp(0.08 + hit.penetration * 2.0 + Math.max(0, -normalSpeed) * collider.mass * 0.04 + collider.mass * 0.012, 0.035, 2.8),
-    );
-    collider.velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(normal, bounceSpeed);
-    this.applyWorldColliderAngularImpulse(
-      collider,
-      hit.point,
-      normal.clone().multiplyScalar((Math.max(0, -normalSpeed) + hit.penetration * 1.8) * collider.mass),
-      0.2,
+      clamp(0.08 + hit.penetration * 2.0 + normalImpulse * 0.04 + collider.mass * 0.012, 0.035, 2.8),
     );
     collider.sleeping = false;
     this.pressure = Math.max(this.pressure, clamp(0.34 + hit.penetration * 1.8 + collider.mass * 0.008, 0, 0.9));
@@ -10980,21 +12445,21 @@ class Simulator {
       }
     }
 
-    const normalSpeed = collider.velocity.dot(responseNormal);
-    const tangent = collider.velocity.clone().addScaledVector(responseNormal, -normalSpeed);
-    const tangentDamping = 1 - clamp(0.08 + collider.friction * 0.2, 0.08, 0.34);
-    const bounceSpeed = normalSpeed < 0 ? -normalSpeed * clamp(collider.restitution + 0.04, 0.06, 0.42) : Math.max(normalSpeed, 0);
-    collider.velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(responseNormal, bounceSpeed);
-    this.applyWorldColliderAngularImpulse(
+    const normalImpulse = this.applyWorldColliderStaticSurfaceResponse(
       collider,
       collider.mesh.position.clone().addScaledVector(responseNormal, collider.radius),
-      responseNormal.clone().multiplyScalar((Math.max(0, -normalSpeed) + maxPenetration * 1.6) * collider.mass),
-      0.22,
+      responseNormal,
+      maxPenetration,
+      1.6,
+      clamp(collider.restitution + 0.04, 0.06, 0.42),
+      clamp(collider.friction + 0.08, 0.14, 0.9),
+      0.16,
+      0.24,
     );
     collider.sleeping = false;
     this.worldColliderGridDirty = true;
 
-    this.pressure = Math.max(this.pressure, clamp(0.22 + maxPenetration * 1.45 + collider.mass * 0.006, 0, 0.82));
+    this.pressure = Math.max(this.pressure, clamp(0.22 + maxPenetration * 1.45 + normalImpulse * 0.018 + collider.mass * 0.006, 0, 0.82));
     if (this.collisionCooldown <= 0 && maxPenetration > 0.02) {
       this.collisionCount += 1;
       this.collisionCooldown = 0.34;
@@ -11024,22 +12489,97 @@ class Simulator {
 
     const normalSpeed = velocity.dot(responseNormal);
     const tangent = velocity.clone().addScaledVector(responseNormal, -normalSpeed);
-    const tangentDamping = fineGrain ? 0.56 : 0.66;
-    const bounceSpeed = normalSpeed < 0 ? -normalSpeed * (fineGrain ? 0.08 : 0.12) : Math.max(normalSpeed, 0);
-    velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(responseNormal, bounceSpeed);
-    this.pressure = Math.max(this.pressure, clamp(0.05 + maxPenetration * (fineGrain ? 0.42 : 0.78) + mass * 0.04, 0, fineGrain ? 0.22 : 0.36));
+    const tangentSpeed = tangent.length();
+    const restitution = fineGrain ? 0.08 : 0.12;
+    const supportImpulse = maxPenetration * mass * (fineGrain ? 2.6 : 3.4);
+    let normalImpulse = supportImpulse;
+    let nextNormalSpeed = Math.max(normalSpeed, 0);
+    if (normalSpeed < 0) {
+      normalImpulse += -(1 + restitution) * normalSpeed * mass;
+      nextNormalSpeed = -normalSpeed * restitution + Math.min(maxPenetration * (fineGrain ? 0.08 : 0.14), fineGrain ? 0.045 : 0.09);
+    } else if (maxPenetration > (fineGrain ? 0.008 : 0.016)) {
+      nextNormalSpeed += Math.min(maxPenetration * (fineGrain ? 0.035 : 0.06), fineGrain ? 0.025 : 0.05);
+    }
+
+    if (tangentSpeed > 0.000001) {
+      const tangentDir = tangent.divideScalar(tangentSpeed);
+      const frictionCoefficient = fineGrain ? 0.34 : 0.48;
+      const frictionSpeed = Math.min(tangentSpeed, (normalImpulse * frictionCoefficient) / Math.max(mass, 0.001));
+      velocity.copy(tangentDir.multiplyScalar(tangentSpeed - frictionSpeed)).addScaledVector(responseNormal, nextNormalSpeed);
+    } else {
+      velocity.copy(responseNormal).multiplyScalar(nextNormalSpeed);
+    }
+    this.pressure = Math.max(
+      this.pressure,
+      clamp(
+        0.05 + maxPenetration * (fineGrain ? 0.42 : 0.78) + normalImpulse * (fineGrain ? 0.32 : 0.24) + mass * 0.025,
+        0,
+        fineGrain ? 0.22 : 0.36,
+      ),
+    );
     return true;
+  }
+
+  private resolveSoilStaticSurfaceVelocity(
+    velocity: THREE.Vector3,
+    normal: THREE.Vector3,
+    penetration: number,
+    mass: number,
+    fineGrain: boolean,
+    frictionCoefficient: number,
+    restitution: number,
+  ): number {
+    const responseNormal = normal.clone().normalize();
+    const normalSpeed = velocity.dot(responseNormal);
+    const tangent = velocity.clone().addScaledVector(responseNormal, -normalSpeed);
+    const tangentSpeed = tangent.length();
+    const supportImpulse = Math.max(0, penetration) * mass * (fineGrain ? 2.2 : 3.1);
+    let normalImpulse = supportImpulse;
+    let nextNormalSpeed = Math.max(normalSpeed, 0);
+
+    if (normalSpeed < 0) {
+      normalImpulse += -(1 + restitution) * normalSpeed * mass;
+      nextNormalSpeed = -normalSpeed * restitution + Math.min(penetration * (fineGrain ? 0.06 : 0.11), fineGrain ? 0.035 : 0.075);
+    } else if (penetration > (fineGrain ? 0.006 : 0.014)) {
+      nextNormalSpeed += Math.min(penetration * (fineGrain ? 0.025 : 0.045), fineGrain ? 0.018 : 0.04);
+    }
+
+    if (tangentSpeed > 0.000001) {
+      const tangentDir = tangent.divideScalar(tangentSpeed);
+      const frictionSpeed = Math.min(tangentSpeed, (normalImpulse * frictionCoefficient) / Math.max(mass, 0.001));
+      velocity.copy(tangentDir.multiplyScalar(tangentSpeed - frictionSpeed)).addScaledVector(responseNormal, nextNormalSpeed);
+    } else {
+      velocity.copy(responseNormal).multiplyScalar(nextNormalSpeed);
+    }
+
+    return normalImpulse;
   }
 
   private resolveLooseObjectPairCollisions(): void {
     const activeColliders: WorldCollider[] = [];
-    for (const collider of this.worldColliders) {
+    const queuedIds = new Set<number>();
+    const queueActiveCollider = (collider: WorldCollider): void => {
       if (collider.sleeping || this.carriedWorldColliders.has(collider)) {
-        continue;
+        return;
       }
+      if (queuedIds.has(collider.id) || activeColliders.length >= WORLD_COLLIDER_PAIR_ACTIVE_LIMIT) {
+        return;
+      }
+      queuedIds.add(collider.id);
       activeColliders.push(collider);
+    };
+    for (const collider of this.worldUpdateCandidates) {
+      queueActiveCollider(collider);
       if (activeColliders.length >= WORLD_COLLIDER_PAIR_ACTIVE_LIMIT) {
         break;
+      }
+    }
+    if (activeColliders.length < WORLD_COLLIDER_PAIR_ACTIVE_LIMIT) {
+      for (const collider of this.worldColliders) {
+        queueActiveCollider(collider);
+        if (activeColliders.length >= WORLD_COLLIDER_PAIR_ACTIVE_LIMIT) {
+          break;
+        }
       }
     }
     let moved = false;
@@ -11072,24 +12612,27 @@ class Simulator {
 
         const relVelocity = a.velocity.clone().sub(b.velocity);
         const closingSpeed = relVelocity.dot(normal);
+        let normalImpulse = 0;
         if (closingSpeed < 0) {
           const restitution = Math.min(a.restitution, b.restitution);
-          const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
-          a.velocity.addScaledVector(normal, impulse * invMassA);
-          b.velocity.addScaledVector(normal, -impulse * invMassB);
-          this.applyWorldColliderAngularImpulse(a, hit.pointA, normal.clone().multiplyScalar(impulse), 0.32);
-          this.applyWorldColliderAngularImpulse(b, hit.pointB, normal.clone().multiplyScalar(-impulse), 0.32);
+          normalImpulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
+          a.velocity.addScaledVector(normal, normalImpulse * invMassA);
+          b.velocity.addScaledVector(normal, -normalImpulse * invMassB);
+          this.applyWorldColliderAngularImpulse(a, hit.pointA, normal.clone().multiplyScalar(normalImpulse), 0.32);
+          this.applyWorldColliderAngularImpulse(b, hit.pointB, normal.clone().multiplyScalar(-normalImpulse), 0.32);
         }
 
         const tangent = relVelocity.addScaledVector(normal, -closingSpeed);
-        const tangentLenSq = tangent.lengthSq();
-        if (tangentLenSq > 0.000001) {
-          const friction = clamp((a.friction + b.friction) * 0.08, 0.04, 0.18);
-          tangent.normalize().multiplyScalar(friction);
-          a.velocity.addScaledVector(tangent, -invMassA / totalInvMass);
-          b.velocity.addScaledVector(tangent, invMassB / totalInvMass);
-          this.applyWorldColliderAngularImpulse(a, hit.pointA, tangent.clone().multiplyScalar(-invMassA / totalInvMass), 0.24);
-          this.applyWorldColliderAngularImpulse(b, hit.pointB, tangent.clone().multiplyScalar(invMassB / totalInvMass), 0.24);
+        const tangentSpeed = tangent.length();
+        if (tangentSpeed > 0.000001) {
+          const tangentDir = tangent.divideScalar(tangentSpeed);
+          const frictionCoefficient = clamp((a.friction + b.friction) * 0.5, 0.08, 0.98);
+          const frictionLimit = Math.max(normalImpulse * frictionCoefficient, Math.min(a.mass, b.mass) * (0.014 + penetration * 0.14));
+          const frictionImpulse = Math.min((tangentSpeed / totalInvMass) * frictionCoefficient, frictionLimit);
+          a.velocity.addScaledVector(tangentDir, -frictionImpulse * invMassA);
+          b.velocity.addScaledVector(tangentDir, frictionImpulse * invMassB);
+          this.applyWorldColliderAngularImpulse(a, hit.pointA, tangentDir.clone().multiplyScalar(-frictionImpulse), 0.24);
+          this.applyWorldColliderAngularImpulse(b, hit.pointB, tangentDir.clone().multiplyScalar(frictionImpulse), 0.24);
         }
 
         const spinAxis = new THREE.Vector3(-normal.z, 0, normal.x);
@@ -11123,15 +12666,22 @@ class Simulator {
     const rightCenter = base.clone().addScaledVector(side, 0.72);
     const left = this.terrain.sampleTrackSupport(leftCenter, forward, side, TRACK_LENGTH, TRACK_WIDTH);
     const right = this.terrain.sampleTrackSupport(rightCenter, forward, side, TRACK_LENGTH, TRACK_WIDTH);
-    const frontPoint = base.clone().addScaledVector(forward, TRACK_LENGTH * 0.42);
-    const rearPoint = base.clone().addScaledVector(forward, -TRACK_LENGTH * 0.42);
-    const frontHeight = this.terrain.getHeightAt(frontPoint.x, frontPoint.z);
-    const rearHeight = this.terrain.getHeightAt(rearPoint.x, rearPoint.z);
+    const frontLeftPoint = leftCenter.clone().addScaledVector(forward, TRACK_LENGTH * 0.42);
+    const frontRightPoint = rightCenter.clone().addScaledVector(forward, TRACK_LENGTH * 0.42);
+    const rearLeftPoint = leftCenter.clone().addScaledVector(forward, -TRACK_LENGTH * 0.42);
+    const rearRightPoint = rightCenter.clone().addScaledVector(forward, -TRACK_LENGTH * 0.42);
+    const frontLeftHeight = this.terrain.getHeightAt(frontLeftPoint.x, frontLeftPoint.z);
+    const frontRightHeight = this.terrain.getHeightAt(frontRightPoint.x, frontRightPoint.z);
+    const rearLeftHeight = this.terrain.getHeightAt(rearLeftPoint.x, rearLeftPoint.z);
+    const rearRightHeight = this.terrain.getHeightAt(rearRightPoint.x, rearRightPoint.z);
+    const frontHeight = (frontLeftHeight + frontRightHeight) * 0.5;
+    const rearHeight = (rearLeftHeight + rearRightHeight) * 0.5;
+    const diagonalTwist = (frontLeftHeight + rearRightHeight - frontRightHeight - rearLeftHeight) * 0.5;
     const rawSupportHeight = (left.supportHeight + right.supportHeight) * 0.5;
     const contactSpan = Math.max(left.highHeight, right.highHeight) - Math.min(left.lowHeight, right.lowHeight);
     const disturbedDepth = (left.disturbedDepth + right.disturbedDepth) * 0.5;
     const bucketPocket = this.excavator.bucketPocketWorld();
-    const soilPayloadMass = BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED ? this.bucketLoad * 0.55 + this.bucketTransitLoad * 0.45 : 0;
+    const soilPayloadMass = this.bucketSoilSupportMass();
     const carriedMass = this.carriedWorldObjectMass();
     const payloadMass = soilPayloadMass + carriedMass;
     const reach = bucketPocket.clone().sub(base);
@@ -11140,24 +12690,74 @@ class Simulator {
     const normalizedPayload = clamp(payloadMass / 12, 0, 2.2);
     const pitchMoment = clamp((forwardReach / Math.max(TRACK_LENGTH, 0.001)) * normalizedPayload, -0.9, 0.9);
     const rollMoment = clamp((sideReach / Math.max(TRACK_GAUGE, 0.001)) * normalizedPayload, -1.0, 1.0);
-    const soilLoadFactor = BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED
-      ? this.bucketLoad / BUCKET_CAPACITY + (this.bucketTransitLoad / BUCKET_CAPACITY) * 0.6
-      : 0;
+    const soilLoadFactor = soilPayloadMass / Math.max(BUCKET_CAPACITY, 0.001);
     const loadFactor = clamp(soilLoadFactor + carriedMass / 18, 0, 2.4);
+    const surface = this.terrain.getSurfaceConditionAt(base.x, base.z);
+    const materialSink = clamp(surface.trackSinkMultiplier * (1 + surface.wetness * 0.32 - surface.hardpack * 0.24), 0.42, 2.2);
     const targetSinkage = clamp(
       0.012 + disturbedDepth * 0.13 + contactSpan * 0.035 + loadFactor * 0.026 + Math.abs(pitchMoment) * 0.026 + Math.abs(rollMoment) * 0.018,
       0.012,
       0.28,
     );
-    const targetRoll = clamp(Math.atan2(left.supportHeight - right.supportHeight, TRACK_GAUGE) - rollMoment * 0.11, -0.28, 0.28);
+    const targetBurialDepth = clamp(targetSinkage + disturbedDepth * 0.11 + Math.max(0, contactSpan - 0.05) * 0.035, 0, 0.44);
+    const targetGroundPressure = clamp(
+      (targetBurialDepth * 2.35 + loadFactor * 0.18 + disturbedDepth * 0.22 + contactSpan * 0.12) * materialSink,
+      0,
+      1,
+    );
+    const targetRoll = clamp(
+      Math.atan2(left.supportHeight - right.supportHeight + diagonalTwist * 0.18, TRACK_GAUGE) - rollMoment * 0.11,
+      -0.28,
+      0.28,
+    );
     const targetPitch = clamp(Math.atan2(frontHeight - rearHeight, TRACK_LENGTH * 0.84) - pitchMoment * 0.12, -0.24, 0.24);
+    const trackMotion = Math.max(Math.abs(this.leftTrackVelocity), Math.abs(this.rightTrackVelocity));
 
     this.supportHeight = smoothTo(this.supportHeight, rawSupportHeight, 8.5, dt);
     this.chassisSinkage = smoothTo(this.chassisSinkage, targetSinkage, 3.2, dt);
+    this.chassisBurialDepth = smoothTo(this.chassisBurialDepth, targetBurialDepth, 3.7, dt);
+    this.chassisGroundPressure = smoothTo(this.chassisGroundPressure, targetGroundPressure, 4.6, dt);
     this.chassisRoll = smoothTo(this.chassisRoll, targetRoll, 4.8, dt);
     this.chassisPitch = smoothTo(this.chassisPitch, targetPitch, 4.8, dt);
-    if (loadFactor > 0.05 || Math.abs(pitchMoment) > 0.03 || Math.abs(rollMoment) > 0.03) {
-      this.pressure = Math.max(this.pressure, clamp(0.08 + loadFactor * 0.16 + Math.abs(pitchMoment) * 0.2 + Math.abs(rollMoment) * 0.16, 0, 0.72));
+    let burialCompaction = 0;
+    if (dt > 0 && trackMotion > 0.035 && this.chassisBurialDepth > 0.018) {
+      const compactionDepth = clamp(
+        (this.chassisBurialDepth - 0.014) * dt * 0.032 * materialSink * (1 + loadFactor * 0.16),
+        0,
+        0.018,
+      );
+      if (compactionDepth > 0.00012) {
+        for (const offset of [-TRACK_GAUGE * 0.5, TRACK_GAUGE * 0.5]) {
+          const center = base.clone().addScaledVector(side, offset);
+          center.y = this.terrain.getHeightAt(center.x, center.z);
+          const result = this.compactTrackStripWithWake(center, forward, side, TRACK_LENGTH * 0.92, TRACK_WIDTH * 0.9, compactionDepth);
+          burialCompaction += result.compacted;
+        }
+      }
+    }
+    this.chassisBurialCompaction = smoothTo(this.chassisBurialCompaction, burialCompaction, 5.4, dt);
+    if (burialCompaction > 0) {
+      this.trackSoilWork += burialCompaction;
+    }
+    if (
+      loadFactor > 0.05 ||
+      Math.abs(pitchMoment) > 0.03 ||
+      Math.abs(rollMoment) > 0.03 ||
+      this.chassisGroundPressure > 0.04
+    ) {
+      this.pressure = Math.max(
+        this.pressure,
+        clamp(
+          0.08 +
+            loadFactor * 0.16 +
+            Math.abs(pitchMoment) * 0.2 +
+            Math.abs(rollMoment) * 0.16 +
+            this.chassisGroundPressure * 0.24 +
+            burialCompaction * 0.05,
+          0,
+          0.82,
+        ),
+      );
     }
     this.excavator.group.position.y = smoothTo(this.excavator.group.position.y, this.supportHeight - this.chassisSinkage, 8.5, dt);
     this.excavator.group.rotation.x = this.chassisRoll;
@@ -11170,9 +12770,9 @@ class Simulator {
     const previousLateralSlipDistance = this.trackTraction.lateralSlipDistance;
     this.trackTraction = this.computeTrackTraction(forward);
     this.trackTraction.lateralSlipDistance = previousLateralSlipDistance;
-    for (const [offset, velocity, contactSlip] of [
-      [-0.72, this.leftTrackVelocity, this.trackTraction.leftSlip],
-      [0.72, this.rightTrackVelocity, this.trackTraction.rightSlip],
+    for (const [offset, velocity, contactSlip, normalLoad] of [
+      [-0.72, this.leftTrackVelocity, this.trackTraction.leftSlip, this.trackTraction.leftNormalLoad],
+      [0.72, this.rightTrackVelocity, this.trackTraction.rightSlip, this.trackTraction.rightNormalLoad],
     ] as const) {
       const trackMotion = Math.abs(velocity);
       if (trackMotion < 0.035) {
@@ -11190,6 +12790,7 @@ class Simulator {
       const depth = clamp(
         (0.006 + trackMotion * dt * 0.055) *
           (1 + slip * 1.45 + roughness * 0.85) *
+          clamp(0.76 + normalLoad * 0.24, 0.82, 1.16) *
           materialSink,
         0.002,
         0.052,
@@ -11280,6 +12881,79 @@ class Simulator {
       }
     }
     return best;
+  }
+
+  private excavatorKinematicImpactMass(source: "upper" | "boom" | "stick" | "bucket", sampleRadius: number): number {
+    const radiusMass = sampleRadius * 8.5;
+    if (source === "upper") {
+      return clamp(17.5 + radiusMass + Math.abs(this.velocities.swing) * 2.4, 12, 30);
+    }
+    if (source === "boom") {
+      return clamp(13.5 + radiusMass + Math.abs(this.velocities.boom) * 1.8, 9, 24);
+    }
+    if (source === "stick") {
+      return clamp(8.5 + radiusMass + Math.abs(this.velocities.stick) * 1.4, 5.5, 18);
+    }
+    const payloadMass = this.bucketSoilSupportMass() * 0.48;
+    return clamp(5.4 + radiusMass + payloadMass + this.carriedWorldObjectMass() * 0.28, 3.6, 16);
+  }
+
+  private applyExcavatorKinematicWorldObjectImpact(
+    collider: WorldCollider,
+    hit: { normal: THREE.Vector3; penetration: number; point: THREE.Vector3; motion: THREE.Vector3 },
+    source: "upper" | "boom" | "stick" | "bucket",
+    sampleRadius: number,
+  ): { severity: number; normalImpulse: number; correction: number } {
+    const contactNormal = hit.normal.clone().normalize();
+    const objectNormal = contactNormal.clone().multiplyScalar(-1);
+    const motion = hit.motion.clone();
+    if (motion.lengthSq() < 0.000001 && hit.penetration > 0.0001) {
+      motion.addScaledVector(objectNormal, hit.penetration * 0.08);
+    }
+
+    const sourceMass = this.excavatorKinematicImpactMass(source, sampleRadius);
+    const objectMass = Math.max(collider.mass, 0.05);
+    const invSource = 1 / sourceMass;
+    const invObject = 1 / objectMass;
+    const totalInvMass = invSource + invObject;
+    const surfaceVelocity = motion.multiplyScalar(source === "upper" ? 5.2 : 6.0);
+    const relativeVelocity = surfaceVelocity.clone().sub(collider.velocity);
+    const closingSpeed = Math.max(0, relativeVelocity.dot(objectNormal));
+    const restitution = clamp(collider.restitution + (source === "bucket" ? 0.05 : 0.025), 0.04, 0.42);
+    const penetrationSpeed = hit.penetration * (source === "upper" ? 2.65 : 3.15) + (source === "bucket" ? 0.055 : 0.035);
+    const normalImpulse = ((1 + restitution) * (closingSpeed + penetrationSpeed)) / Math.max(totalInvMass, 0.0001);
+    const sourceAuthority = clamp(sourceMass / (sourceMass + objectMass), 0.22, 0.96);
+    const correction = Math.min(hit.penetration * (0.58 + sourceAuthority * 0.38), source === "upper" ? 0.24 : 0.28);
+
+    collider.mesh.position.addScaledVector(objectNormal, correction);
+    collider.velocity.addScaledVector(objectNormal, normalImpulse * invObject);
+
+    const tangent = relativeVelocity.addScaledVector(objectNormal, -relativeVelocity.dot(objectNormal));
+    let frictionImpulse = 0;
+    let tangentDir: THREE.Vector3 | null = null;
+    const tangentSpeed = tangent.length();
+    if (tangentSpeed > 0.000001) {
+      tangentDir = tangent.divideScalar(tangentSpeed);
+      const frictionCoefficient = clamp(collider.friction + (source === "bucket" ? 0.14 : 0.08), 0.12, 0.96);
+      frictionImpulse = Math.min((tangentSpeed / Math.max(totalInvMass, 0.0001)) * 0.72, normalImpulse * frictionCoefficient);
+      collider.velocity.addScaledVector(tangentDir, frictionImpulse * invObject);
+    }
+
+    if (source !== "upper" && objectNormal.y < 0.16) {
+      const lift = clamp(0.025 + hit.penetration * 0.35 + (normalImpulse * invObject) * 0.04, 0, 0.22);
+      collider.velocity.y = Math.max(collider.velocity.y, lift);
+    }
+
+    const impulseVector = objectNormal.clone().multiplyScalar(normalImpulse);
+    if (tangentDir && frictionImpulse > 0) {
+      impulseVector.addScaledVector(tangentDir, frictionImpulse);
+    }
+    this.applyWorldColliderAngularImpulse(collider, hit.point, impulseVector, source === "upper" ? 0.26 : 0.34);
+    collider.sleeping = false;
+    this.worldColliderGridDirty = true;
+
+    const severity = clamp(hit.penetration * (source === "upper" ? 2.5 : 2.85) + closingSpeed * 0.12 + (normalImpulse * invObject) * 0.16, 0, 1);
+    return { severity, normalImpulse, correction };
   }
 
   private updateAngles(dt: number): ExcavatorAngles {
@@ -11452,29 +13126,12 @@ class Simulator {
           moved.add(collider);
           movedMass += collider.mass;
         }
-        const horizontal = new THREE.Vector3(normal.x, 0, normal.z);
-        if (horizontal.lengthSq() < 0.0001) {
-          horizontal.set(-motion.x, 0, -motion.z);
-        }
-        if (horizontal.lengthSq() < 0.0001) {
-          horizontal.set(1, 0, 0);
-        }
-        horizontal.normalize();
-        const impulse = clamp((penetration * 2.8 + approach * 5.4 + 0.05) / Math.max(collider.mass, 0.12), 0.035, 1.55);
-        const correction = Math.min(penetration * (0.7 + severity * 0.16), 0.2);
-        collider.mesh.position.addScaledVector(horizontal, -correction);
-        collider.velocity.addScaledVector(horizontal, -impulse);
-        collider.velocity.y = Math.max(collider.velocity.y, 0.045 + severity * 0.16);
-        this.applyWorldColliderAngularImpulse(
-          collider,
-          hit.point,
-          horizontal.clone().multiplyScalar(-impulse * collider.mass),
-          0.3,
+        const impact = this.applyExcavatorKinematicWorldObjectImpact(collider, hit, "upper", sample.radius);
+        objectImpulse += impact.normalImpulse;
+        this.pressure = Math.max(
+          this.pressure,
+          clamp(0.08 + Math.max(severity, impact.severity) * 0.28 + impact.normalImpulse * 0.018 + collider.mass * 0.008, 0, 0.64),
         );
-        collider.sleeping = false;
-        objectImpulse += impulse;
-        this.worldColliderGridDirty = true;
-        this.pressure = Math.max(this.pressure, clamp(0.08 + severity * 0.28 + collider.mass * 0.008, 0, 0.58));
       }
     }
 
@@ -11508,6 +13165,10 @@ class Simulator {
     collided: boolean;
     blockedActions: ActionName[];
     penetration: number;
+    hitSampleKey: string;
+    hitAction: "boom" | "stick" | "bucket" | "";
+    bucketTruckSampleHit: boolean;
+    bucketTruckPenetration: number;
   } {
     const currentAngles = { ...this.angles };
     const currentSamples = this.excavator.armCollisionSamples();
@@ -11516,6 +13177,10 @@ class Simulator {
     this.excavator.applyAngles(currentAngles);
 
     let maxPenetration = 0;
+    let hitSampleKey = "";
+    let hitAction: "boom" | "stick" | "bucket" | "" = "";
+    let bucketTruckSampleHit = false;
+    let bucketTruckPenetration = 0;
     const affected = new Set<"boom" | "stick" | "bucket">();
 
     for (let i = 0; i < currentSamples.length; i += 1) {
@@ -11525,7 +13190,15 @@ class Simulator {
       if (!hit) {
         continue;
       }
-      maxPenetration = Math.max(maxPenetration, hit.penetration);
+      if (hit.penetration > maxPenetration) {
+        maxPenetration = hit.penetration;
+        hitSampleKey = sample.key ?? sample.action;
+        hitAction = sample.action;
+      }
+      if (sample.action === "bucket") {
+        bucketTruckSampleHit = true;
+        bucketTruckPenetration = Math.max(bucketTruckPenetration, hit.penetration);
+      }
       affected.add(sample.action);
       this.truck.applyImpact(
         hit.point,
@@ -11535,7 +13208,15 @@ class Simulator {
     }
 
     if (affected.size === 0) {
-      return { collided: false, blockedActions: [], penetration: 0 };
+      return {
+        collided: false,
+        blockedActions: [],
+        penetration: 0,
+        hitSampleKey: "",
+        hitAction: "",
+        bucketTruckSampleHit: false,
+        bucketTruckPenetration: 0,
+      };
     }
 
     const chain = new Set<ActionName>(["swing"]);
@@ -11573,7 +13254,15 @@ class Simulator {
       this.excavator.applyAngles(this.angles);
     }
 
-    return { collided: true, blockedActions, penetration: maxPenetration };
+    return {
+      collided: true,
+      blockedActions,
+      penetration: maxPenetration,
+      hitSampleKey,
+      hitAction,
+      bucketTruckSampleHit,
+      bucketTruckPenetration,
+    };
   }
 
   private resolveArmWorldObjectCollisions(previousAngles: ExcavatorAngles): {
@@ -11654,14 +13343,8 @@ class Simulator {
           continue;
         }
 
-        const normalX = hit.normal.x;
-        const normalY = hit.normal.y;
-        const normalZ = hit.normal.z;
         const penetration = hit.penetration;
-        const motionX = hit.motion.x;
-        const motionY = hit.motion.y;
-        const motionZ = hit.motion.z;
-        const approach = Math.max(0, -(motionX * normalX + motionY * normalY + motionZ * normalZ));
+        const approach = Math.max(0, -hit.motion.dot(hit.normal));
         const severity = clamp(penetration * 2.8 + approach * 5.5 + (collider.immovable ? 0.18 : 0), 0, 1);
         maxPenetration = Math.max(maxPenetration, penetration);
         maxSeverity = Math.max(maxSeverity, severity);
@@ -11677,39 +13360,11 @@ class Simulator {
           break;
         }
 
-        let pushX = normalX;
-        let pushZ = normalZ;
-        let pushLenSq = pushX * pushX + pushZ * pushZ;
-        if (pushLenSq < 0.0001) {
-          pushX = -motionX;
-          pushZ = -motionZ;
-          pushLenSq = pushX * pushX + pushZ * pushZ;
-        }
-        if (pushLenSq < 0.0001) {
-          pushX = 1;
-          pushZ = 0;
-          pushLenSq = 1;
-        }
-        const pushInvLen = 1 / Math.sqrt(pushLenSq);
-        pushX *= pushInvLen;
-        pushZ *= pushInvLen;
-
-        const impulse = clamp((penetration * 3.2 + approach * 6.0 + 0.06) / Math.max(collider.mass, 0.12), 0.04, 1.9);
-        const correction = Math.min(penetration * 0.85, 0.2);
-        collider.mesh.position.x -= pushX * correction;
-        collider.mesh.position.z -= pushZ * correction;
-        collider.velocity.x -= pushX * impulse;
-        collider.velocity.z -= pushZ * impulse;
-        collider.velocity.y = Math.max(collider.velocity.y, 0.06 + severity * 0.2);
-        this.applyWorldColliderAngularImpulse(
-          collider,
-          hit.point,
-          new THREE.Vector3(-pushX * impulse * collider.mass, -normalY * impulse * collider.mass * 0.35, -pushZ * impulse * collider.mass),
-          0.32,
+        const impact = this.applyExcavatorKinematicWorldObjectImpact(collider, hit, sample.action, sample.radius);
+        this.pressure = Math.max(
+          this.pressure,
+          clamp(0.08 + Math.max(severity, impact.severity) * 0.26 + impact.normalImpulse * 0.016 + collider.mass * 0.01, 0, 0.62),
         );
-        collider.sleeping = false;
-        this.worldColliderGridDirty = true;
-        this.pressure = Math.max(this.pressure, clamp(0.08 + severity * 0.26 + collider.mass * 0.01, 0, 0.55));
         if (collider.crushable && severity > 0.34) {
           collider.mesh.scale.multiplyScalar(1 - Math.min(severity * 0.035, 0.07));
           this.raiseTerrainWithWake(collider.mesh.position, Math.max(0.14, collider.radius * 1.4), collider.radius * 0.008 * severity, 0);
@@ -11880,7 +13535,7 @@ class Simulator {
       0,
       1,
     );
-    const drag = 1;
+    const drag = ARM_SUBSOIL_INPUT_DRAG;
 
     const hasSubmergedMotion = submergedMotion > 0.004;
     if (!hasSubmergedMotion) {
@@ -11925,6 +13580,19 @@ class Simulator {
       pocketDirection.normalize();
     }
     const pocketPullAlignment = strokeDistance > 0.0001 ? strokeDirection.dot(pocketDirection) : 0;
+    const pocketStroke = pocket.clone().sub(this.previousBucketPocket);
+    const mouthEntrySpeed = clamp(
+      (Math.max(0, stroke.dot(pocketDirection)) + Math.max(0, pocketStroke.dot(pocketDirection)) * 0.35) /
+        Math.max(dt, 0.001),
+      0,
+      1.6,
+    );
+    const mouthEscapeSpeed = clamp(
+      (Math.max(0, -stroke.dot(pocketDirection)) + Math.max(0, -pocketStroke.dot(pocketDirection)) * 0.25) /
+        Math.max(dt, 0.001),
+      0,
+      1.6,
+    );
     let maxPenetration = 0;
     let contactCount = 0;
 
@@ -11943,14 +13611,16 @@ class Simulator {
     const curlInSpeed = Math.max(0, -this.velocities.bucket);
     const stickPullSpeed = Math.max(0, -this.velocities.stick);
     const openOutSpeed = Math.max(0, this.velocities.bucket);
-    const reverseAlignmentPenalty = Math.max(0, -pocketPullAlignment) * clamp(openOutSpeed * 1.2, 0, 0.5);
+    const reverseAlignmentPenalty =
+      Math.max(0, -pocketPullAlignment) * clamp(openOutSpeed * 1.2, 0, 0.5) + mouthEscapeSpeed * 0.18;
     const reversePushIntent =
       tipSpeed > 0.05 && (openOutSpeed > 0.05 || this.velocities.stick > 0.05 || pocketPullAlignment < -0.08);
     const captureGate = clamp(
-      0.2 +
+      0.16 +
         curlInSpeed * 0.88 +
         stickPullSpeed * 0.42 +
-        Math.max(0, pocketPullAlignment) * 0.38 -
+        Math.max(0, pocketPullAlignment) * 0.34 +
+        mouthEntrySpeed * 0.24 -
         reverseAlignmentPenalty -
         openOutSpeed * 0.42,
       0,
@@ -11959,7 +13629,8 @@ class Simulator {
     const isDiggingMotion =
       curlInSpeed > 0.035 ||
       stickPullSpeed > 0.035 ||
-      (tipSpeed > 0.08 && pocketPullAlignment > 0.18 && openOutSpeed < 0.08);
+      (tipSpeed > 0.08 && pocketPullAlignment > 0.18 && openOutSpeed < 0.08) ||
+      (mouthEntrySpeed > 0.12 && openOutSpeed < 0.08);
 
     if (contactRatio > 0 && isDiggingMotion && captureGate > 0.14) {
       const penetration = clamp(maxPenetration, 0.01, 0.72);
@@ -11980,7 +13651,7 @@ class Simulator {
       const freeCapacity = BUCKET_CAPACITY - this.bucketLoad - this.bucketTransitLoad;
       const penetration = clamp(maxPenetration, 0.01, 0.9);
       const bite = clamp(
-        (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.32 + 0.32) *
+        (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.24 + mouthEntrySpeed * 0.34 + 0.32) *
           attackEfficiency *
           captureGate *
           (0.5 + contactRatio * 0.5),
@@ -12046,9 +13717,16 @@ class Simulator {
 
     this.excavator.setBucketLoad(this.bucketLoad);
     const openFactor = clamp((this.angles.bucket + 0.58) / (ANGLE_LIMITS.bucket.max + 0.58), 0, 1);
-    const dumpIntent = openFactor > 0.02 || this.velocities.bucket > 0.12;
+    const gravityDumpFactor = clamp((-forward.y - 0.08) / 0.72, 0, 1);
+    if (this.bucketLoad > 0.002) {
+      this.excavator.slumpBucketLoadUnderGravity(
+        dt,
+        0.9 + openFactor * 1.2 + gravityDumpFactor * 2.0 + Math.max(0, this.velocities.bucket) * 0.6,
+      );
+    }
+    const dumpIntent = openFactor > 0.015 || this.velocities.bucket > 0.08 || gravityDumpFactor > 0.08;
     this.bucketLoadSlumpAccumulator = 0;
-    const lipDumpBias = 0;
+    const lipDumpBias = clamp(openFactor + gravityDumpFactor * 0.72, 0, 1.2);
     if ((openFactor > 0.08 || this.velocities.bucket > 0.18) && this.carriedWorldColliders.size > 0) {
       const releaseVelocity = forward
         .clone()
@@ -12071,6 +13749,7 @@ class Simulator {
     this.excavator.setBucketLoad(this.bucketLoad);
     this.truck.updateLoad(this.truckLoad);
     this.previousBucketTip.copy(tip);
+    this.previousBucketPocket.copy(pocket);
   }
 
   private spillBucketLoadToWorld(
@@ -12084,8 +13763,12 @@ class Simulator {
     }
 
     const openDump = clamp(lipBias, 0, 1.2);
-    const spillRate = Math.min(maxVolume, Math.max(0, (0.36 + openDump * 1.15) * Math.max(intensity, 0.2) * dt));
-    const spilledVolume = Math.min(this.bucketLoad, maxVolume, spillRate);
+    const spillPerSecond = BUCKET_SOIL_FAST_DUMP_ENABLED
+      ? 1.35 + openDump * 3.25
+      : 0.36 + openDump * 1.15;
+    const spillRate = Math.min(maxVolume, Math.max(0, spillPerSecond * Math.max(intensity, 0.2) * dt));
+    const spill = this.excavator.spillBucketLoadOverLip(dt, intensity, this.bucketLoad, spillRate, openDump);
+    const spilledVolume = Math.min(this.bucketLoad, maxVolume, spill.spilledVolume);
     if (spilledVolume <= 0.001) {
       return { spilledVolume: 0, heightRemoved: 0, worldPoint: this.excavator.bucketTipWorld() };
     }
@@ -12094,8 +13777,7 @@ class Simulator {
     this.bucketDumpPressureSilence = Math.max(this.bucketDumpPressureSilence, 0.75);
     this.excavator.setBucketLoad(this.bucketLoad);
     const forward = this.excavator.bucketForwardWorld();
-    const side = this.excavator.bucketSidewaysWorld();
-    const worldPoint = this.excavator.bucketTipWorld().addScaledVector(forward, 0.08 + openDump * 0.18).addScaledVector(side, (Math.random() - 0.5) * 0.18);
+    const worldPoint = spill.worldPoint.clone();
     const openness = openDump;
     const spillVelocity = forward
       .clone()
@@ -12103,13 +13785,13 @@ class Simulator {
       .add(new THREE.Vector3(0, -0.45 - openness * 1.15, 0));
     if (BUCKET_SOIL_FAST_DUMP_ENABLED) {
       const deposit = this.depositBucketSpillFast(worldPoint, spilledVolume, openness, spillVelocity);
-      return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint: deposit.point };
+      return { spilledVolume, heightRemoved: spill.heightRemoved, worldPoint: deposit.point };
     }
     const fineVolume = spilledVolume * clamp(0.018 + openness * 0.026, 0.018, 0.055);
     const coarseVolume = Math.max(0, spilledVolume - fineVolume);
     this.spawnSoilParticles(worldPoint, coarseVolume, forward, openness);
     this.spawnFineGrains(worldPoint, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openness, 0)), true, 1.05 + openness);
-    return { spilledVolume, heightRemoved: spilledVolume / Math.max(BUCKET_CAPACITY, 0.001), worldPoint };
+    return { spilledVolume, heightRemoved: spill.heightRemoved, worldPoint };
   }
 
   private depositBucketSpillFast(
@@ -12119,7 +13801,18 @@ class Simulator {
     initialVelocity: THREE.Vector3,
   ): BucketSpillDepositResult {
     if (volume <= 0) {
-      return { target: "terrain", point: worldPoint, fallTime: 0, impactSpeed: 0, truckVolume: 0, terrainVolume: 0 };
+      return {
+        target: "terrain",
+        point: worldPoint,
+        fallTime: 0,
+        impactSpeed: 0,
+        truckVolume: 0,
+        terrainVolume: 0,
+        terrainDeposited: 0,
+        footprintRadius: 0,
+        footprintSlope: 0,
+        footprintShiftDistance: 0,
+      };
     }
 
     const truckHit = this.truck.ballisticBedImpact(worldPoint, initialVelocity) ??
@@ -12129,8 +13822,24 @@ class Simulator {
     if (truckHit) {
       const accepted = this.truck.depositSoilAt(truckHit.point, volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
+      let terrainDeposited = 0;
+      let footprintRadius = 0;
+      let footprintSlope = 0;
+      let footprintShiftDistance = 0;
       if (accepted < volume) {
-        this.raiseTerrainWithWake(new THREE.Vector3(truckHit.point.x, 0, truckHit.point.z), 0.3 + Math.cbrt(volume - accepted) * 0.1, volume - accepted, 0);
+        const overflowVolume = volume - accepted;
+        const overflowRadius = 0.3 + Math.cbrt(overflowVolume) * 0.1 + clamp(openness, 0, 1) * 0.04;
+        const footprint = this.soilTerrainDepositFootprint(
+          truckHit.point,
+          overflowVolume,
+          overflowRadius,
+          false,
+          truckHit.impactSpeed,
+        );
+        terrainDeposited = this.raiseTerrainWithWake(footprint.center, footprint.radius, overflowVolume, 0);
+        footprintRadius = footprint.radius;
+        footprintSlope = footprint.slope;
+        footprintShiftDistance = footprint.shiftDistance;
       }
       this.truck.updateLoad(this.truckLoad);
       return {
@@ -12140,12 +13849,17 @@ class Simulator {
         impactSpeed: truckHit.impactSpeed,
         truckVolume: accepted,
         terrainVolume: Math.max(0, volume - accepted),
+        terrainDeposited,
+        footprintRadius,
+        footprintSlope,
+        footprintShiftDistance,
       };
     }
 
     const terrainHit = this.ballisticTerrainImpact(worldPoint, initialVelocity);
     const radius = 0.3 + Math.cbrt(volume) * 0.15 + clamp(openness, 0, 1) * 0.06;
-    this.raiseTerrainWithWake(terrainHit.point, radius, volume, 0);
+    const footprint = this.soilTerrainDepositFootprint(terrainHit.point, volume, radius, false, terrainHit.impactSpeed);
+    const terrainDeposited = this.raiseTerrainWithWake(footprint.center, footprint.radius, volume, 0);
     this.truck.updateLoad(this.truckLoad);
     return {
       target: "terrain",
@@ -12154,6 +13868,10 @@ class Simulator {
       impactSpeed: terrainHit.impactSpeed,
       truckVolume: 0,
       terrainVolume: volume,
+      terrainDeposited,
+      footprintRadius: footprint.radius,
+      footprintSlope: footprint.slope,
+      footprintShiftDistance: footprint.shiftDistance,
     };
   }
 
@@ -12350,13 +14068,24 @@ class Simulator {
     radius: number,
     dt: number,
     fineGrain: boolean,
+    mass = Math.max(fineGrain ? 0.006 : 0.025, (4 / 3) * Math.PI * radius ** 3 * 1.8),
   ): SoilTerrainContactResult {
     const span = Math.max(this.terrain.spacing * 1.25, radius * 2.2);
     const ground = this.terrain.getHeightAt(pos.x, pos.z);
     const penetration = ground + radius - pos.y;
     if (penetration < 0) {
       const speed = velocity.length();
-      return { contacted: false, settled: false, slope: 0, slideDistance: 0, speedBefore: speed, speedAfter: speed };
+      return {
+        contacted: false,
+        settled: false,
+        slope: 0,
+        slideDistance: 0,
+        speedBefore: speed,
+        speedAfter: speed,
+        normalImpulse: 0,
+        compactionDrop: 0,
+        compactionBermVolume: 0,
+      };
     }
 
     const hL = this.terrain.getHeightAt(pos.x - span, pos.z);
@@ -12374,18 +14103,30 @@ class Simulator {
 
     const normalSpeed = velocity.dot(normal);
     const tangent = velocity.clone().addScaledVector(normal, -normalSpeed);
+    const tangentSpeed = tangent.length();
     const restitution = fineGrain
       ? clamp(0.045 + surface.hardpack * 0.055 - surface.wetness * 0.025, 0.018, 0.095)
       : clamp(0.065 + surface.hardpack * 0.06 - surface.wetness * 0.02, 0.025, 0.13);
-    const tangentDamping = clamp(
-      (fineGrain ? 0.58 : 0.64) + surface.hardpack * 0.16 + surface.compaction * 0.1 - surface.wetness * 0.18,
-      fineGrain ? 0.34 : 0.42,
-      fineGrain ? 0.82 : 0.88,
+    const surfaceFriction = clamp(
+      (fineGrain ? 0.36 : 0.48) + surface.compaction * 0.2 + surface.hardpack * 0.12 - surface.wetness * 0.18,
+      fineGrain ? 0.16 : 0.22,
+      fineGrain ? 0.72 : 0.86,
     );
+    const supportImpulse = Math.max(0, penetration) * mass * (fineGrain ? 2.4 : 3.2);
+    let normalImpulse = supportImpulse;
+    let nextNormalSpeed = Math.max(normalSpeed, 0);
     if (normalSpeed < 0) {
-      velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(normal, -normalSpeed * restitution);
+      normalImpulse += -(1 + restitution) * normalSpeed * mass;
+      nextNormalSpeed = -normalSpeed * restitution + Math.min(penetration * (fineGrain ? 0.055 : 0.095), fineGrain ? 0.035 : 0.075);
+    } else if (penetration > (fineGrain ? 0.006 : 0.014)) {
+      nextNormalSpeed += Math.min(penetration * (fineGrain ? 0.025 : 0.042), fineGrain ? 0.018 : 0.038);
+    }
+    if (tangentSpeed > 0.000001) {
+      const tangentDir = tangent.divideScalar(tangentSpeed);
+      const frictionSpeed = Math.min(tangentSpeed, (normalImpulse * surfaceFriction) / Math.max(mass, 0.001));
+      velocity.copy(tangentDir.multiplyScalar(tangentSpeed - frictionSpeed)).addScaledVector(normal, nextNormalSpeed);
     } else {
-      velocity.copy(tangent.multiplyScalar(tangentDamping)).addScaledVector(normal, normalSpeed * 0.48);
+      velocity.copy(normal).multiplyScalar(nextNormalSpeed);
     }
 
     let slideDistance = 0;
@@ -12393,8 +14134,10 @@ class Simulator {
       const downhill = new THREE.Vector3(-slopeX, 0, -slopeZ);
       if (downhill.lengthSq() > 0.000001) {
         downhill.normalize();
-        const gravityAlongSlope = (9.81 * clamp(slope, 0, 0.9)) / Math.sqrt(1 + slope * slope);
-        const slideGrip = clamp(0.16 + surface.hardpack * 0.2 + surface.compaction * 0.08 - surface.wetness * 0.1, 0.04, 0.34);
+        const kineticSlopeDrive = tangentSpeed > 0.01 ? clamp(tangentSpeed * 0.018, 0, 0.08) : 0;
+        const reposeDrive = Math.max(0, slope - surface.reposeTan * (fineGrain ? 0.42 : 0.5));
+        const gravityAlongSlope = (9.81 * clamp(reposeDrive + kineticSlopeDrive + surface.wetness * slope * 0.1, 0, 0.9)) / Math.sqrt(1 + slope * slope);
+        const slideGrip = clamp(1 - surfaceFriction * 0.64 + surface.wetness * 0.18, 0.08, 0.55);
         const slideVelocity = gravityAlongSlope * slideGrip * dt;
         velocity.addScaledVector(downhill, slideVelocity);
         slideDistance = slideVelocity * dt;
@@ -12403,12 +14146,76 @@ class Simulator {
 
     const speedAfter = velocity.length();
     const settleSpeed = fineGrain ? 0.135 + surface.wetness * 0.045 : 0.18 + surface.wetness * 0.06;
-    const settled = speedAfter < settleSpeed && (slope < SOIL_REPOSE_TAN * 0.94 || surface.wetness > 0.42);
+    const settled = speedAfter < settleSpeed && (slope < surface.reposeTan * 0.94 || surface.wetness > 0.42);
+    const impactEnergy = Math.max(0, speedBefore * speedBefore - speedAfter * speedAfter) * mass * 0.5;
+    const compactionDrop = clamp(
+      (normalImpulse * (fineGrain ? 0.018 : 0.024) + impactEnergy * (fineGrain ? 0.03 : 0.04)) *
+        clamp(1.15 - surface.hardpack * 0.45 + surface.wetness * 0.22, 0.48, 1.35),
+      0,
+      fineGrain ? 0.012 : 0.032,
+    );
+    let compactionBermVolume = 0;
+    if (compactionDrop > 0.00025) {
+      const compactionRadius = clamp(radius * (fineGrain ? 2.4 : 2.8) + Math.cbrt(mass) * 0.08, fineGrain ? 0.08 : 0.18, fineGrain ? 0.24 : 0.42);
+      const compactedVolume = this.terrain.lowerAt(pos, compactionRadius, compactionDrop);
+      if (compactedVolume > 0) {
+        const bermDirection =
+          tangentSpeed > 0.001
+            ? tangent.clone().normalize()
+            : slope > 0.001
+              ? new THREE.Vector3(-slopeX, 0, -slopeZ).normalize()
+              : new THREE.Vector3(1, 0, 0);
+        const bermCenter = pos.clone().addScaledVector(bermDirection, compactionRadius * (fineGrain ? 1.55 : 1.75));
+        bermCenter.y = this.terrain.getHeightAt(bermCenter.x, bermCenter.z);
+        const displacedVolume = compactedVolume * clamp(0.14 + surface.wetness * 0.18 + Math.min(speedBefore, 2.4) * 0.025 - surface.hardpack * 0.055, 0.08, 0.38);
+        compactionBermVolume = displacedVolume > 0
+          ? this.raiseTerrainWithWake(bermCenter, compactionRadius * (fineGrain ? 1.18 : 1.35), displacedVolume, 1)
+          : 0;
+      }
+      this.wakeWorldCollidersNear(pos, compactionRadius + 0.42);
+    }
     this.pressure = Math.max(
       this.pressure,
-      clamp(0.018 + Math.max(0, -normalSpeed) * (fineGrain ? 0.018 : 0.032) + penetration * 0.12, 0, fineGrain ? 0.14 : 0.24),
+      clamp(0.018 + normalImpulse * (fineGrain ? 0.1 : 0.08) + penetration * 0.12 + compactionDrop * 2.6, 0, fineGrain ? 0.14 : 0.24),
     );
-    return { contacted: true, settled, slope, slideDistance, speedBefore, speedAfter };
+    return { contacted: true, settled, slope, slideDistance, speedBefore, speedAfter, normalImpulse, compactionDrop, compactionBermVolume };
+  }
+
+  private soilTerrainDepositFootprint(
+    pos: THREE.Vector3,
+    volume: number,
+    baseRadius: number,
+    fineGrain: boolean,
+    impactSpeed = 0,
+  ): { center: THREE.Vector3; radius: number; slope: number; shiftDistance: number } {
+    const span = Math.max(this.terrain.spacing * 1.25, Math.cbrt(Math.max(volume, 0.000001)) * 0.48, baseRadius * 0.72);
+    const hL = this.terrain.getHeightAt(pos.x - span, pos.z);
+    const hR = this.terrain.getHeightAt(pos.x + span, pos.z);
+    const hD = this.terrain.getHeightAt(pos.x, pos.z - span);
+    const hU = this.terrain.getHeightAt(pos.x, pos.z + span);
+    const slopeX = (hR - hL) / Math.max(span * 2, 0.001);
+    const slopeZ = (hU - hD) / Math.max(span * 2, 0.001);
+    const slope = Math.hypot(slopeX, slopeZ);
+    const surface = this.terrain.getSurfaceConditionAt(pos.x, pos.z);
+    const reposeRatio = clamp(slope / Math.max(surface.reposeTan, 0.08), 0, 2.2);
+    const wetSpread = surface.wetness * (fineGrain ? 0.22 : 0.16);
+    const speedSpread = clamp(impactSpeed * (fineGrain ? 0.08 : 0.06), 0, fineGrain ? 0.18 : 0.14);
+    const slopeSpread = reposeRatio * (fineGrain ? 0.18 : 0.14);
+    const radius = clamp(
+      baseRadius * (1 + wetSpread + speedSpread + slopeSpread),
+      baseRadius,
+      fineGrain ? 0.58 : 0.96,
+    );
+    const downhill = new THREE.Vector3(-slopeX, 0, -slopeZ);
+    let shiftDistance = 0;
+    const center = new THREE.Vector3(pos.x, this.terrain.getHeightAt(pos.x, pos.z), pos.z);
+    if (downhill.lengthSq() > 0.000001) {
+      downhill.normalize();
+      shiftDistance = radius * clamp(reposeRatio * 0.2 + surface.wetness * 0.08 + impactSpeed * 0.018, 0, fineGrain ? 0.42 : 0.34);
+      center.addScaledVector(downhill, shiftDistance);
+      center.y = this.terrain.getHeightAt(center.x, center.z);
+    }
+    return { center, radius, slope, shiftDistance };
   }
 
   private shouldResolveDynamicSoilCollisionAt(
@@ -12495,7 +14302,8 @@ class Simulator {
       let terrainSettled = false;
       if (settles && !inTruck) {
         const fineVelocity = new THREE.Vector3(this.fineGrainVelocities[p], this.fineGrainVelocities[p + 1], this.fineGrainVelocities[p + 2]);
-        const terrainContact = this.resolveSoilTerrainContact(finePosition, fineVelocity, 0.026, dt, true);
+        const fineMass = Math.max(0.006, this.fineGrainVolumes[i] * 1.8);
+        const terrainContact = this.resolveSoilTerrainContact(finePosition, fineVelocity, 0.026, dt, true, fineMass);
         if (terrainContact.contacted) {
           this.fineGrainPositions[p] = finePosition.x;
           this.fineGrainPositions[p + 1] = finePosition.y;
@@ -12544,17 +14352,19 @@ class Simulator {
     }
     const p = i * 3;
     const pos = new THREE.Vector3(this.fineGrainPositions[p], this.fineGrainPositions[p + 1], this.fineGrainPositions[p + 2]);
+    const impactSpeed = Math.hypot(this.fineGrainVelocities[p], this.fineGrainVelocities[p + 1], this.fineGrainVelocities[p + 2]);
     const inTruck = this.truck.containsWorldPoint(pos) && pos.y < TRUCK_CENTER.y + 1.72;
     if (inTruck) {
       const accepted = this.truck.depositSoilAt(pos, volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < volume) {
-        this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.18, volume - accepted, 0);
+        const footprint = this.soilTerrainDepositFootprint(pos, volume - accepted, 0.18, true, impactSpeed);
+        this.raiseTerrainWithWake(footprint.center, footprint.radius, volume - accepted, 0);
       }
     } else {
-      const ground = this.terrain.getHeightAt(pos.x, pos.z);
       const settleRadius = Math.max(this.terrain.spacing * 0.62, 0.14 + Math.cbrt(volume) * 0.08);
-      this.raiseTerrainWithWake(new THREE.Vector3(pos.x, ground, pos.z), settleRadius, volume, 0);
+      const footprint = this.soilTerrainDepositFootprint(pos, volume, settleRadius, true, impactSpeed);
+      this.raiseTerrainWithWake(footprint.center, footprint.radius, volume, 0);
     }
     this.fineGrainSettledVolume += volume;
     this.truck.updateLoad(this.truckLoad);
@@ -12687,19 +14497,33 @@ class Simulator {
       }
 
       const inTruck = this.truck.containsWorldPoint(pos) && pos.y < TRUCK_CENTER.y + 1.72;
+      const particleMass = Math.max(0.025, particle.volume * 1.8);
       const terrainContact = inTruck
-        ? { contacted: false, settled: false, slope: 0, slideDistance: 0, speedBefore: particle.velocity.length(), speedAfter: particle.velocity.length() }
-        : this.resolveSoilTerrainContact(pos, particle.velocity, particle.radius, dt, false);
+        ? {
+            contacted: false,
+            settled: false,
+            slope: 0,
+            slideDistance: 0,
+            speedBefore: particle.velocity.length(),
+            speedAfter: particle.velocity.length(),
+            normalImpulse: 0,
+            compactionDrop: 0,
+            compactionBermVolume: 0,
+          }
+        : this.resolveSoilTerrainContact(pos, particle.velocity, particle.radius, dt, false, particleMass);
       if (inTruck || terrainContact.settled || particle.life > 5.5) {
         this.soilParticles.splice(i, 1);
         if (inTruck) {
           const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
           this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
           if (accepted < particle.volume) {
-            this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted, 1);
+            const footprint = this.soilTerrainDepositFootprint(pos, particle.volume - accepted, 0.42, false, particle.velocity.length());
+            this.raiseTerrainWithWake(footprint.center, footprint.radius, particle.volume - accepted, 1);
           }
         } else {
-          this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
+          const baseRadius = 0.38 + Math.cbrt(particle.volume) * 0.12;
+          const footprint = this.soilTerrainDepositFootprint(pos, particle.volume, baseRadius, false, particle.velocity.length());
+          this.raiseTerrainWithWake(footprint.center, footprint.radius, particle.volume, 1);
         }
         this.recycleSoilParticle(particle);
       }
@@ -12728,16 +14552,12 @@ class Simulator {
       const truckHit = this.truck.resolveSolidCollision(pos, radius);
       if (truckHit) {
         pos.addScaledVector(truckHit.normal, truckHit.penetration + 0.002);
-        const normalSpeed = velocity.dot(truckHit.normal);
+        const normalImpulse = this.resolveSoilStaticSurfaceVelocity(velocity, truckHit.normal, truckHit.penetration, fineMass, true, 0.36, 0.05);
         this.truck.applyImpact(
           pos,
           truckHit.normal,
-          clamp(0.002 + truckHit.penetration * 0.08 + Math.max(0, -normalSpeed) * fineMass * 0.24, 0.001, 0.05),
+          clamp(0.002 + truckHit.penetration * 0.08 + normalImpulse * 0.24, 0.001, 0.05),
         );
-        if (normalSpeed < 0) {
-          velocity.addScaledVector(truckHit.normal, -(1.18 * normalSpeed));
-          velocity.multiplyScalar(0.62);
-        }
         collided = true;
       }
     }
@@ -12745,14 +14565,16 @@ class Simulator {
     const bucketLoadHit = this.excavator.resolveBucketLoadCollision(pos, radius);
     if (bucketLoadHit) {
       pos.addScaledVector(bucketLoadHit.normal, Math.min(bucketLoadHit.penetration + 0.0015, 0.08));
-      const normalSpeed = velocity.dot(bucketLoadHit.normal);
-      const tangent = velocity.clone().addScaledVector(bucketLoadHit.normal, -normalSpeed);
-      if (normalSpeed < 0) {
-        velocity.copy(tangent.multiplyScalar(0.58)).addScaledVector(bucketLoadHit.normal, -normalSpeed * 0.14);
-      } else {
-        velocity.copy(tangent.multiplyScalar(0.64)).addScaledVector(bucketLoadHit.normal, normalSpeed);
-      }
-      this.pressure = Math.max(this.pressure, clamp(0.08 + bucketLoadHit.penetration * 0.35, 0, 0.28));
+      const normalImpulse = this.resolveSoilStaticSurfaceVelocity(
+        velocity,
+        bucketLoadHit.normal,
+        bucketLoadHit.penetration,
+        fineMass,
+        true,
+        0.38,
+        0.06,
+      );
+      this.pressure = Math.max(this.pressure, clamp(0.08 + bucketLoadHit.penetration * 0.35 + normalImpulse * 0.22, 0, 0.28));
       collided = true;
       this.fineGrainPositions[p] = pos.x;
       this.fineGrainPositions[p + 1] = pos.y;
@@ -12797,20 +14619,24 @@ class Simulator {
 
       const relativeVelocity = velocity.clone().sub(collider.velocity);
       const closingSpeed = relativeVelocity.dot(normal);
+      let normalImpulse = 0;
       if (closingSpeed < 0) {
         const restitution = Math.min(0.16, collider.restitution + 0.03);
-        const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
-        velocity.addScaledVector(normal, impulse * invFine);
-        collider.velocity.addScaledVector(normal, -impulse * invObject);
-        this.applyWorldColliderAngularImpulse(collider, pos, normal.clone().multiplyScalar(-impulse), 0.18);
+        normalImpulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
+        velocity.addScaledVector(normal, normalImpulse * invFine);
+        collider.velocity.addScaledVector(normal, -normalImpulse * invObject);
+        this.applyWorldColliderAngularImpulse(collider, pos, normal.clone().multiplyScalar(-normalImpulse), 0.18);
       }
 
       const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
-      if (tangent.lengthSq() > 0.000001) {
-        tangent.normalize().multiplyScalar(clamp(collider.friction * 0.055, 0.018, 0.08));
-        velocity.addScaledVector(tangent, -invFine / totalInvMass);
-        collider.velocity.addScaledVector(tangent, invObject / totalInvMass);
-        this.applyWorldColliderAngularImpulse(collider, pos, tangent.clone().multiplyScalar(invObject / totalInvMass), 0.12);
+      const tangentSpeed = tangent.length();
+      if (tangentSpeed > 0.000001) {
+        const tangentDir = tangent.divideScalar(tangentSpeed);
+        const frictionLimit = Math.max(normalImpulse * clamp(collider.friction, 0.08, 0.95), fineMass * (0.012 + penetration * 0.15));
+        const frictionImpulse = Math.min((tangentSpeed / totalInvMass) * clamp(collider.friction, 0.18, 0.9), frictionLimit);
+        velocity.addScaledVector(tangentDir, -frictionImpulse * invFine);
+        collider.velocity.addScaledVector(tangentDir, frictionImpulse * invObject);
+        this.applyWorldColliderAngularImpulse(collider, pos, tangentDir.clone().multiplyScalar(frictionImpulse), 0.12);
         velocity.multiplyScalar(1 - Math.min(collider.friction * 0.04, 0.08));
       }
       collider.sleeping = false;
@@ -12908,18 +14734,20 @@ class Simulator {
       const truckHit = this.truck.resolveSolidCollision(pos, radius);
       if (truckHit) {
         pos.addScaledVector(truckHit.normal, truckHit.penetration + 0.004);
-        const normalSpeed = particle.velocity.dot(truckHit.normal);
-        const tangent = particle.velocity.clone().addScaledVector(truckHit.normal, -normalSpeed);
+        const normalImpulse = this.resolveSoilStaticSurfaceVelocity(
+          particle.velocity,
+          truckHit.normal,
+          truckHit.penetration,
+          soilMass,
+          false,
+          0.48,
+          0.09,
+        );
         this.truck.applyImpact(
           pos,
           truckHit.normal,
-          clamp(0.012 + truckHit.penetration * 0.42 + Math.max(0, -normalSpeed) * soilMass * 0.28, 0.006, 0.42),
+          clamp(0.012 + truckHit.penetration * 0.42 + normalImpulse * 0.28, 0.006, 0.42),
         );
-        if (normalSpeed < 0) {
-          particle.velocity.copy(tangent.multiplyScalar(0.68)).addScaledVector(truckHit.normal, -normalSpeed * 0.22);
-        } else {
-          particle.velocity.copy(tangent.multiplyScalar(0.78)).addScaledVector(truckHit.normal, normalSpeed);
-        }
         collided = true;
       }
     }
@@ -12928,14 +14756,16 @@ class Simulator {
       const bucketLoadHit = this.excavator.resolveBucketLoadCollision(pos, radius);
       if (bucketLoadHit) {
         pos.addScaledVector(bucketLoadHit.normal, Math.min(bucketLoadHit.penetration + 0.003, 0.18));
-        const normalSpeed = particle.velocity.dot(bucketLoadHit.normal);
-        const tangent = particle.velocity.clone().addScaledVector(bucketLoadHit.normal, -normalSpeed);
-        if (normalSpeed < 0) {
-          particle.velocity.copy(tangent.multiplyScalar(0.66)).addScaledVector(bucketLoadHit.normal, -normalSpeed * 0.16);
-        } else {
-          particle.velocity.copy(tangent.multiplyScalar(0.72)).addScaledVector(bucketLoadHit.normal, normalSpeed);
-        }
-        this.pressure = Math.max(this.pressure, clamp(0.12 + bucketLoadHit.penetration * 0.55, 0, 0.38));
+        const normalImpulse = this.resolveSoilStaticSurfaceVelocity(
+          particle.velocity,
+          bucketLoadHit.normal,
+          bucketLoadHit.penetration,
+          soilMass,
+          false,
+          0.52,
+          0.1,
+        );
+        this.pressure = Math.max(this.pressure, clamp(0.12 + bucketLoadHit.penetration * 0.55 + normalImpulse * 0.18, 0, 0.38));
         return true;
       }
     }
@@ -12972,20 +14802,25 @@ class Simulator {
 
       const relativeVelocity = particle.velocity.clone().sub(collider.velocity);
       const closingSpeed = relativeVelocity.dot(normal);
+      let normalImpulse = 0;
       if (closingSpeed < 0) {
         const restitution = Math.min(0.18, collider.restitution + 0.04);
-        const impulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
-        particle.velocity.addScaledVector(normal, impulse * invSoil);
-        collider.velocity.addScaledVector(normal, -impulse * invObject);
-        this.applyWorldColliderAngularImpulse(collider, pos, normal.clone().multiplyScalar(-impulse), 0.2);
+        normalImpulse = (-(1 + restitution) * closingSpeed) / totalInvMass;
+        particle.velocity.addScaledVector(normal, normalImpulse * invSoil);
+        collider.velocity.addScaledVector(normal, -normalImpulse * invObject);
+        this.applyWorldColliderAngularImpulse(collider, pos, normal.clone().multiplyScalar(-normalImpulse), 0.2);
       }
 
       const tangent = relativeVelocity.addScaledVector(normal, -closingSpeed);
-      if (tangent.lengthSq() > 0.000001) {
-        tangent.normalize().multiplyScalar(clamp(collider.friction * 0.08, 0.035, 0.12));
-        particle.velocity.addScaledVector(tangent, -invSoil / totalInvMass);
-        collider.velocity.addScaledVector(tangent, invObject / totalInvMass);
-        this.applyWorldColliderAngularImpulse(collider, pos, tangent.clone().multiplyScalar(invObject / totalInvMass), 0.14);
+      const tangentSpeed = tangent.length();
+      if (tangentSpeed > 0.000001) {
+        const tangentDir = tangent.divideScalar(tangentSpeed);
+        const frictionLimit = Math.max(normalImpulse * clamp(collider.friction, 0.1, 1.0), soilMass * (0.028 + penetration * 0.18));
+        const frictionImpulse = Math.min((tangentSpeed / totalInvMass) * clamp(collider.friction, 0.22, 0.95), frictionLimit);
+        particle.velocity.addScaledVector(tangentDir, -frictionImpulse * invSoil);
+        collider.velocity.addScaledVector(tangentDir, frictionImpulse * invObject);
+        this.applyWorldColliderAngularImpulse(collider, pos, tangentDir.clone().multiplyScalar(frictionImpulse), 0.14);
+        particle.velocity.multiplyScalar(1 - Math.min(collider.friction * 0.025, 0.055));
       }
 
       collider.sleeping = false;
@@ -13067,7 +14902,9 @@ class Simulator {
     this.bucketLoad += accepted;
     if (accepted < volume) {
       const pos = particle.mesh.position;
-      this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.34 + Math.cbrt(volume - accepted) * 0.1, volume - accepted, 1);
+      const baseRadius = 0.34 + Math.cbrt(volume - accepted) * 0.1;
+      const footprint = this.soilTerrainDepositFootprint(pos, volume - accepted, baseRadius, false, particle.velocity.length());
+      this.raiseTerrainWithWake(footprint.center, footprint.radius, volume - accepted, 1);
     }
     this.excavator.setBucketLoad(this.bucketLoad);
   }
@@ -13083,10 +14920,13 @@ class Simulator {
       const accepted = this.truck.depositSoilAt(pos, volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < volume) {
-        this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.36, volume - accepted, 1);
+        const footprint = this.soilTerrainDepositFootprint(pos, volume - accepted, 0.36, false, particle.velocity.length());
+        this.raiseTerrainWithWake(footprint.center, footprint.radius, volume - accepted, 1);
       }
     } else {
-      this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.32 + Math.cbrt(volume) * 0.1, volume, 1);
+      const baseRadius = 0.32 + Math.cbrt(volume) * 0.1;
+      const footprint = this.soilTerrainDepositFootprint(pos, volume, baseRadius, false, particle.velocity.length());
+      this.raiseTerrainWithWake(footprint.center, footprint.radius, volume, 1);
     }
     this.truck.updateLoad(this.truckLoad);
   }
@@ -13121,10 +14961,13 @@ class Simulator {
       const accepted = this.truck.depositSoilAt(pos, particle.volume, TRUCK_CAPACITY - this.truckLoad);
       this.truckLoad = Math.min(TRUCK_CAPACITY, this.truckLoad + accepted);
       if (accepted < particle.volume) {
-        this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.42, particle.volume - accepted, 1);
+        const footprint = this.soilTerrainDepositFootprint(pos, particle.volume - accepted, 0.42, false, particle.velocity.length());
+        this.raiseTerrainWithWake(footprint.center, footprint.radius, particle.volume - accepted, 1);
       }
     } else {
-      this.raiseTerrainWithWake(new THREE.Vector3(pos.x, 0, pos.z), 0.38 + Math.cbrt(particle.volume) * 0.12, particle.volume, 1);
+      const baseRadius = 0.38 + Math.cbrt(particle.volume) * 0.12;
+      const footprint = this.soilTerrainDepositFootprint(pos, particle.volume, baseRadius, false, particle.velocity.length());
+      this.raiseTerrainWithWake(footprint.center, footprint.radius, particle.volume, 1);
     }
     this.recycleSoilParticle(particle);
   }

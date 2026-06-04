@@ -162,12 +162,12 @@
         </div>
       </div>
       <div class="mobile-menu-bar" aria-label="Mobile auxiliary controls">
-        <button type="button" data-mobile-menu="drive">DRIVE</button>
-        <button type="button" data-mobile-menu="camera">VIEW</button>
-        <button type="button" data-mobile-menu="settings">MENU</button>
+        <button type="button" data-mobile-menu="drive" aria-controls="mobile-menu-panel" aria-expanded="false">DRIVE</button>
+        <button type="button" data-mobile-menu="camera" aria-controls="mobile-menu-panel" aria-expanded="false">VIEW</button>
+        <button type="button" data-mobile-menu="settings" aria-controls="mobile-menu-panel" aria-expanded="false">MENU</button>
       </div>
-      <div class="mobile-menu-panel hidden" id="mobile-menu-panel">
-        <div class="mobile-menu-section hidden" data-mobile-panel="drive">
+      <div class="mobile-menu-panel hidden" id="mobile-menu-panel" aria-hidden="true" hidden>
+        <div class="mobile-menu-section hidden" data-mobile-panel="drive" aria-hidden="true" hidden>
           <div class="mobile-panel-title">Drive</div>
           <div class="mobile-drive-pad" aria-label="Crawler drive controls">
             <button type="button" data-drive="forward">FWD</button>
@@ -176,7 +176,7 @@
             <button type="button" data-drive="turn-right">R</button>
           </div>
         </div>
-        <div class="mobile-menu-section hidden" data-mobile-panel="camera">
+        <div class="mobile-menu-section hidden" data-mobile-panel="camera" aria-hidden="true" hidden>
           <div class="mobile-panel-title">View</div>
           <div class="mobile-camera-pad">
             <button type="button" data-camera="orbit" class="active">Orbit</button>
@@ -185,7 +185,7 @@
             <button type="button" data-camera="task">Task</button>
           </div>
         </div>
-        <div class="mobile-menu-section hidden" data-mobile-panel="settings">
+        <div class="mobile-menu-section hidden" data-mobile-panel="settings" aria-hidden="true" hidden>
           <div class="mobile-panel-title">Menu</div>
           <button type="button" data-mobile-reset>Reset</button>
         </div>
