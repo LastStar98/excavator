@@ -4583,11 +4583,11 @@ class ExcavatorModel {
   }
 
   cabCameraWorld(): THREE.Vector3 {
-    return this.upperGroup.localToWorld(new THREE.Vector3(1.08, 0.9, -0.68));
+    return this.upperGroup.localToWorld(new THREE.Vector3(1.12, 1.04, -1.02));
   }
 
   cabLookWorld(): THREE.Vector3 {
-    return this.upperGroup.localToWorld(new THREE.Vector3(7.8, 0.52, -0.56));
+    return this.upperGroup.localToWorld(new THREE.Vector3(10.4, 0.78, -3.6));
   }
 
   private resolveBucketLoadSolidCollision(
@@ -15344,7 +15344,7 @@ class Simulator {
 
     if (this.cameraMode === "cab") {
       desiredPosition.copy(this.excavator.cabCameraWorld());
-      desiredLook.copy(this.excavator.cabLookWorld()).lerp(bucketTip, 0.06);
+      desiredLook.copy(this.excavator.cabLookWorld());
     } else if (this.cameraMode === "bucket") {
       const forward = this.excavator.bucketForwardWorld();
       desiredPosition.copy(bucketTip).addScaledVector(forward, -1.6).add(new THREE.Vector3(0, 0.7, 0));
