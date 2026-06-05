@@ -715,6 +715,21 @@ async function main() {
     const orbitBefore = await readDebug();
     await pointerDrag("#sim-canvas", 92, -28, 220, "element");
     const orbitAfter = await readDebug();
+    const middlePanBefore = await readDebug();
+    const middlePanAfter = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const canvas = document.getElementById("sim-canvas");
+        const rect = canvas.getBoundingClientRect();
+        const x = rect.left + rect.width * 0.5;
+        const y = rect.top + rect.height * 0.5;
+        const init = { bubbles: true, cancelable: true, pointerId: 8801, pointerType: "mouse", clientX: x, clientY: y, button: 1, buttons: 4 };
+        canvas.dispatchEvent(new PointerEvent("pointerdown", init));
+        canvas.dispatchEvent(new PointerEvent("pointermove", { ...init, clientX: x + 86, clientY: y + 34 }));
+        canvas.dispatchEvent(new PointerEvent("pointerup", { ...init, clientX: x + 86, clientY: y + 34, buttons: 0 }));
+        return window.__excavatorSim?.snapshot();
+      })()`,
+      returnByValue: true,
+    });
     await delay(300);
     const after = await readState();
 
@@ -764,6 +779,7 @@ async function main() {
     const bucketKinematicsValue = bucketKinematics.result.value;
     const bucketLoadSurfacePhysicsValue = bucketLoadSurfacePhysics.result.value;
     const bucketDirectionalDigPhysicsValue = bucketDirectionalDigPhysics.result.value;
+    const middlePanAfterValue = middlePanAfter.result.value;
     const bucketShellPhysicsValue = bucketShellPhysics.result.value;
     const hydraulicLinkagePhysicsValue = hydraulicLinkagePhysics.result.value;
     const trackPassValue = trackPass.result.value;
@@ -1090,6 +1106,8 @@ async function main() {
         "bucket only captures soil when curling toward the machine",
         bucketDirectionalDigPhysicsValue?.scoopRemoved > 0.04 &&
           bucketDirectionalDigPhysicsValue?.scoopBucketLoad > 0.035 &&
+          bucketDirectionalDigPhysicsValue?.scoopStoredVolume <= bucketDirectionalDigPhysicsValue?.scoopTerrainDeficit + 0.035 &&
+          bucketDirectionalDigPhysicsValue?.scoopMassResidual < 0.035 &&
           bucketDirectionalDigPhysicsValue?.scoopMouthEntrySpeed > 0.08 &&
           bucketDirectionalDigPhysicsValue?.scoopCaptureGate > 0.45 &&
           bucketDirectionalDigPhysicsValue?.scoopHeightDrop > 0.008 &&
@@ -1694,9 +1712,16 @@ async function main() {
           mobileReverse.snapshot?.mobileAxes?.rightTrack < -0.8,
       ],
       [
-        "mobile canvas drag orbits camera",
-        Math.abs((orbitAfter?.orbit?.azimuth ?? 0) - (orbitBefore?.orbit?.azimuth ?? 0)) > 0.08 ||
-          Math.abs((orbitAfter?.orbit?.elevation ?? 0) - (orbitBefore?.orbit?.elevation ?? 0)) > 0.04,
+        "mobile canvas drag orbits camera with inverted view rotation",
+        (orbitAfter?.orbit?.azimuth ?? 0) > (orbitBefore?.orbit?.azimuth ?? 0) + 0.08 &&
+          (orbitAfter?.orbit?.elevation ?? 0) > (orbitBefore?.orbit?.elevation ?? 0) + 0.04,
+      ],
+      [
+        "middle mouse drag pans orbit target in world coordinates",
+        Math.hypot(
+          (middlePanAfterValue?.orbit?.panX ?? 0) - (middlePanBefore?.orbit?.panX ?? 0),
+          (middlePanAfterValue?.orbit?.panZ ?? 0) - (middlePanBefore?.orbit?.panZ ?? 0),
+        ) > 0.08,
       ],
       ["runtime errors", errors.length === 0],
     ];
@@ -1773,6 +1798,8 @@ async function main() {
           mobileReverse,
           orbitBefore,
           orbitAfter,
+          middlePanBefore,
+          middlePanAfter: middlePanAfterValue,
           after,
           screenshotPath,
           checks,

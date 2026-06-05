@@ -551,6 +551,9 @@ interface ExcavatorDebugApi {
     scoopBucketLoad: number;
     scoopStoredVolume: number;
     scoopTransitLoad: number;
+    scoopTerrainDeficit: number;
+    scoopExternalSoilVolume: number;
+    scoopMassResidual: number;
     scoopLoadCenterX: number;
     scoopLoadLipRatio: number;
     scoopPocketPull: number;
@@ -1170,6 +1173,7 @@ const BUCKET_OBJECT_LOAD_REFERENCE = 24;
 const CRAWLER_COLLISION_EFFECTIVE_MASS = 42;
 const ARM_SUBSOIL_INPUT_DRAG = 1;
 const ARM_SUBSOIL_BLOCKING_ENABLED = false;
+const BUCKET_SUBSOIL_PLUNGE_GUARD_ENABLED = true;
 const ARM_WORLD_BROADPHASE_PADDING = 0.82;
 const WORLD_COLLIDER_GRID_SIZE = 2.4;
 const TRUCK_TIRE_RADIUS = 0.35;
@@ -4563,11 +4567,11 @@ class ExcavatorModel {
   }
 
   cabCameraWorld(): THREE.Vector3 {
-    return this.upperGroup.localToWorld(new THREE.Vector3(0.05, 1.16, -0.72));
+    return this.upperGroup.localToWorld(new THREE.Vector3(1.08, 0.9, -0.68));
   }
 
   cabLookWorld(): THREE.Vector3 {
-    return this.upperGroup.localToWorld(new THREE.Vector3(5.5, 0.55, 0));
+    return this.upperGroup.localToWorld(new THREE.Vector3(7.8, 0.52, -0.56));
   }
 
   private resolveBucketLoadSolidCollision(
@@ -5103,7 +5107,7 @@ class Simulator {
   private readonly activeMobileJoysticks = new Map<number, ActiveMobileJoystick>();
   private readonly pressedDriveControls = new Set<MobileDriveMode>();
   private readonly activeDrivePointers = new Map<number, MobileDriveMode>();
-  private readonly canvasPointers = new Map<number, { x: number; y: number }>();
+  private readonly canvasPointers = new Map<number, { x: number; y: number; pan: boolean }>();
   private readonly soilParticles: SoilParticle[] = [];
   private readonly worldColliders: WorldCollider[] = [];
   private readonly carriedWorldColliders = new Map<WorldCollider, THREE.Vector3>();
@@ -5141,11 +5145,21 @@ class Simulator {
   private readonly targetActions: Actions = { swing: 0, boom: 0, stick: 0, bucket: 0 };
   private readonly velocities: ExcavatorVelocities = { swing: 0, boom: 0, stick: 0, bucket: 0 };
   private readonly angles: ExcavatorAngles = { ...initialAngles };
-  private readonly orbit = { azimuth: -0.95, elevation: 0.48, distance: 9.0, dragging: false, lastX: 0, lastY: 0 };
+  private readonly orbit = {
+    azimuth: -0.95,
+    elevation: 0.48,
+    distance: 9.0,
+    dragging: false,
+    panning: false,
+    lastX: 0,
+    lastY: 0,
+    panOffset: new THREE.Vector3(),
+  };
   private readonly cameraLookTarget = new THREE.Vector3(0.8, 1.1, 0);
   private readonly previousBucketTip = new THREE.Vector3();
   private readonly previousBucketPocket = new THREE.Vector3();
   private pinchDistance = 0;
+  private readonly pinchCenter = new THREE.Vector2();
   private cameraMode: CameraMode = "orbit";
   private activeMobileMenu: string | null = null;
   private pattern: Pattern = "ISO";
@@ -5302,6 +5316,7 @@ class Simulator {
     this.collisionCount = 0;
     this.trackTraction = this.emptyTrackTraction();
     this.fineGrainSettledVolume = 0;
+    this.orbit.panOffset.set(0, 0, 0);
     this.resetWorldColliders();
     this.clearFineGrains();
     this.clearMobileInput();
@@ -5920,6 +5935,9 @@ class Simulator {
     this.activeDrivePointers.clear();
     this.canvasPointers.clear();
     this.pinchDistance = 0;
+    this.pinchCenter.set(0, 0);
+    this.orbit.dragging = false;
+    this.orbit.panning = false;
     this.ui.mobileJoysticks.forEach((element) => {
       element.classList.remove("active");
       element.querySelector<HTMLElement>("[data-joystick-knob]")?.style.setProperty("transform", "translate(-50%, -50%)");
@@ -6232,6 +6250,11 @@ class Simulator {
     this.canvas.addEventListener("pointermove", (event) => this.handleCanvasPointerMove(event));
     this.canvas.addEventListener("pointerup", (event) => this.handleCanvasPointerEnd(event));
     this.canvas.addEventListener("pointercancel", (event) => this.handleCanvasPointerEnd(event));
+    this.canvas.addEventListener("auxclick", (event) => {
+      if (event.button === 1) {
+        event.preventDefault();
+      }
+    });
     this.canvas.addEventListener(
       "wheel",
       (event) => {
@@ -6340,12 +6363,15 @@ class Simulator {
       return;
     }
     event.preventDefault();
-    this.canvasPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    this.orbit.dragging = true;
+    const isMousePan = event.pointerType === "mouse" && event.button === 1;
+    this.canvasPointers.set(event.pointerId, { x: event.clientX, y: event.clientY, pan: isMousePan });
+    this.orbit.panning = isMousePan;
+    this.orbit.dragging = !isMousePan;
     this.orbit.lastX = event.clientX;
     this.orbit.lastY = event.clientY;
     if (this.canvasPointers.size >= 2) {
       this.pinchDistance = this.currentPinchDistance();
+      this.pinchCenter.copy(this.currentPinchCenter());
     }
     try {
       this.canvas.setPointerCapture(event.pointerId);
@@ -6359,32 +6385,54 @@ class Simulator {
       return;
     }
     event.preventDefault();
-    this.canvasPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const previousPoint = this.canvasPointers.get(event.pointerId);
+    this.canvasPointers.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+      pan: previousPoint?.pan ?? false,
+    });
 
     if (this.canvasPointers.size >= 2) {
       const nextPinchDistance = this.currentPinchDistance();
+      const nextPinchCenter = this.currentPinchCenter();
       if (this.pinchDistance > 0 && nextPinchDistance > 0) {
         this.orbit.distance = clamp(this.orbit.distance + (this.pinchDistance - nextPinchDistance) * 0.018, 5.0, 26.5);
       }
+      if (this.pinchCenter.lengthSq() > 0) {
+        this.panOrbitTarget(nextPinchCenter.x - this.pinchCenter.x, nextPinchCenter.y - this.pinchCenter.y);
+      }
       this.pinchDistance = nextPinchDistance;
+      this.pinchCenter.copy(nextPinchCenter);
+      return;
+    }
+
+    const dx = event.clientX - this.orbit.lastX;
+    const dy = event.clientY - this.orbit.lastY;
+    this.orbit.lastX = event.clientX;
+    this.orbit.lastY = event.clientY;
+
+    if (this.orbit.panning || previousPoint?.pan) {
+      this.panOrbitTarget(dx, dy);
       return;
     }
 
     if (!this.orbit.dragging) {
       return;
     }
-    const dx = event.clientX - this.orbit.lastX;
-    const dy = event.clientY - this.orbit.lastY;
-    this.orbit.lastX = event.clientX;
-    this.orbit.lastY = event.clientY;
-    this.orbit.azimuth -= dx * 0.006;
-    this.orbit.elevation = clamp(this.orbit.elevation + dy * 0.004, 0.18, 1.12);
+    this.orbit.azimuth += dx * 0.006;
+    this.orbit.elevation = clamp(this.orbit.elevation - dy * 0.004, 0.18, 1.12);
   }
 
   private handleCanvasPointerEnd(event: PointerEvent): void {
     this.canvasPointers.delete(event.pointerId);
-    this.orbit.dragging = this.canvasPointers.size > 0;
+    this.orbit.panning = Array.from(this.canvasPointers.values()).some((point) => point.pan);
+    this.orbit.dragging = this.canvasPointers.size > 0 && !this.orbit.panning;
     this.pinchDistance = this.canvasPointers.size >= 2 ? this.currentPinchDistance() : 0;
+    if (this.canvasPointers.size >= 2) {
+      this.pinchCenter.copy(this.currentPinchCenter());
+    } else {
+      this.pinchCenter.set(0, 0);
+    }
     try {
       this.canvas.releasePointerCapture(event.pointerId);
     } catch {
@@ -6398,6 +6446,35 @@ class Simulator {
       return 0;
     }
     return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+  }
+
+  private currentPinchCenter(): THREE.Vector2 {
+    const points = Array.from(this.canvasPointers.values());
+    if (points.length < 2) {
+      return new THREE.Vector2();
+    }
+    return new THREE.Vector2((points[0].x + points[1].x) * 0.5, (points[0].y + points[1].y) * 0.5);
+  }
+
+  private panOrbitTarget(deltaX: number, deltaY: number): void {
+    const height = Math.max(this.canvas.clientHeight, 1);
+    const viewHeight = 2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5)) * Math.max(this.orbit.distance, 2);
+    const worldPerPixel = viewHeight / height;
+    const cameraForward = new THREE.Vector3();
+    this.camera.getWorldDirection(cameraForward);
+    const groundForward = new THREE.Vector3(cameraForward.x, 0, cameraForward.z);
+    if (groundForward.lengthSq() < 0.000001) {
+      groundForward.set(Math.cos(this.orbit.azimuth), 0, Math.sin(this.orbit.azimuth));
+    } else {
+      groundForward.normalize();
+    }
+    const groundRight = new THREE.Vector3(groundForward.z, 0, -groundForward.x).normalize();
+    this.orbit.panOffset
+      .addScaledVector(groundRight, -deltaX * worldPerPixel)
+      .addScaledVector(groundForward, deltaY * worldPerPixel);
+    if (this.orbit.panOffset.length() > 32) {
+      this.orbit.panOffset.setLength(32);
+    }
   }
 
   private handleMobileJoystickDown(
@@ -6530,7 +6607,14 @@ class Simulator {
           stability: this.stability,
           trackSoilWork: this.trackSoilWork,
           mobileAxes: { ...this.touchAxes },
-          orbit: { azimuth: this.orbit.azimuth, elevation: this.orbit.elevation, distance: this.orbit.distance },
+          orbit: {
+            azimuth: this.orbit.azimuth,
+            elevation: this.orbit.elevation,
+            distance: this.orbit.distance,
+            panX: this.orbit.panOffset.x,
+            panY: this.orbit.panOffset.y,
+            panZ: this.orbit.panOffset.z,
+          },
           particleCount: this.soilParticles.length,
           settlingParticleCount: this.soilParticles.filter((particle) => particle.settles).length,
           flowParticleCount: this.soilParticles.filter((particle) => !particle.settles).length,
@@ -7482,17 +7566,23 @@ class Simulator {
           Object.assign(this.velocities, velocities);
 
           const beforeTotal = this.totalExcavated;
+          const beforeTerrain = this.terrain.terrainVolumeDelta();
           this.updateSoil(0.14);
           const currentTip = this.excavator.bucketTipWorld();
           const pocket = this.excavator.bucketPocketWorld();
           const gate = directionalGate(previousTip, currentTip, previousPocket, pocket, velocities, 0.14);
           const loadStats = this.excavator.bucketLoadDistributionStats();
+          const terrainDeficit = Math.max(0, beforeTerrain - this.terrain.terrainVolumeDelta());
+          const externalSoilVolume = this.bucketLoad + this.bucketTransitLoad + this.activeSoilParticleVolume() + this.activeFineGrainVolume();
 
           return {
             removed: this.totalExcavated - beforeTotal,
             bucketLoad: this.bucketLoad,
             storedVolume: this.bucketLoad + this.bucketTransitLoad,
             transitLoad: this.bucketTransitLoad,
+            terrainDeficit,
+            externalSoilVolume,
+            massResidual: Math.abs(terrainDeficit - externalSoilVolume),
             loadCenterX: loadStats.centerX,
             loadLipRatio: loadStats.lipRatio,
             pocketPull: gate.pocketPull,
@@ -7533,6 +7623,9 @@ class Simulator {
           scoopBucketLoad: scoop.bucketLoad,
           scoopStoredVolume: scoop.storedVolume,
           scoopTransitLoad: scoop.transitLoad,
+          scoopTerrainDeficit: scoop.terrainDeficit,
+          scoopExternalSoilVolume: scoop.externalSoilVolume,
+          scoopMassResidual: scoop.massResidual,
           scoopLoadCenterX: scoop.loadCenterX,
           scoopLoadLipRatio: scoop.loadLipRatio,
           scoopPocketPull: scoop.pocketPull,
@@ -13522,9 +13615,27 @@ class Simulator {
   } {
     const currentAngles = { ...this.angles };
     const currentSamples = this.excavator.armSubsoilSamples();
+    const currentTip = this.excavator.bucketTipWorld();
+    const currentPocket = this.excavator.bucketPocketWorld();
     this.excavator.applyAngles(previousAngles);
     const previousSamples = this.excavator.armSubsoilSamples();
+    const previousTip = this.excavator.bucketTipWorld();
+    const previousPocket = this.excavator.bucketPocketWorld();
     this.excavator.applyAngles(currentAngles);
+
+    const bucketStroke = currentTip.clone().sub(previousTip);
+    const bucketStrokeDistance = bucketStroke.length();
+    const bucketStrokeDirection = bucketStrokeDistance > 0.0001 ? bucketStroke.clone().divideScalar(bucketStrokeDistance) : new THREE.Vector3();
+    const bucketPocketDirection = currentPocket.clone().sub(currentTip);
+    if (bucketPocketDirection.lengthSq() > 0.000001) {
+      bucketPocketDirection.normalize();
+    }
+    const bucketPocketPull = bucketStrokeDistance > 0.0001 ? bucketStrokeDirection.dot(bucketPocketDirection) : 0;
+    const bucketPocketStroke = currentPocket.clone().sub(previousPocket);
+    const bucketMouthEntry = Math.max(0, bucketStroke.dot(bucketPocketDirection)) + Math.max(0, bucketPocketStroke.dot(bucketPocketDirection)) * 0.35;
+    const bucketHorizontalStroke = Math.hypot(bucketStroke.x, bucketStroke.z);
+    const bucketDownStroke = Math.max(0, -bucketStroke.y);
+    const bucketVerticalPlungeRatio = bucketDownStroke / Math.max(bucketHorizontalStroke + bucketMouthEntry, 0.001);
 
     let maxSubmerged = 0;
     let weightedSubmerged = 0;
@@ -13536,8 +13647,15 @@ class Simulator {
     let structuralIntrusion = 0;
     let bucketMaxSubmerged = 0;
     let bucketIntrusion = 0;
+    let bucketVerticalPlungeIntrusion = 0;
     const affected = new Set<"boom" | "stick" | "bucket">();
-    const bucketCuttingMotion = Math.max(0, -this.velocities.bucket) > 0.035 || Math.max(0, -this.velocities.stick) > 0.045;
+    const bucketCuttingDrive =
+      Math.max(0, -this.velocities.bucket) * 0.68 + Math.max(0, -this.velocities.stick) * 0.34 + bucketMouthEntry * 2.8;
+    const bucketCuttingMotion =
+      bucketCuttingDrive > 0.05 &&
+      bucketPocketPull > 0.06 &&
+      bucketHorizontalStroke + bucketMouthEntry > 0.018 &&
+      bucketVerticalPlungeRatio < 2.4;
     let bestDisplacementStroke: {
       start: THREE.Vector3;
       end: THREE.Vector3;
@@ -13565,11 +13683,12 @@ class Simulator {
       const localIntrusion = verticalIntrusion + horizontalMotion * clamp(slope, 0, 1.4) * 0.34;
       const isBucket = sample.action === "bucket";
       const cuttingBucketContact = isBucket && bucketCuttingMotion;
-      const yieldingScale = cuttingBucketContact ? 0.42 : 1;
+      const verticalPlungeContact = isBucket && !cuttingBucketContact && verticalIntrusion > horizontalMotion * 0.62 + 0.004;
+      const yieldingScale = cuttingBucketContact ? 0.42 : isBucket ? 1.18 : 1;
       const weighted = Math.pow(submerged, 1.08) * (1 + subsoil * 0.48) * yieldingScale;
       const intrusionLoad = localIntrusion * yieldingScale;
       const motionLoad = (verticalIntrusion + horizontalMotion) * (cuttingBucketContact ? 0.55 : 1);
-      const shouldDisplaceTerrain = !isBucket || !cuttingBucketContact;
+      const shouldDisplaceTerrain = !isBucket || (!cuttingBucketContact && !verticalPlungeContact && horizontalMotion > 0.006);
       if (shouldDisplaceTerrain && motionLoad > 0.006) {
         const horizontalMotionVector = new THREE.Vector3(motion.x, 0, motion.z);
         const sideways =
@@ -13607,6 +13726,9 @@ class Simulator {
       if (isBucket) {
         bucketMaxSubmerged = Math.max(bucketMaxSubmerged, submerged);
         bucketIntrusion += localIntrusion;
+        if (verticalPlungeContact) {
+          bucketVerticalPlungeIntrusion += localIntrusion;
+        }
       } else {
         structuralMaxSubmerged = Math.max(structuralMaxSubmerged, submerged);
         structuralIntrusion += localIntrusion;
@@ -13648,9 +13770,37 @@ class Simulator {
       );
     }
 
+    const bucketPlungeBlocked =
+      BUCKET_SUBSOIL_PLUNGE_GUARD_ENABLED &&
+      !bucketCuttingMotion &&
+      bucketMaxSubmerged > 0.16 &&
+      bucketVerticalPlungeIntrusion > 0.006;
+    if (bucketPlungeBlocked) {
+      const chain: ActionName[] = ["boom", "stick", "bucket"];
+      for (const action of chain) {
+        const delta = this.angles[action] - previousAngles[action];
+        if (Math.abs(delta) < 0.00001) {
+          continue;
+        }
+        this.angles[action] = previousAngles[action];
+        this.velocities[action] = 0;
+        blockedActions.push(action);
+      }
+      if (blockedActions.length > 0) {
+        this.excavator.applyAngles(this.angles);
+      }
+    }
+
     this.pressure = Math.max(this.pressure, clamp(0.22 + severity * 0.74, 0, 1));
     if (displacedVolume > 0) {
       this.pressure = Math.max(this.pressure, clamp(0.34 + displacedVolume * 1.9, 0, 1));
+    }
+    if (bucketPlungeBlocked) {
+      this.pressure = Math.max(this.pressure, clamp(0.55 + bucketMaxSubmerged * 0.42 + bucketIntrusion * 2.4, 0, 1));
+      if (this.collisionCooldown <= 0) {
+        this.collisionCount += 1;
+        this.collisionCooldown = 0.34;
+      }
     }
 
     return { resisted: true, blockedActions, maxSubmerged, averageSubmerged, displacedVolume, drag };
@@ -15167,20 +15317,20 @@ class Simulator {
 
     if (this.cameraMode === "cab") {
       desiredPosition.copy(this.excavator.cabCameraWorld());
-      desiredLook.copy(this.excavator.cabLookWorld()).lerp(bucketTip, 0.22);
+      desiredLook.copy(this.excavator.cabLookWorld()).lerp(bucketTip, 0.06);
     } else if (this.cameraMode === "bucket") {
       const forward = this.excavator.bucketForwardWorld();
       desiredPosition.copy(bucketTip).addScaledVector(forward, -1.6).add(new THREE.Vector3(0, 0.7, 0));
       desiredLook.copy(bucketTip).addScaledVector(forward, 0.8);
     } else if (this.cameraMode === "task") {
-      desiredPosition.set(6.7, 6.1, 7.2);
-      desiredLook.set(0.7, 0.7, -0.2).lerp(bucketTip, 0.18);
+      desiredPosition.set(6.7, 6.1, 7.2).add(this.orbit.panOffset);
+      desiredLook.set(0.7, 0.7, -0.2).lerp(bucketTip, 0.18).add(this.orbit.panOffset);
     } else {
       const x = Math.cos(this.orbit.azimuth) * Math.cos(this.orbit.elevation) * this.orbit.distance;
       const y = Math.sin(this.orbit.elevation) * this.orbit.distance + 1.8;
       const z = Math.sin(this.orbit.azimuth) * Math.cos(this.orbit.elevation) * this.orbit.distance;
-      desiredPosition.copy(target).add(new THREE.Vector3(x, y, z));
-      desiredLook.copy(target);
+      desiredPosition.copy(target).add(this.orbit.panOffset).add(new THREE.Vector3(x, y, z));
+      desiredLook.copy(target).add(this.orbit.panOffset);
     }
 
     const factor = 1 - Math.exp(-7.5 * dt);
