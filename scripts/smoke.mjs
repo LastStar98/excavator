@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const chromePath = process.env.CHROME_PATH ?? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const remotePort = 9348 + Math.floor(Math.random() * 500);
-const profileDir = join(root, ".chrome-smoke-profile");
+const profileDir = join(root, `.chrome-smoke-profile-${Date.now()}`);
 const screenshotPath = join(root, "smoke-after.png");
 
 await mkdir(profileDir, { recursive: true });
@@ -32,7 +32,7 @@ async function readJson(url, attempts = 60) {
   let lastError;
   for (let i = 0; i < attempts; i += 1) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(700) });
       if (response.ok) {
         return response.json();
       }
@@ -66,14 +66,33 @@ function createCdpClient(webSocketUrl) {
   });
 
   return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error("Timed out connecting to Chrome DevTools WebSocket"));
+    }, 5000);
     socket.addEventListener("open", () => {
+      clearTimeout(timeout);
       resolve({
         events,
         send(method, params = {}) {
           id += 1;
           socket.send(JSON.stringify({ id, method, params }));
           return new Promise((commandResolve, commandReject) => {
-            pending.set(id, { resolve: commandResolve, reject: commandReject });
+            const commandId = id;
+            const commandTimeout = setTimeout(() => {
+              pending.delete(commandId);
+              commandReject(new Error(`Timed out waiting for CDP response: ${method}`));
+            }, 15000);
+            pending.set(commandId, {
+              resolve(value) {
+                clearTimeout(commandTimeout);
+                commandResolve(value);
+              },
+              reject(error) {
+                clearTimeout(commandTimeout);
+                commandReject(error);
+              },
+            });
           });
         },
         close() {
@@ -81,11 +100,21 @@ function createCdpClient(webSocketUrl) {
         },
       });
     });
-    socket.addEventListener("error", reject);
+    socket.addEventListener("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    socket.addEventListener("close", () => {
+      for (const [, entry] of pending) {
+        entry.reject(new Error("Chrome DevTools WebSocket closed"));
+      }
+      pending.clear();
+    });
   });
 }
 
 async function main() {
+  const keepAlive = setInterval(() => {}, 1000);
   try {
     const targets = await readJson(`http://127.0.0.1:${remotePort}/json`);
     const page = targets.find((target) => target.type === "page") ?? targets[0];
@@ -1759,11 +1788,13 @@ async function main() {
       throw new Error(`Smoke checks failed: ${failed.map(([name]) => name).join(", ")}`);
     }
   } finally {
+    clearInterval(keepAlive);
     chrome.kill();
+    await rm(profileDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-main().catch((error) => {
+await main().catch((error) => {
   chrome.kill();
   console.error(error);
   process.exit(1);
