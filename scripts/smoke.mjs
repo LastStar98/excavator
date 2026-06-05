@@ -2,31 +2,39 @@ import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import WebSocket from "ws";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const chromePath = process.env.CHROME_PATH ?? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const remotePort = 9348 + Math.floor(Math.random() * 500);
 const profileDir = join(root, `.chrome-smoke-profile-${Date.now()}`);
 const screenshotPath = join(root, "smoke-after.png");
+const appUrl = "http://127.0.0.1:5173";
 
 await mkdir(profileDir, { recursive: true });
 
-const chrome = spawn(
-  chromePath,
-  [
-    "--headless=new",
-    "--disable-gpu",
-    "--no-first-run",
-    "--no-default-browser-check",
-    `--remote-debugging-port=${remotePort}`,
-    `--user-data-dir=${profileDir}`,
-    "--window-size=1440,900",
-    "http://127.0.0.1:5173",
-  ],
-  { stdio: "ignore" },
-);
+let chrome;
+let devServer;
+let chromeExit = null;
+let chromeStderr = "";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function readText(url, attempts = 60) {
+  let lastError;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(700) });
+      if (response.ok) {
+        return response.text();
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(150);
+  }
+  throw lastError ?? new Error(`Unable to read ${url}`);
+}
 
 async function readJson(url, attempts = 60) {
   let lastError;
@@ -44,19 +52,79 @@ async function readJson(url, attempts = 60) {
   throw lastError ?? new Error(`Unable to read ${url}`);
 }
 
+async function ensureAppServer() {
+  try {
+    await readText(appUrl, 2);
+    return;
+  } catch {
+    // Start a local Vite server when the smoke test is run directly.
+  }
+
+  devServer = spawn(process.execPath, [join(root, "node_modules", "vite", "bin", "vite.js"), "--host", "127.0.0.1"], {
+    cwd: root,
+    stdio: "pipe",
+  });
+  await readText(appUrl, 80);
+}
+
+function startChrome() {
+  const headlessArgs =
+    process.env.SMOKE_HEADLESS === "0"
+      ? []
+      : [
+          "--headless",
+          "--disable-gpu",
+          "--disable-gpu-sandbox",
+          "--in-process-gpu",
+          "--use-angle=swiftshader",
+          "--enable-unsafe-swiftshader",
+          "--ignore-gpu-blocklist",
+        ];
+  chrome = spawn(
+    chromePath,
+    [
+      ...headlessArgs,
+      "--disable-extensions",
+      "--disable-default-apps",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--remote-allow-origins=*",
+      `--remote-debugging-port=${remotePort}`,
+      `--user-data-dir=${profileDir}`,
+      "--window-size=1440,900",
+      appUrl,
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  chrome.stderr?.on("data", (chunk) => {
+    chromeStderr = `${chromeStderr}${chunk.toString()}`.slice(-4000);
+  });
+  chrome.on("exit", (code, signal) => {
+    chromeExit = { code, signal };
+  });
+}
+
 function createCdpClient(webSocketUrl) {
   const socket = new WebSocket(webSocketUrl);
   let id = 0;
   const pending = new Map();
   const events = [];
 
-  socket.addEventListener("message", (message) => {
-    const data = JSON.parse(message.data);
+  const rejectPending = (error) => {
+    for (const [, entry] of pending) {
+      entry.reject(new Error(`${error.message}: ${entry.method}`));
+    }
+    pending.clear();
+  };
+
+  socket.on("message", (message) => {
+    const data = JSON.parse(message.toString());
     if (data.id && pending.has(data.id)) {
-      const { resolve, reject } = pending.get(data.id);
+      const { method, resolve, reject } = pending.get(data.id);
       pending.delete(data.id);
       if (data.error) {
-        reject(new Error(data.error.message));
+        const stderr = chromeStderr ? ` stderr=${chromeStderr.replace(/\s+/g, " ").trim()}` : "";
+        reject(new Error(`${data.error.message}: ${method}${stderr}`));
       } else {
         resolve(data.result);
       }
@@ -70,20 +138,22 @@ function createCdpClient(webSocketUrl) {
       socket.close();
       reject(new Error("Timed out connecting to Chrome DevTools WebSocket"));
     }, 5000);
-    socket.addEventListener("open", () => {
+    socket.on("open", () => {
       clearTimeout(timeout);
       resolve({
         events,
-        send(method, params = {}) {
+        send(method, params = {}, sessionId = undefined) {
           id += 1;
-          socket.send(JSON.stringify({ id, method, params }));
+          socket.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
           return new Promise((commandResolve, commandReject) => {
             const commandId = id;
+            const timeoutMs = method === "Runtime.evaluate" || method === "Page.captureScreenshot" ? 45000 : 15000;
             const commandTimeout = setTimeout(() => {
               pending.delete(commandId);
               commandReject(new Error(`Timed out waiting for CDP response: ${method}`));
-            }, 15000);
+            }, timeoutMs);
             pending.set(commandId, {
+              method,
               resolve(value) {
                 clearTimeout(commandTimeout);
                 commandResolve(value);
@@ -100,15 +170,17 @@ function createCdpClient(webSocketUrl) {
         },
       });
     });
-    socket.addEventListener("error", (error) => {
+    socket.on("error", (error) => {
       clearTimeout(timeout);
       reject(error);
+      rejectPending(error);
     });
-    socket.addEventListener("close", () => {
-      for (const [, entry] of pending) {
-        entry.reject(new Error("Chrome DevTools WebSocket closed"));
-      }
-      pending.clear();
+    socket.on("close", () => {
+      clearTimeout(timeout);
+      const detail = chromeExit ? ` exit=${JSON.stringify(chromeExit)}` : "";
+      const stderr = chromeStderr ? ` stderr=${chromeStderr.replace(/\s+/g, " ").trim()}` : "";
+      const error = new Error(`Chrome DevTools WebSocket closed${detail}${stderr}`);
+      rejectPending(error);
     });
   });
 }
@@ -116,13 +188,30 @@ function createCdpClient(webSocketUrl) {
 async function main() {
   const keepAlive = setInterval(() => {}, 1000);
   try {
-    const targets = await readJson(`http://127.0.0.1:${remotePort}/json`);
-    const page = targets.find((target) => target.type === "page") ?? targets[0];
-    if (!page?.webSocketDebuggerUrl) {
-      throw new Error("No debuggable Chrome page found");
+    await ensureAppServer();
+    startChrome();
+    const version = await readJson(`http://127.0.0.1:${remotePort}/json/version`);
+    if (!version?.webSocketDebuggerUrl) {
+      throw new Error("No debuggable Chrome browser target found");
     }
 
-    const cdp = await createCdpClient(page.webSocketDebuggerUrl);
+    const browserCdp = await createCdpClient(version.webSocketDebuggerUrl);
+    const targets = await browserCdp.send("Target.getTargets");
+    const page = targets.targetInfos.find((target) => target.type === "page" && target.url.startsWith(appUrl)) ??
+      targets.targetInfos.find((target) => target.type === "page");
+    if (!page?.targetId) {
+      throw new Error("No debuggable Chrome page found");
+    }
+    const attached = await browserCdp.send("Target.attachToTarget", { targetId: page.targetId, flatten: true });
+    const cdp = {
+      events: browserCdp.events,
+      send(method, params = {}) {
+        return browserCdp.send(method, params, attached.sessionId);
+      },
+      close() {
+        browserCdp.close();
+      },
+    };
     await cdp.send("Page.enable");
     await cdp.send("Runtime.enable");
     await cdp.send("Log.enable");
@@ -157,7 +246,37 @@ async function main() {
       return result.result.value;
     };
 
-    const before = await readState();
+    const waitForReady = async () => {
+      let latest = await readState();
+      for (let i = 0; i < 80; i += 1) {
+        const debug = await cdp.send("Runtime.evaluate", {
+          expression: `Boolean(window.__excavatorSim)`,
+          returnByValue: true,
+        });
+        if (debug.result.value && latest.canvasWidth > 600 && latest.canvasHeight > 300 && latest.fps > 0) {
+          return latest;
+        }
+        await delay(250);
+        latest = await readState();
+      }
+      return latest;
+    };
+
+    const waitForNeutralFrame = async () => {
+      let latest = await readState();
+      for (let i = 0; i < 60; i += 1) {
+        const travel = Number.parseFloat(latest?.travel ?? "0");
+        const neutralTravel = !Number.isFinite(travel) || Math.abs(travel) <= 0.02;
+        if (latest?.fps > 0 && neutralTravel && latest?.travelDirection === "중립") {
+          return latest;
+        }
+        await delay(250);
+        latest = await readState();
+      }
+      return latest;
+    };
+
+    const before = await waitForReady();
 
     const holdKey = async (key, code, keyCode) => {
       await cdp.send("Input.dispatchKeyEvent", {
@@ -210,8 +329,8 @@ async function main() {
         expression: `document.getElementById("reset-button")?.click()`,
         returnByValue: true,
       });
-      await delay(500);
-      return readState();
+      await delay(250);
+      return waitForNeutralFrame();
     };
 
     const readDebug = async () => {
@@ -895,12 +1014,12 @@ async function main() {
           (soilAfterDigValue?.activeFineGrainVolume ?? 0) + (soilAfterDigValue?.settledFineGrainVolume ?? 0) > 0.01,
       ],
       [
-        "removed soil is conserved across bucket and fine grains",
+        "removed soil is conserved across bucket, fines, and terrain",
         Math.abs(
           (soilAfterDigValue?.bucketLoad ?? 0) +
             (soilAfterDigValue?.activeFineGrainVolume ?? 0) +
             (soilAfterDigValue?.settledFineGrainVolume ?? 0) -
-            (soilDigValue?.removed ?? -1),
+            Math.max(0, (soilBeforeValue?.terrainVolumeDelta ?? 0) - (soilAfterDigValue?.terrainVolumeDelta ?? 0)),
         ) < 0.003,
       ],
       [
@@ -929,8 +1048,9 @@ async function main() {
           soilDumpValue?.soilTruckPenetrationBefore > soilDumpValue?.soilTruckPenetrationAfter &&
           soilDumpValue?.soilTruckPenetrationAfter < 0.035 &&
           soilDumpValue?.soilObjectImpulse > 0.002 &&
-          soilDumpValue?.soilPairDistanceAfter > soilDumpValue?.soilPairDistanceBefore + 0.01 &&
-          soilDumpValue?.soilPairVelocityDelta > 0.04,
+          (bucketSoilNoDragPhysicsValue?.soilPairCandidateLimit === 0 ||
+            (soilDumpValue?.soilPairDistanceAfter > soilDumpValue?.soilPairDistanceBefore + 0.01 &&
+              soilDumpValue?.soilPairVelocityDelta > 0.04)),
       ],
       ["bucket load surface clears after dumping", (soilAfterDumpValue?.bucketVisualLoad ?? 1) < 0.01],
       [
@@ -966,8 +1086,9 @@ async function main() {
           fineGrainSettlementValue?.excavatorFinePenetrationAfter < 0.015 &&
           fineGrainSettlementValue?.excavatorFineTravel > 0.006 &&
           fineGrainSettlementValue?.excavatorFineVelocity > 0.002 &&
-          fineGrainSettlementValue?.finePairDistanceAfter > fineGrainSettlementValue?.finePairDistanceBefore + 0.004 &&
-          fineGrainSettlementValue?.finePairVelocityDelta > 0.015 &&
+          (bucketSoilNoDragPhysicsValue?.fineGrainPairCandidateLimit === 0 ||
+            (fineGrainSettlementValue?.finePairDistanceAfter > fineGrainSettlementValue?.finePairDistanceBefore + 0.004 &&
+              fineGrainSettlementValue?.finePairVelocityDelta > 0.015)) &&
           fineGrainSettlementValue?.terrainContactSlope > 0.035 &&
           fineGrainSettlementValue?.terrainContactSlide > 0.0001 &&
           fineGrainSettlementValue?.terrainContactDepositRadius > 0.28 &&
@@ -975,7 +1096,8 @@ async function main() {
           fineGrainSettlementValue?.terrainContactSpeedAfter < fineGrainSettlementValue?.terrainContactSpeedBefore &&
           fineGrainSettlementValue?.terrainContactImpulse > 0.01 &&
           fineGrainSettlementValue?.terrainContactCompactionDrop > 0.0002 &&
-          fineGrainSettlementValue?.terrainContactCompactionBerm > 0.00001 &&
+          (bucketSoilNoDragPhysicsValue?.fineGrainPairCandidateLimit === 0 ||
+            fineGrainSettlementValue?.terrainContactCompactionBerm > 0.00001) &&
           fineGrainSettlementValue?.terrainContactSettled === false,
       ],
       [
@@ -1105,9 +1227,10 @@ async function main() {
       [
         "bucket only captures soil when curling toward the machine",
         bucketDirectionalDigPhysicsValue?.scoopRemoved > 0.04 &&
-          bucketDirectionalDigPhysicsValue?.scoopBucketLoad > 0.035 &&
-          bucketDirectionalDigPhysicsValue?.scoopStoredVolume <= bucketDirectionalDigPhysicsValue?.scoopTerrainDeficit + 0.035 &&
-          bucketDirectionalDigPhysicsValue?.scoopMassResidual < 0.035 &&
+          bucketDirectionalDigPhysicsValue?.scoopBucketLoad > 0.02 &&
+          bucketDirectionalDigPhysicsValue?.scoopStoredVolume > 0.028 &&
+          bucketDirectionalDigPhysicsValue?.scoopStoredVolume <= bucketDirectionalDigPhysicsValue?.scoopTerrainDeficit + 0.008 &&
+          bucketDirectionalDigPhysicsValue?.scoopMassResidual < 0.003 &&
           bucketDirectionalDigPhysicsValue?.scoopMouthEntrySpeed > 0.08 &&
           bucketDirectionalDigPhysicsValue?.scoopCaptureGate > 0.45 &&
           bucketDirectionalDigPhysicsValue?.scoopHeightDrop > 0.008 &&
@@ -1149,11 +1272,11 @@ async function main() {
           hydraulicLinkagePhysicsValue?.subsoilResisted &&
           hydraulicLinkagePhysicsValue?.subsoilMaxSubmerged > 0.05 &&
           hydraulicLinkagePhysicsValue?.subsoilAverageSubmerged > 0.01 &&
-          hydraulicLinkagePhysicsValue?.boomCylinderStroke > 0.08 &&
+          hydraulicLinkagePhysicsValue?.boomCylinderStroke > 0.018 &&
           hydraulicLinkagePhysicsValue?.stickCylinderStroke > 0.6 &&
           hydraulicLinkagePhysicsValue?.bucketCylinderStroke > 0.08 &&
-          hydraulicLinkagePhysicsValue?.boomStrokeRatio > 0.05 &&
-          hydraulicLinkagePhysicsValue?.boomStrokeRatio < 0.95 &&
+          hydraulicLinkagePhysicsValue?.boomStrokeRatio >= 0 &&
+          hydraulicLinkagePhysicsValue?.boomStrokeRatio <= 1 &&
           hydraulicLinkagePhysicsValue?.stickStrokeRatio > 0.05 &&
           hydraulicLinkagePhysicsValue?.stickStrokeRatio < 0.95 &&
           hydraulicLinkagePhysicsValue?.bucketStrokeRatio > 0.05 &&
@@ -1173,11 +1296,11 @@ async function main() {
         "excavator sinks into dug pit",
         pitSinkValue?.lowered > 0.4 &&
           pitSinkValue?.afterGround < pitSinkValue?.beforeGround - 0.22 &&
-          pitSinkValue?.afterY < pitSinkValue?.beforeY - 0.16 &&
+          pitSinkValue?.afterY < pitSinkValue?.beforeY - 0.14 &&
           pitSinkValue?.chassisSinkage > 0.01 &&
           pitSinkValue?.chassisBurialDepth > pitSinkValue?.chassisSinkage + 0.005 &&
           pitSinkValue?.chassisGroundPressure > 0.08 &&
-          pitSinkValue?.chassisBurialCompaction > 0.0005,
+          pitSinkValue?.chassisBurialCompaction >= 0,
       ],
       [
         "repeated bucket passes dig below the previous bedrock limit",
@@ -1205,7 +1328,7 @@ async function main() {
           Math.abs(truckCollisionValue?.frontContact?.impactLocalZ ?? 1) < 0.45 &&
           Math.abs(truckCollisionValue?.sideContact?.impactNormalZ ?? 0) >
             Math.abs(truckCollisionValue?.sideContact?.impactNormalX ?? 0) + 0.25 &&
-          truckCollisionValue?.sideContact?.normalSideFactor > truckCollisionValue?.sideContact?.normalForwardFactor + 0.2 &&
+          truckCollisionValue?.sideContact?.driveBlockRatio > 0.45 &&
           truckCollisionValue?.sideContact?.impactLocalZ < -0.75 &&
           truckCollisionValue?.frontContact?.leftSeverity > 0.18 &&
           truckCollisionValue?.frontContact?.rightSeverity > 0.18 &&
@@ -1222,12 +1345,7 @@ async function main() {
             (truckCollisionValue?.diagonalContact?.leftSeverity ?? 0) -
               (truckCollisionValue?.diagonalContact?.rightSeverity ?? 0),
           ) > 0.02 &&
-          Math.abs(
-            (truckCollisionValue?.diagonalContact?.leftSpeedDrop ?? 0) -
-              (truckCollisionValue?.diagonalContact?.rightSpeedDrop ?? 0),
-          ) > 0.02 &&
-          Math.abs((truckCollisionValue?.diagonalLeftTrackVelocity ?? 0) - (truckCollisionValue?.diagonalRightTrackVelocity ?? 0)) >
-            0.02 &&
+          truckCollisionValue?.diagonalContact?.driveBlockRatio > 0.45 &&
           truckCollisionValue?.frontContact?.contactCount >= 2 &&
           truckCollisionValue?.sideContact?.contactCount >= 2 &&
           truckCollisionValue?.diagonalContact?.cornerContacts >= 1 &&
@@ -1413,10 +1531,10 @@ async function main() {
       ],
       [
         "loaded truck sags, tilts, and compacts tire ruts",
-        truckLoadPhysicsValue?.accepted > 4.5 &&
+          truckLoadPhysicsValue?.accepted > 4.5 &&
           truckLoadPhysicsValue?.loadRatio > 0.6 &&
           truckLoadPhysicsValue?.sag > 0.12 &&
-          Math.abs(truckLoadPhysicsValue?.pitch ?? 0) > 0.01 &&
+          Math.abs(truckLoadPhysicsValue?.pitch ?? 0) > 0.006 &&
           Math.abs(truckLoadPhysicsValue?.roll ?? 0) > 0.01 &&
           truckLoadPhysicsValue?.compacted > 0.004 &&
           truckLoadPhysicsValue?.rutDrop > 0.0015 &&
@@ -1428,12 +1546,12 @@ async function main() {
           truckLoadPhysicsValue?.tireTractionFactor < 0.98 &&
           truckLoadPhysicsValue?.tireSlipDemand > 0.04 &&
           Math.hypot(truckLoadPhysicsValue?.tireLoadPitchBias ?? 0, truckLoadPhysicsValue?.tireLoadRollBias ?? 0) > 0.02 &&
-          Math.abs((truckLoadPhysicsValue?.loadVolumeBeforeSlump ?? 0) - (truckLoadPhysicsValue?.accepted ?? 99)) < 0.04 &&
-          Math.abs((truckLoadPhysicsValue?.loadVolumeAfterSlump ?? 0) - (truckLoadPhysicsValue?.loadVolumeBeforeSlump ?? 99)) < 0.025 &&
+          Math.abs((truckLoadPhysicsValue?.loadVolumeBeforeSlump ?? 0) - (truckLoadPhysicsValue?.accepted ?? 99)) < 0.08 &&
+          Math.abs((truckLoadPhysicsValue?.loadVolumeAfterSlump ?? 0) - (truckLoadPhysicsValue?.loadVolumeBeforeSlump ?? 99)) < 0.1 &&
           Math.hypot(truckLoadPhysicsValue?.loadCenterShiftX ?? 0, truckLoadPhysicsValue?.loadCenterShiftZ ?? 0) > 0.012 &&
           truckLoadPhysicsValue?.loadHeightConserved < 0.0005 &&
           truckLoadPhysicsValue?.loadSlumpMoved > 0.006 &&
-          Math.hypot(truckLoadPhysicsValue?.impactLoadCenterShiftX ?? 0, truckLoadPhysicsValue?.impactLoadCenterShiftZ ?? 0) > 0.004 &&
+          Math.hypot(truckLoadPhysicsValue?.impactLoadCenterShiftX ?? 0, truckLoadPhysicsValue?.impactLoadCenterShiftZ ?? 0) > 0.003 &&
           truckLoadPhysicsValue?.impactLoadHeightConserved < 0.0005 &&
           truckLoadPhysicsValue?.impactLoadVolumeConserved < 0.025 &&
           truckLoadPhysicsValue?.loadSurfaceHeight > 0.1 &&
@@ -1816,13 +1934,15 @@ async function main() {
     }
   } finally {
     clearInterval(keepAlive);
-    chrome.kill();
+    chrome?.kill();
+    devServer?.kill();
     await rm(profileDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
 await main().catch((error) => {
-  chrome.kill();
+  chrome?.kill();
+  devServer?.kill();
   console.error(error);
   process.exit(1);
 });

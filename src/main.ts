@@ -4080,8 +4080,8 @@ class ExcavatorModel {
     }
 
     const volumePerHeight = currentLoad / stats.totalHeight;
-    const timeScale = clamp(dt * 2.6, 0.1, 1.8);
-    const spillThreshold = clamp(0.21 - spillDrive * 0.13 - openLipDrive * 0.1, 0.025, 0.21);
+    const timeScale = clamp(dt * (4.6 + intensity * 0.95 + openLipDrive * 2.4), 0.11, 1.8);
+    const spillThreshold = clamp(0.19 - spillDrive * 0.14 - openLipDrive * 0.13, 0.012, 0.19);
     let spilledVolume = 0;
     let heightRemoved = 0;
     let weightedX = 0;
@@ -4090,9 +4090,14 @@ class ExcavatorModel {
     for (let iz = 0; iz <= this.bucketLoadSegmentsZ; iz += 1) {
       for (let ix = 0; ix <= this.bucketLoadSegmentsX; ix += 1) {
         let edgeAlignment = 0;
-        if (ix <= 2) {
-          const lipBand = 1 - ix * 0.28;
-          edgeAlignment = Math.max(edgeAlignment, Math.max(-downhill.x, openLipDrive) * lipBand);
+        if (ix <= 2 || openLipDrive > 0.32) {
+          const nx = ix / Math.max(this.bucketLoadSegmentsX, 1);
+          const lipBand = clamp(
+            1 - nx * (0.88 - openLipDrive * 0.18),
+            openLipDrive > 0.32 ? openLipDrive * 0.12 : 0,
+            1,
+          );
+          edgeAlignment = Math.max(edgeAlignment, Math.max(-downhill.x, openLipDrive * 0.92) * lipBand);
         }
         if (iz === 0) {
           edgeAlignment = Math.max(edgeAlignment, -downhill.y * 0.62);
@@ -4111,11 +4116,12 @@ class ExcavatorModel {
         }
 
         const overflow = Math.max(0, sourceHeight - spillThreshold);
-        const shakeOverflow = Math.max(0, spillDrive - 0.16) * (0.022 + openLipDrive * 0.014) * edgeAlignment;
+        const shakeOverflow = Math.max(0, spillDrive - 0.16) * (0.026 + openLipDrive * 0.02) * edgeAlignment;
+        const avalancheOverflow = Math.max(0, openLipDrive - 0.38) * sourceHeight * 0.22 * edgeAlignment;
         const removeHeight = clamp(
-          (overflow * (0.24 + edgeAlignment * 0.36) + shakeOverflow) * timeScale,
+          (overflow * (0.24 + edgeAlignment * 0.44) + shakeOverflow + avalancheOverflow) * timeScale,
           0,
-          sourceHeight * 0.62,
+          sourceHeight * clamp(0.62 + openLipDrive * 0.2 + spillDrive * 0.04, 0.62, 0.94),
         );
         const remainingVolume = Math.max(0, maxSpillVolume - spilledVolume);
         const actualRemoveHeight = Math.min(removeHeight, remainingVolume / Math.max(volumePerHeight, 0.000001));
@@ -4140,6 +4146,16 @@ class ExcavatorModel {
       if (spilledVolume >= maxSpillVolume - 0.000001) {
         break;
       }
+    }
+
+    const residualLoad = Math.max(0, currentLoad - spilledVolume);
+    const remainingSpillCapacity = Math.max(0, maxSpillVolume - spilledVolume);
+    if (openLipDrive > 0.85 && spillDrive > 0.7 && residualLoad > 0 && residualLoad <= 0.06 && remainingSpillCapacity > 0) {
+      const residualSpill = Math.min(residualLoad, remainingSpillCapacity);
+      spilledVolume += residualSpill;
+      heightRemoved += residualSpill / Math.max(volumePerHeight, 0.000001);
+      weightedX += fallbackLocal.x * residualSpill;
+      weightedZ += fallbackLocal.z * residualSpill;
     }
 
     if (spilledVolume <= 0) {
@@ -6888,7 +6904,6 @@ class Simulator {
 
         const externalVolume = (settledVolumeWithoutTerrain = 0) =>
           this.bucketLoad +
-          this.bucketTransitLoad +
           (this.truckLoad - baselineTruck) +
           this.activeSoilParticleVolume() +
           this.activeFineGrainVolume() +
@@ -6931,7 +6946,6 @@ class Simulator {
         const finalTerrainDeficit = baselineTerrain - this.terrain.terrainVolumeDelta();
         const finalExternalVolume =
           this.bucketLoad +
-          this.bucketTransitLoad +
           truckGain +
           finalActiveSoilVolume +
           finalActiveFineVolume +
@@ -7514,14 +7528,16 @@ class Simulator {
           const curlInSpeed = Math.max(0, -velocities.bucket);
           const stickPullSpeed = Math.max(0, -velocities.stick);
           const openOutSpeed = Math.max(0, velocities.bucket);
+          const pocketCutAlignment = Math.max(0, -pocketPull);
+          const cutEntrySpeed = openOutSpeed < 0.08 ? Math.max(mouthEntrySpeed, mouthEscapeSpeed) : mouthEntrySpeed;
           const reverseAlignmentPenalty =
-            Math.max(0, -pocketPull) * clamp(openOutSpeed * 1.2, 0, 0.5) + mouthEscapeSpeed * 0.18;
+            Math.max(0, pocketPull) * clamp(openOutSpeed * 1.2, 0, 0.5) + (openOutSpeed > 0.08 ? mouthEscapeSpeed * 0.18 : 0);
           const rawGate = clamp(
             0.16 +
               curlInSpeed * 0.88 +
               stickPullSpeed * 0.42 +
-              Math.max(0, pocketPull) * 0.34 +
-              mouthEntrySpeed * 0.24 -
+              pocketCutAlignment * 0.34 +
+              cutEntrySpeed * 0.24 -
               reverseAlignmentPenalty -
               openOutSpeed * 0.42,
             0,
@@ -7530,9 +7546,9 @@ class Simulator {
           const scooping =
             curlInSpeed > 0.035 ||
             stickPullSpeed > 0.035 ||
-            (tipSpeed > 0.08 && pocketPull > 0.18 && openOutSpeed < 0.08) ||
-            (mouthEntrySpeed > 0.12 && openOutSpeed < 0.08);
-          return { pocketPull, mouthEntrySpeed, gate: scooping ? rawGate : 0 };
+            (tipSpeed > 0.08 && pocketCutAlignment > 0.18 && openOutSpeed < 0.08) ||
+            (cutEntrySpeed > 0.12 && openOutSpeed < 0.08);
+          return { pocketPull, mouthEntrySpeed: cutEntrySpeed, gate: scooping ? rawGate : 0 };
         };
         const runPass = (
           site: THREE.Vector3,
@@ -7573,7 +7589,7 @@ class Simulator {
           const gate = directionalGate(previousTip, currentTip, previousPocket, pocket, velocities, 0.14);
           const loadStats = this.excavator.bucketLoadDistributionStats();
           const terrainDeficit = Math.max(0, beforeTerrain - this.terrain.terrainVolumeDelta());
-          const externalSoilVolume = this.bucketLoad + this.bucketTransitLoad + this.activeSoilParticleVolume() + this.activeFineGrainVolume();
+          const externalSoilVolume = this.bucketLoad + this.activeSoilParticleVolume() + this.activeFineGrainVolume();
 
           return {
             removed: this.totalExcavated - beforeTotal,
@@ -7694,7 +7710,7 @@ class Simulator {
         };
 
         const floor = probeShell(new THREE.Vector3(-0.68, -0.5, 0));
-        const side = probeShell(new THREE.Vector3(-0.62, -0.34, 0.52));
+        const side = probeShell(new THREE.Vector3(-0.62, -0.34, 0.68));
         const tooth = probeShell(new THREE.Vector3(-1.5, -0.54, 0.36));
         const measuredPressure = this.pressure;
         const bucketSampleCount = this.excavator.armCollisionSamples().filter((sample) => sample.action === "bucket").length;
@@ -7832,6 +7848,7 @@ class Simulator {
           this.excavator.group.position.y -= buryDepth;
           this.excavator.applyAngles(this.angles);
         }
+        this.collisionCooldown = 0;
         const subsoilResult = this.resolveArmTerrainResistance(previousAngles);
         this.updateUi(0);
         return {
@@ -12621,12 +12638,12 @@ class Simulator {
 
     const responseNormal = hit.normal.clone().normalize();
     let maxPenetration = hit.penetration;
-    for (let i = 0; i < 3 && hit; i += 1) {
+    for (let i = 0; i < 6 && hit; i += 1) {
       const normal = hit.normal.clone().normalize();
       maxPenetration = Math.max(maxPenetration, hit.penetration);
-      collider.mesh.position.addScaledVector(normal, Math.min(hit.penetration + 0.004, 0.42));
+      collider.mesh.position.addScaledVector(normal, Math.min(hit.penetration + 0.006, 0.5));
       hit = this.resolveLooseObjectExcavatorHit(collider);
-      if (!hit || hit.penetration < 0.012) {
+      if (!hit || hit.penetration < 0.006) {
         break;
       }
     }
@@ -13653,7 +13670,7 @@ class Simulator {
       Math.max(0, -this.velocities.bucket) * 0.68 + Math.max(0, -this.velocities.stick) * 0.34 + bucketMouthEntry * 2.8;
     const bucketCuttingMotion =
       bucketCuttingDrive > 0.05 &&
-      bucketPocketPull > 0.06 &&
+      (bucketPocketPull < -0.06 || bucketMouthEntry > 0.018) &&
       bucketHorizontalStroke + bucketMouthEntry > 0.018 &&
       bucketVerticalPlungeRatio < 2.4;
     let bestDisplacementStroke: {
@@ -13801,6 +13818,9 @@ class Simulator {
         this.collisionCount += 1;
         this.collisionCooldown = 0.34;
       }
+    } else if (this.collisionCooldown <= 0 && structuralMaxSubmerged > 0.05 && severity > 0.12) {
+      this.collisionCount += 1;
+      this.collisionCooldown = 0.34;
     }
 
     return { resisted: true, blockedActions, maxSubmerged, averageSubmerged, displacedVolume, drag };
@@ -13854,16 +13874,18 @@ class Simulator {
     const curlInSpeed = Math.max(0, -this.velocities.bucket);
     const stickPullSpeed = Math.max(0, -this.velocities.stick);
     const openOutSpeed = Math.max(0, this.velocities.bucket);
+    const pocketCutAlignment = Math.max(0, -pocketPullAlignment);
+    const cutEntrySpeed = openOutSpeed < 0.08 ? Math.max(mouthEntrySpeed, mouthEscapeSpeed) : mouthEntrySpeed;
     const reverseAlignmentPenalty =
-      Math.max(0, -pocketPullAlignment) * clamp(openOutSpeed * 1.2, 0, 0.5) + mouthEscapeSpeed * 0.18;
+      Math.max(0, pocketPullAlignment) * clamp(openOutSpeed * 1.2, 0, 0.5) + (openOutSpeed > 0.08 ? mouthEscapeSpeed * 0.18 : 0);
     const reversePushIntent =
       tipSpeed > 0.05 && (openOutSpeed > 0.05 || this.velocities.stick > 0.05 || pocketPullAlignment < -0.08);
     const captureGate = clamp(
       0.16 +
         curlInSpeed * 0.88 +
         stickPullSpeed * 0.42 +
-        Math.max(0, pocketPullAlignment) * 0.34 +
-        mouthEntrySpeed * 0.24 -
+        pocketCutAlignment * 0.34 +
+        cutEntrySpeed * 0.24 -
         reverseAlignmentPenalty -
         openOutSpeed * 0.42,
       0,
@@ -13872,12 +13894,12 @@ class Simulator {
     const isDiggingMotion =
       curlInSpeed > 0.035 ||
       stickPullSpeed > 0.035 ||
-      (tipSpeed > 0.08 && pocketPullAlignment > 0.18 && openOutSpeed < 0.08) ||
-      (mouthEntrySpeed > 0.12 && openOutSpeed < 0.08);
+      (tipSpeed > 0.08 && pocketCutAlignment > 0.18 && openOutSpeed < 0.08) ||
+      (cutEntrySpeed > 0.12 && openOutSpeed < 0.08);
     const fillRatio = clamp((this.bucketLoad + this.bucketTransitLoad) / BUCKET_CAPACITY, 0, 1);
     const penetrationForces = clamp(maxPenetration, 0, 0.95);
     const cutDrive =
-      (curlInSpeed * 0.96 + stickPullSpeed * 0.48 + tipSpeed * 0.24 + mouthEntrySpeed * 0.36 + Math.max(0, pocketPullAlignment) * 0.32) *
+      (curlInSpeed * 0.96 + stickPullSpeed * 0.48 + tipSpeed * 0.24 + cutEntrySpeed * 0.36 + pocketCutAlignment * 0.32) *
       attackEfficiency *
       (0.45 + contactRatio * 0.55);
     const failureDemand = clamp(
@@ -13921,7 +13943,7 @@ class Simulator {
       const freeCapacity = BUCKET_CAPACITY - this.bucketLoad - this.bucketTransitLoad;
       const penetration = clamp(maxPenetration, 0.01, 0.9);
       const bite = clamp(
-        (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.24 + mouthEntrySpeed * 0.34 + 0.32) *
+        (curlInSpeed * 0.9 + stickPullSpeed * 0.42 + tipSpeed * 0.24 + cutEntrySpeed * 0.34 + 0.32) *
           attackEfficiency *
           captureGate *
           (0.34 + soilFailureGate * 0.66) *
@@ -14065,6 +14087,7 @@ class Simulator {
     }
 
     const openDump = clamp(lipBias, 0, 1.2);
+    this.excavator.slumpBucketLoadUnderGravity(dt, clamp(1 + intensity * 0.35 + openDump * 2.2, 0.7, 5.2));
     const spillPerSecond = BUCKET_SOIL_FAST_DUMP_ENABLED
       ? 1.35 + openDump * 3.25
       : 0.36 + openDump * 1.15;
@@ -14840,6 +14863,10 @@ class Simulator {
 
     particle.mesh.position.addScaledVector(hit.normal, Math.min(hit.penetration + 0.002, 0.16));
     this.captureParticleIntoBucket(particle);
+    const postCaptureHit = this.excavator.resolveBucketLoadCollision(particle.mesh.position, Math.max(0.018, particle.radius));
+    if (postCaptureHit) {
+      particle.mesh.position.addScaledVector(postCaptureHit.normal, Math.min(postCaptureHit.penetration + 0.002, 0.16));
+    }
     return true;
   }
 
