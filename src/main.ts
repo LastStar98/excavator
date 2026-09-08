@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import "./style.css";
 import { horizontalReach, orbitTarget } from "./spatial";
+import { bearingSinkage, compressionIncrement, compressionLimit, granularDischarge, shearStrengthKPa } from "./soil-physics";
+import { SoilStream } from "./soil-stream";
 
 type Pattern = "ISO" | "SAE" | "Arcade";
 type ResponseMode = "slow" | "medium" | "fast";
@@ -351,12 +353,15 @@ interface TruckLoadTerrainSpillResult {
 }
 
 interface ExcavatorDebugApi {
+  forceSoilRegression: () => Record<string, number | boolean>;
+  previewSoilFlow: () => void;
   frameCount: () => number;
   advance: (seconds: number) => void;
   snapshot: () => {
     elapsed: number;
     bucketLoad: number;
     bucketTransitLoad: number;
+    airborneDumpVolume: number;
     bucketSoilSupportMass: number;
     truckLoad: number;
     totalExcavated: number;
@@ -1198,7 +1203,7 @@ const FINE_GRAIN_PAIR_COLLISIONS_ENABLED = false;
 const BUCKET_SOIL_RUNTIME_COLLISIONS_ENABLED = false;
 const BUCKET_SOIL_RUNTIME_PAYLOAD_ENABLED = false;
 const BUCKET_SOIL_SUPPORT_MASS_ENABLED = true;
-const BUCKET_SOIL_FAST_DUMP_ENABLED = true;
+const BUCKET_SOIL_FAST_DUMP_ENABLED = false;
 const SOIL_PAIR_GRID_SIZE = 0.34;
 const FINE_GRAIN_PAIR_GRID_SIZE = 0.14;
 const SOIL_PAIR_CANDIDATE_LIMIT = 0;
@@ -1407,6 +1412,7 @@ class HeightfieldTerrain {
   readonly spacing = this.size / this.segments;
   readonly mesh: THREE.Mesh;
   readonly heights: Float32Array;
+  private readonly compression = new Float32Array((this.segments + 1) ** 2);
   private readonly geometry: THREE.BufferGeometry;
   private readonly colors: Float32Array;
 
@@ -1628,7 +1634,21 @@ class HeightfieldTerrain {
     const yieldFactor = mode === "excavate" ? profile.excavationYield : profile.compactionYield;
     const fractureAssist = mode === "excavate" ? clamp(desiredDelta * 0.18 + profile.collapseFactor * 0.08, 0, 0.16) : 0;
     const limitedDelta = desiredDelta * clamp(yieldFactor + fractureAssist, 0.06, mode === "excavate" ? 1.08 : 0.95);
+    if (mode === "compact") {
+      const ix = Math.round((x + this.size / 2) / this.spacing);
+      const iz = Math.round((z + this.size / 2) / this.spacing);
+      const idx = this.index(ix, iz);
+      const delta = Math.min(maxLower, compressionIncrement(this.compression[idx], compressionLimit(this.getSurfaceConditionAt(x, z)), limitedDelta));
+      this.compression[idx] += delta;
+      return delta;
+    }
     return Math.min(limitedDelta, maxLower);
+  }
+
+  compressionAt(x: number, z: number): number {
+    const ix = clamp(Math.round((x + this.size / 2) / this.spacing), 0, this.segments);
+    const iz = clamp(Math.round((z + this.size / 2) / this.spacing), 0, this.segments);
+    return this.compression[this.index(ix, iz)];
   }
 
   getSurfaceConditionAt(x: number, z: number): TerrainSurfaceCondition {
@@ -1802,17 +1822,15 @@ class HeightfieldTerrain {
     }
 
     heights.sort((a, b) => a - b);
-    const lowCount = clamp(Math.ceil(heights.length * 0.42), 1, heights.length);
-    let lowSum = 0;
-    for (let i = 0; i < lowCount; i += 1) {
-      lowSum += heights[i];
-    }
-    const lowAverage = lowSum / lowCount;
+    // Rigid tracks bridge local holes. Use the bearing portion of the footprint,
+    // rather than weighting its deepest voids as if every pad must touch them.
+    const bearingHeights = heights.slice(Math.floor(heights.length * 0.55));
+    const bearingHeight = bearingHeights.reduce((sum, height) => sum + height, 0) / bearingHeights.length;
     const averageHeight = heightSum / heights.length;
     const referenceHeight = referenceSum / heights.length;
 
     return {
-      supportHeight: averageHeight * 0.38 + lowAverage * 0.62,
+      supportHeight: bearingHeight,
       averageHeight,
       lowHeight: heights[0],
       highHeight: heights[heights.length - 1],
@@ -2019,12 +2037,27 @@ class HeightfieldTerrain {
       return { compacted: 0, rutDrop: 0, bermRise: 0 };
     }
 
-    this.relaxSlopes(range, 1);
     const leftBerm = center.clone().addScaledVector(s, halfWidth + 0.2);
     const rightBerm = center.clone().addScaledVector(s, -halfWidth - 0.2);
     const beforeBerm = Math.max(this.getHeightAt(leftBerm.x, leftBerm.z), this.getHeightAt(rightBerm.x, rightBerm.z));
-    this.raiseAt(leftBerm, width * 0.48, compacted * 0.32, 1);
-    this.raiseAt(rightBerm, width * 0.48, compacted * 0.32, 1);
+    // Spread displaced soil along both track edges. Concentrating a whole
+    // track's berm into two small discs made the middle of the rut rise up.
+    const bermCells: Array<[number, number]> = [];
+    let bermWeight = 0;
+    for (let iz = range.minZ; iz <= range.maxZ; iz++) {
+      for (let ix = range.minX; ix <= range.maxX; ix++) {
+        const dx = -this.size / 2 + ix * this.spacing - center.x;
+        const dz = -this.size / 2 + iz * this.spacing - center.z;
+        const along = Math.abs(dx * f.x + dz * f.z);
+        const across = Math.abs(dx * s.x + dz * s.z);
+        if (along > halfLength || across <= halfWidth || across > halfWidth + this.spacing * 1.5) continue;
+        const weight = Math.max(0.05, 1 - (across - halfWidth) / (this.spacing * 1.5));
+        bermCells.push([this.index(ix, iz), weight]);
+        bermWeight += weight;
+      }
+    }
+    for (const [idx, weight] of bermCells) this.heights[idx] += compacted * 0.64 * weight / bermWeight / cellArea;
+    this.relaxSlopes(range, 1);
     const afterBerm = Math.max(this.getHeightAt(leftBerm.x, leftBerm.z), this.getHeightAt(rightBerm.x, rightBerm.z));
 
     return {
@@ -2112,6 +2145,8 @@ class HeightfieldTerrain {
   }
 
   raiseAt(center: THREE.Vector3, radius: number, volume: number, relaxPasses = 2): number {
+    // A small grain between grid vertices must still contribute its volume.
+    radius = Math.max(radius, this.spacing * Math.SQRT1_2 + 0.001);
     const range = this.gridRange(center.x, center.z, radius);
     const weights: Array<[number, number]> = [];
     let totalWeight = 0;
@@ -2149,6 +2184,7 @@ class HeightfieldTerrain {
   }
 
   reset(): void {
+    this.compression.fill(0);
     for (let iz = 0; iz <= this.segments; iz += 1) {
       for (let ix = 0; ix <= this.segments; ix += 1) {
         const x = -this.size / 2 + ix * this.spacing;
@@ -2839,6 +2875,17 @@ class WorkTruck {
       local.z < this.bedWidth / 2 &&
       point.y > this.group.position.y + this.bedFloorY - 0.1
     );
+  }
+
+  sweptSoilCatch(previous: THREE.Vector3, position: THREE.Vector3): THREE.Vector3 | null {
+    const a = this.group.worldToLocal(previous.clone());
+    const b = this.group.worldToLocal(position.clone());
+    const surface = this.sampleBedCatchSurfaceLocal(b.x, b.z);
+    if (!surface || b.y > surface.surfaceY + 0.04 || a.y < surface.surfaceY - 0.08 || b.y > a.y) return null;
+    const t = clamp((a.y - surface.surfaceY - 0.04) / Math.max(a.y - b.y, 0.000001), 0, 1);
+    const hit = a.lerp(b, t);
+    hit.y = surface.surfaceY + 0.04;
+    return this.group.localToWorld(hit);
   }
 
   ballisticBedImpact(origin: THREE.Vector3, initialVelocity: THREE.Vector3, maxTime = 1.45): BallisticDepositHit | null {
@@ -3828,12 +3875,12 @@ class ExcavatorModel {
       return;
     }
     this.bucketLoadRenderedRatio = ratio;
-    this.bucketLoadMesh.visible = ratio > 0.02;
-    if (ratio <= 0.02) {
+    this.bucketLoadMesh.visible = ratio > 0.000001;
+    if (ratio <= 0.000001) {
       this.bucketLoadHeights.fill(0);
       this.commitBucketLoadSurface();
       return;
-    } else if (previousRatio > 0.02) {
+    } else if (previousRatio > 0.000001) {
       const scale = ratio / Math.max(previousRatio, 0.001);
       for (let i = 0; i < this.bucketLoadHeights.length; i += 1) {
         this.bucketLoadHeights[i] = clamp(this.bucketLoadHeights[i] * scale, 0.004, 0.62);
@@ -4084,7 +4131,7 @@ class ExcavatorModel {
     }
 
     const volumePerHeight = currentLoad / stats.totalHeight;
-    const timeScale = clamp(dt * (4.6 + intensity * 0.95 + openLipDrive * 2.4), 0.11, 1.8);
+    const timeScale = 1 - Math.exp(-dt * (4.6 + intensity * 0.95 + openLipDrive * 2.4));
     const spillThreshold = clamp(0.19 - spillDrive * 0.14 - openLipDrive * 0.13, 0.012, 0.19);
     let spilledVolume = 0;
     let heightRemoved = 0;
@@ -4170,7 +4217,7 @@ class ExcavatorModel {
     const remainingLoad = Math.max(0, currentLoad - spilledVolume);
     const remainingRatio = clamp(remainingLoad / BUCKET_CAPACITY, 0, 1);
     this.bucketLoadRenderedRatio = remainingRatio;
-    this.bucketLoadMesh.visible = remainingRatio > 0.02;
+    this.bucketLoadMesh.visible = remainingRatio > 0.000001;
     if (!this.bucketLoadMesh.visible) {
       this.bucketLoadHeights.fill(0);
     } else {
@@ -5129,6 +5176,7 @@ class Simulator {
   private readonly activeDrivePointers = new Map<number, MobileDriveMode>();
   private readonly canvasPointers = new Map<number, { x: number; y: number; pan: boolean }>();
   private readonly soilParticles: SoilParticle[] = [];
+  private readonly soilStream = new SoilStream();
   private readonly worldColliders: WorldCollider[] = [];
   private readonly carriedWorldColliders = new Map<WorldCollider, THREE.Vector3>();
   private readonly carriedWorldPreviousPositions = new Map<WorldCollider, THREE.Vector3>();
@@ -5303,10 +5351,12 @@ class Simulator {
     this.fineGrainCloud.userData.physicsRole = "soil-particles";
     this.fineGrainCloud.frustumCulled = false;
     this.scene.add(this.fineGrainCloud);
+    this.scene.add(this.soilStream.mesh);
   }
 
   reset(): void {
     this.terrain.reset();
+    this.soilStream.clear();
     Object.assign(this.angles, initialAngles);
     Object.assign(this.velocities, { swing: 0, boom: 0, stick: 0, bucket: 0 });
     this.truckLoad = 0;
@@ -6677,6 +6727,7 @@ class Simulator {
           elapsed: this.elapsed,
           bucketLoad: this.bucketLoad,
           bucketTransitLoad: this.bucketTransitLoad,
+          airborneDumpVolume: this.soilStream.volume,
           bucketSoilSupportMass: this.bucketSoilSupportMass(),
           truckLoad: this.truckLoad,
           totalExcavated: this.totalExcavated,
@@ -6781,15 +6832,23 @@ class Simulator {
         this.excavator.applyAngles(previousAngles);
         this.previousBucketTip.copy(this.excavator.bucketTipWorld());
         this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
-        Object.assign(this.angles, diggingAngles);
-        this.excavator.applyAngles(this.angles);
-        this.velocities.boom = -0.04;
-        this.velocities.stick = -0.34;
-        this.velocities.bucket = -0.82;
+        Object.assign(this.angles, previousAngles);
         this.collisionCooldown = 0;
         const beforeTotal = this.totalExcavated;
-        const resistance = this.resolveArmTerrainResistance(previousAngles);
-        this.updateSoil(0.14);
+        let blocked = false;
+        // Exercise a real-rate cutting stroke through the resistance solver.
+        // Teleporting 0.6 rad in one step no longer represents playable motion.
+        for (let step = 0; step < 90; step++) {
+          const previous = { ...this.angles };
+          for (const [action, rate] of [["boom", -0.04], ["stick", -0.34], ["bucket", -0.82]] as const) {
+            this.velocities[action] = this.angles[action] > diggingAngles[action] ? rate : 0;
+            this.angles[action] = Math.max(diggingAngles[action], this.angles[action] + this.velocities[action] / 60);
+          }
+          this.excavator.applyAngles(this.angles);
+          const resistance = this.resolveArmTerrainResistance(previous);
+          blocked ||= resistance.blockedActions.length > 0;
+          this.updateSoil(1 / 60);
+        }
         this.updateUi(0);
 
         return {
@@ -6798,7 +6857,7 @@ class Simulator {
           afterHeight: this.terrain.getHeightAt(DIG_SITE.x, DIG_SITE.z),
           bucketLoad: this.bucketLoad,
           bucketTransitLoad: this.bucketTransitLoad,
-          blocked: resistance.blockedActions.length > 0,
+          blocked,
           velocityAfter: this.velocities.bucket,
           pressure: this.pressure,
         };
@@ -7270,10 +7329,11 @@ class Simulator {
         let totalStepMs = 0;
         let dumpMaxStepMs = 0;
         let dumpSteps = 0;
-        for (let step = 0; step < 36 && this.bucketLoad > 0.002; step += 1) {
+        for (let step = 0; step < 180 && this.bucketLoad > 0.002; step += 1) {
           const started = performance.now();
           this.withBucketDumpPressureSilenced(() => {
             this.spillBucketLoadToWorld(1 / 60, 3.1, 1.1, this.bucketLoad);
+            this.updateSoilStream(1 / 60);
           });
           this.bucketDumpPressureSilence = Math.max(0, this.bucketDumpPressureSilence - 1 / 60);
           const elapsed = performance.now() - started;
@@ -7286,6 +7346,7 @@ class Simulator {
         const remainingBucketLoad = this.bucketLoad;
         const activeSoilParticles = this.soilParticles.length;
         const activeFineGrains = this.fineGrainCount();
+        this.soilStream.clear();
         this.clearFineGrains();
         for (const particle of [...this.soilParticles]) {
           this.recycleSoilParticle(particle);
@@ -7322,6 +7383,96 @@ class Simulator {
           activeSoilParticles,
           activeFineGrains,
         };
+      },
+      previewSoilFlow: () => {
+        this.reset();
+        this.bucketLoad = 1.4;
+        Object.assign(this.angles, { swing: 0, boom: 0.8, stick: -1.1, bucket: 0.68 });
+        this.excavator.applyAngles(this.angles);
+        this.excavator.setBucketLoad(this.bucketLoad);
+        this.previousBucketTip.copy(this.excavator.bucketTipWorld());
+        this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
+        this.cameraMode = "orbit";
+        this.orbit.distance = 10;
+        this.orbit.panOffset.set(1.8, 0, 0);
+      },
+      forceSoilRegression: () => {
+        this.reset();
+        const forward = new THREE.Vector3(1, 0, 0);
+        const side = new THREE.Vector3(0, 0, 1);
+        const center = new THREE.Vector3(9.8, 0, -8.8);
+        const startHeight = this.terrain.getHeightAt(center.x, center.z);
+        for (let i = 0; i < 300; i++) this.terrain.compactTrackStrip(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, 0.02);
+        const settledHeight = this.terrain.getHeightAt(center.x, center.z);
+        for (let i = 0; i < 300; i++) this.terrain.compactTrackStrip(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, 0.02);
+        const finalHeight = this.terrain.getHeightAt(center.x, center.z);
+        const compression = this.terrain.compressionAt(center.x, center.z);
+        const beforeDig = this.terrain.getHeightAt(center.x, center.z);
+        const dugVolume = this.terrain.lowerAt(center, 1.2, 0.4);
+        const diggingDrop = beforeDig - this.terrain.getHeightAt(center.x, center.z);
+        const smallDepositBefore = this.terrain.terrainVolumeDelta();
+        this.terrain.raiseAt(new THREE.Vector3(20.025, 0, 20.025), 0.05, 0.012, 0);
+        const smallDepositError = Math.abs(this.terrain.terrainVolumeDelta() - smallDepositBefore - 0.012);
+        const trackCenter = new THREE.Vector3(0, 0, -0.72);
+        const bridgeBefore = this.terrain.sampleTrackSupport(trackCenter, forward, side, TRACK_LENGTH, TRACK_WIDTH).supportHeight;
+        this.terrain.lowerAt(trackCenter, 0.5, 0.6);
+        const bridgeDrop = bridgeBefore - this.terrain.sampleTrackSupport(trackCenter, forward, side, TRACK_LENGTH, TRACK_WIDTH).supportHeight;
+        let plungeBlocked = true;
+        let liftAllowed = true;
+        for (const increment of [0.0002, 0.002]) {
+          const pose = { swing: 0, boom: 0.6, stick: -0.8, bucket: -0.8 };
+          Object.assign(this.angles, pose);
+          this.excavator.group.position.set(0, 0, 0);
+          this.excavator.applyAngles(this.angles);
+          const tip = this.excavator.bucketTipWorld();
+          this.excavator.group.position.y += this.terrain.getHeightAt(tip.x, tip.z) - 0.22 - tip.y;
+          this.excavator.applyAngles(this.angles);
+          this.angles.boom -= increment;
+          this.velocities.boom = -0.04;
+          this.velocities.stick = this.velocities.bucket = 0;
+          this.excavator.applyAngles(this.angles);
+          plungeBlocked &&= this.resolveArmTerrainResistance(pose).blockedActions.includes("boom");
+          Object.assign(this.angles, pose, { boom: pose.boom + increment });
+          this.velocities.boom = 0.04;
+          this.excavator.applyAngles(this.angles);
+          liftAllowed &&= this.resolveArmTerrainResistance(pose).blockedActions.length === 0;
+        }
+        this.reset();
+        this.bucketLoad = 1.2;
+        Object.assign(this.angles, { swing: 0, boom: 0.8, stick: -1.1, bucket: 0.68 });
+        this.excavator.applyAngles(this.angles);
+        this.excavator.setBucketLoad(this.bucketLoad);
+        const terrainBefore = this.terrain.terrainVolumeDelta();
+        let peakPackets = 0;
+        let firstStepAirborne = 0;
+        let firstStepDeposit = 0;
+        const started = performance.now();
+        for (let i = 0; i < 480; i++) {
+          this.spillBucketLoadToWorld(1 / 60, 3, 1.1, this.bucketLoad);
+          this.updateSoilStream(1 / 60);
+          peakPackets = Math.max(peakPackets, this.soilStream.packets.length);
+          if (i === 0) {
+            firstStepAirborne = this.soilStream.volume;
+            firstStepDeposit = this.terrain.terrainVolumeDelta() - terrainBefore + this.truckLoad;
+          }
+        }
+        const streamStepMs = (performance.now() - started) / 480;
+        const deposited = this.terrain.terrainVolumeDelta() - terrainBefore + this.truckLoad;
+        const massError = Math.abs(1.2 - this.bucketLoad - this.soilStream.volume - deposited);
+        const remainingBucket = this.bucketLoad;
+        const remainingAirborne = this.soilStream.volume;
+        this.truckLoad = TRUCK_CAPACITY - 0.1;
+        this.truck.updateLoad(this.truckLoad);
+        const overflowTerrainBefore = this.terrain.terrainVolumeDelta();
+        this.soilStream.emit(this.truck.group.localToWorld(new THREE.Vector3(0.4, 3, 0.4)), new THREE.Vector3(0, -0.1, 0), side, 0.4, 1 / 60);
+        for (let i = 0; i < 480; i++) this.updateSoilStream(1 / 60);
+        const overflowTerrain = this.terrain.terrainVolumeDelta() - overflowTerrainBefore;
+        const overflowError = Math.abs(0.4 - (this.truckLoad - (TRUCK_CAPACITY - 0.1)) - overflowTerrain - this.soilStream.volume);
+        const truckFilled = Math.abs(this.truckLoad - TRUCK_CAPACITY) < 0.001;
+        this.reset();
+        return { rutDrop: startHeight - finalHeight, lateRutDrop: settledHeight - finalHeight, compression, dugVolume, diggingDrop,
+          firstStepAirborne, firstStepDeposit, peakPackets, remainingBucket, remainingAirborne, deposited, massError, streamStepMs,
+          overflowTerrain, overflowError, truckFilled, smallDepositError, bridgeDrop, plungeBlocked, liftAllowed };
       },
       forceFastBucketDumpTrajectory: () => {
         this.truck.reset(this.terrain);
@@ -10513,7 +10664,8 @@ class Simulator {
         const base = this.excavator.group.position.clone();
         const beforeY = this.excavator.group.position.y;
         const beforeGround = this.terrain.getHeightAt(base.x, base.z);
-        const lowered = this.terrain.lowerAt(base, 2.25, 0.62);
+        // Remove support across the whole track footprint, not just its centre.
+        const lowered = this.terrain.lowerAt(base, 4.0, 0.8);
         const afterGround = this.terrain.getHeightAt(base.x, base.z);
         this.updateExcavatorSupport(0.55, forward);
         this.excavator.applyAngles(this.angles);
@@ -10615,6 +10767,7 @@ class Simulator {
     this.withBucketDumpPressureSilenced(() => {
       this.updateSoilParticles(dt);
       this.updateFineGrains(dt);
+      this.updateSoilStream(dt);
       this.updatePassiveSoil(dt);
       this.updateTruckPhysics(dt);
     });
@@ -12953,7 +13106,6 @@ class Simulator {
     const diagonalTwist = (frontLeftHeight + rearRightHeight - frontRightHeight - rearLeftHeight) * 0.5;
     const rawSupportHeight = (left.supportHeight + right.supportHeight) * 0.5;
     const contactSpan = Math.max(left.highHeight, right.highHeight) - Math.min(left.lowHeight, right.lowHeight);
-    const disturbedDepth = (left.disturbedDepth + right.disturbedDepth) * 0.5;
     const bucketPocket = this.excavator.bucketPocketWorld();
     const soilPayloadMass = this.bucketSoilSupportMass();
     const carriedMass = this.carriedWorldObjectMass();
@@ -12968,17 +13120,16 @@ class Simulator {
     const loadFactor = clamp(soilLoadFactor + carriedMass / 18, 0, 2.4);
     const surface = this.terrain.getSurfaceConditionAt(base.x, base.z);
     const materialSink = clamp(surface.trackSinkMultiplier * (1 + surface.wetness * 0.32 - surface.hardpack * 0.24), 0.42, 2.2);
-    const targetSinkage = clamp(
-      0.012 + disturbedDepth * 0.13 + contactSpan * 0.035 + loadFactor * 0.026 + Math.abs(pitchMoment) * 0.026 + Math.abs(rollMoment) * 0.018,
-      0.012,
-      0.28,
-    );
-    const targetBurialDepth = clamp(targetSinkage + disturbedDepth * 0.11 + Math.max(0, contactSpan - 0.05) * 0.035, 0, 0.44);
-    const targetGroundPressure = clamp(
-      (targetBurialDepth * 2.35 + loadFactor * 0.18 + disturbedDepth * 0.22 + contactSpan * 0.12) * materialSink,
-      0,
-      1,
-    );
+    // A nominal 20 t machine on two 3.65 x 0.5 m tracks. Payload soil is
+    // 1.7 t/m3 here; other game objects retain their existing relative mass.
+    const normalForce = (20000 + (this.bucketLoad + this.bucketTransitLoad) * 1700 + carriedMass * 100) * 9.81;
+    const equilibriumSinkage = bearingSinkage(normalForce, 2 * TRACK_LENGTH * TRACK_WIDTH, TRACK_WIDTH, surface);
+    // Permanent compression is already in terrain height. Only the small
+    // recoverable component belongs in the chassis offset, never pit depth.
+    const targetSinkage = equilibriumSinkage * 0.18;
+    const compressed = (this.terrain.compressionAt(leftCenter.x, leftCenter.z) + this.terrain.compressionAt(rightCenter.x, rightCenter.z)) * 0.5;
+    const targetBurialDepth = targetSinkage + compressed;
+    const targetGroundPressure = clamp(normalForce / (2 * TRACK_LENGTH * TRACK_WIDTH) / 120000, 0, 1);
     const targetRoll = clamp(
       Math.atan2(left.supportHeight - right.supportHeight + diagonalTwist * 0.18, TRACK_GAUGE) - rollMoment * 0.11,
       -0.28,
@@ -13062,26 +13213,15 @@ class Simulator {
       const roughness = clamp((support.highHeight - support.lowHeight) * 0.9 + support.disturbedDepth * 0.24, 0, 0.72);
       const materialSink = clamp(surface.trackSinkMultiplier * (1 + surface.wetness * 0.45 - surface.hardpack * 0.32), 0.35, 2.35);
       const depth = clamp(
-        (0.006 + trackMotion * dt * 0.055) *
+        dt * (0.018 + trackMotion * 0.055) *
           (1 + slip * 1.45 + roughness * 0.85) *
           clamp(0.76 + normalLoad * 0.24, 0.82, 1.16) *
           materialSink,
-        0.002,
-        0.052,
+        0,
+        0.3 * dt,
       );
       const result = this.compactTrackStripWithWake(center, forward, side, TRACK_LENGTH, TRACK_WIDTH, depth);
       this.trackSoilWork += result.compacted;
-      if (result.compacted > 0 && surface.wetness > 0.45) {
-        const wetRutVolume = this.terrain.lowerAt(
-          center,
-          TRACK_WIDTH * 0.55,
-          depth * clamp((surface.wetness - surface.hardpack * 0.35) * 0.72, 0, 0.72),
-        );
-        if (wetRutVolume > 0) {
-          this.trackSoilWork += wetRutVolume;
-          this.wakeWorldCollidersNear(center, TRACK_WIDTH + 0.7);
-        }
-      }
       if (result.compacted > 0) {
         this.pressure = Math.max(
           this.pressure,
@@ -13723,7 +13863,7 @@ class Simulator {
     const bucketMouthEntry = Math.max(0, bucketStroke.dot(bucketPocketDirection)) + Math.max(0, bucketPocketStroke.dot(bucketPocketDirection)) * 0.35;
     const bucketHorizontalStroke = Math.hypot(bucketStroke.x, bucketStroke.z);
     const bucketDownStroke = Math.max(0, -bucketStroke.y);
-    const bucketVerticalPlungeRatio = bucketDownStroke / Math.max(bucketHorizontalStroke + bucketMouthEntry, 0.001);
+    const bucketVerticalPlungeRatio = bucketDownStroke / Math.max(bucketHorizontalStroke + bucketMouthEntry, bucketStrokeDistance * 0.001, 1e-9);
 
     let maxSubmerged = 0;
     let weightedSubmerged = 0;
@@ -13741,8 +13881,8 @@ class Simulator {
       Math.max(0, -this.velocities.bucket) * 0.68 + Math.max(0, -this.velocities.stick) * 0.34 + bucketMouthEntry * 2.8;
     const bucketCuttingMotion =
       bucketCuttingDrive > 0.05 &&
-      (bucketPocketPull < -0.06 || bucketMouthEntry > 0.018) &&
-      bucketHorizontalStroke + bucketMouthEntry > 0.018 &&
+      (bucketPocketPull < -0.06 || bucketMouthEntry > bucketStrokeDistance * 0.12) &&
+      bucketHorizontalStroke + bucketMouthEntry > 0.00001 &&
       bucketVerticalPlungeRatio < 2.4;
     let bestDisplacementStroke: {
       start: THREE.Vector3;
@@ -13771,7 +13911,7 @@ class Simulator {
       const localIntrusion = verticalIntrusion + horizontalMotion * clamp(slope, 0, 1.4) * 0.34;
       const isBucket = sample.action === "bucket";
       const cuttingBucketContact = isBucket && bucketCuttingMotion;
-      const verticalPlungeContact = isBucket && !cuttingBucketContact && verticalIntrusion > horizontalMotion * 0.62 + 0.004;
+      const verticalPlungeContact = isBucket && !cuttingBucketContact && verticalIntrusion > horizontalMotion * 0.62 + 0.000001;
       const yieldingScale = cuttingBucketContact ? 0.42 : isBucket ? 1.18 : 1;
       const weighted = Math.pow(submerged, 1.08) * (1 + subsoil * 0.48) * yieldingScale;
       const intrusionLoad = localIntrusion * yieldingScale;
@@ -13838,9 +13978,10 @@ class Simulator {
       0,
       1,
     );
-    const drag = ARM_SUBSOIL_INPUT_DRAG;
+    const strength = shearStrengthKPa(averageSubmerged, 3 + averageMaterialLoad * 4, Math.atan(SOIL_REPOSE_TAN));
+    const drag = clamp(1 / (1 + strength / (bucketCuttingMotion ? 90 : 35)), 0.28, 1);
 
-    const hasSubmergedMotion = submergedMotion > 0.004;
+    const hasSubmergedMotion = submergedMotion > 0.000001;
     if (!hasSubmergedMotion) {
       return { resisted: false, blockedActions: [], maxSubmerged, averageSubmerged, displacedVolume: 0, drag: 1 };
     }
@@ -13862,7 +14003,7 @@ class Simulator {
       BUCKET_SUBSOIL_PLUNGE_GUARD_ENABLED &&
       !bucketCuttingMotion &&
       bucketMaxSubmerged > 0.16 &&
-      bucketVerticalPlungeIntrusion > 0.006;
+      bucketVerticalPlungeIntrusion > 0.000001;
     if (bucketPlungeBlocked) {
       const chain: ActionName[] = ["boom", "stick", "bucket"];
       for (const action of chain) {
@@ -13879,6 +14020,13 @@ class Simulator {
       }
     }
 
+    if (!bucketPlungeBlocked && pushingIntoSoil > 0.000001) {
+      // Resist only motion into soil, so lifting out cannot become stuck.
+      for (const action of ["boom", "stick", "bucket"] as const) {
+        this.angles[action] = previousAngles[action] + (this.angles[action] - previousAngles[action]) * drag;
+      }
+      this.excavator.applyAngles(this.angles);
+    }
     this.pressure = Math.max(this.pressure, clamp(0.22 + severity * 0.74, 0, 1));
     if (displacedVolume > 0) {
       this.pressure = Math.max(this.pressure, clamp(0.34 + displacedVolume * 1.9, 0, 1));
@@ -14129,7 +14277,7 @@ class Simulator {
         .add(new THREE.Vector3(0, -0.3 - openFactor * 0.72, 0));
       this.releaseCarriedWorldObjects(releaseVelocity);
     }
-    if (dumpIntent && this.bucketLoad > 0.002) {
+    if (dumpIntent && this.bucketLoad > 0.000001) {
       const dumpRate = BUCKET_SOIL_FAST_DUMP_ENABLED
         ? this.bucketLoad
         : (0.1 + openFactor * openFactor * 1.45 + Math.max(0, this.velocities.bucket) * 0.95 + lipDumpBias * 0.62) * dt;
@@ -14153,19 +14301,18 @@ class Simulator {
     lipBias: number,
     maxVolume = this.bucketLoad,
   ): { spilledVolume: number; heightRemoved: number; worldPoint: THREE.Vector3 } {
-    if (this.bucketLoad <= 0.002 || maxVolume <= 0) {
+    if (this.bucketLoad <= 0.000001 || maxVolume <= 0 || this.soilStream.available === 0) {
       return { spilledVolume: 0, heightRemoved: 0, worldPoint: this.excavator.bucketPocketWorld() };
     }
 
     const openDump = clamp(lipBias, 0, 1.2);
     this.excavator.slumpBucketLoadUnderGravity(dt, clamp(1 + intensity * 0.35 + openDump * 2.2, 0.7, 5.2));
-    const spillPerSecond = BUCKET_SOIL_FAST_DUMP_ENABLED
-      ? 1.35 + openDump * 3.25
-      : 0.36 + openDump * 1.15;
-    const spillRate = Math.min(maxVolume, Math.max(0, spillPerSecond * Math.max(intensity, 0.2) * dt));
+    const gravityLocal = new THREE.Vector3(0, -1, 0).applyQuaternion(this.excavator.bucketGroup.getWorldQuaternion(new THREE.Quaternion()).invert());
+    const slope = Math.atan2(-gravityLocal.x, -gravityLocal.y);
+    const spillRate = Math.min(maxVolume, granularDischarge(this.bucketLoad, slope, openDump, dt));
     const spill = this.excavator.spillBucketLoadOverLip(dt, intensity, this.bucketLoad, spillRate, openDump);
     const spilledVolume = Math.min(this.bucketLoad, maxVolume, spill.spilledVolume);
-    if (spilledVolume <= 0.001) {
+    if (spilledVolume <= 0) {
       return { spilledVolume: 0, heightRemoved: 0, worldPoint: this.excavator.bucketTipWorld() };
     }
 
@@ -14179,15 +14326,54 @@ class Simulator {
       .clone()
       .multiplyScalar(0.24 + openness * 0.76)
       .add(new THREE.Vector3(0, -0.45 - openness * 1.15, 0));
-    if (BUCKET_SOIL_FAST_DUMP_ENABLED) {
-      const deposit = this.depositBucketSpillFast(worldPoint, spilledVolume, openness, spillVelocity);
-      return { spilledVolume, heightRemoved: spill.heightRemoved, worldPoint: deposit.point };
-    }
-    const fineVolume = spilledVolume * clamp(0.018 + openness * 0.026, 0.018, 0.055);
-    const coarseVolume = Math.max(0, spilledVolume - fineVolume);
-    this.spawnSoilParticles(worldPoint, coarseVolume, forward, openness);
-    this.spawnFineGrains(worldPoint, fineVolume, forward.clone().add(new THREE.Vector3(0, -0.35 - openness, 0)), true, 1.05 + openness);
+    this.soilStream.emit(worldPoint, spillVelocity, this.excavator.bucketSidewaysWorld(), spilledVolume, dt);
     return { spilledVolume, heightRemoved: spill.heightRemoved, worldPoint };
+  }
+
+  private updateSoilStream(dt: number): void {
+    let depositedAt: THREE.Vector3 | null = null;
+    this.soilStream.update(dt, (packet, previous, h) => {
+      const pos = packet.position;
+      const truckHit = this.truck.sweptSoilCatch(previous, pos);
+      if (truckHit) {
+        const accepted = this.truck.depositSoilAt(truckHit, packet.volume, TRUCK_CAPACITY - this.truckLoad);
+        this.truckLoad += accepted;
+        packet.volume -= accepted;
+        if (packet.volume < 1e-10) return true;
+        // An overflowing load travels to the rim before falling to the ground.
+        pos.copy(truckHit);
+        const local = this.truck.group.worldToLocal(pos.clone());
+        const outward = new THREE.Vector3(0, 0, local.z >= 0 ? 1 : -1).applyQuaternion(this.truck.group.quaternion);
+        pos.addScaledVector(outward, h * 1.8);
+        packet.velocity.copy(outward).multiplyScalar(1.8);
+        return false;
+      }
+      const ground = this.terrain.getHeightAt(pos.x, pos.z);
+      if (pos.y > ground + 0.025) return false;
+      pos.y = ground + 0.026;
+      const span = this.terrain.spacing;
+      const slopeX = (this.terrain.getHeightAt(pos.x + span, pos.z) - this.terrain.getHeightAt(pos.x - span, pos.z)) / (2 * span);
+      const slopeZ = (this.terrain.getHeightAt(pos.x, pos.z + span) - this.terrain.getHeightAt(pos.x, pos.z - span)) / (2 * span);
+      const slope = Math.hypot(slopeX, slopeZ);
+      const friction = this.terrain.getSurfaceConditionAt(pos.x, pos.z).reposeTan;
+      const speed = Math.hypot(packet.velocity.x, packet.velocity.z);
+      const deceleration = 9.81 * friction / Math.sqrt(1 + slope * slope);
+      const damping = speed > 0 ? Math.max(0, 1 - deceleration * h / speed) : 0;
+      packet.velocity.set(packet.velocity.x * damping, 0, packet.velocity.z * damping);
+      if (slope > friction) {
+        const acceleration = 9.81 * (slope - friction) / (1 + slope * slope);
+        packet.velocity.x -= slopeX / slope * acceleration * h;
+        packet.velocity.z -= slopeZ / slope * acceleration * h;
+      }
+      if (packet.velocity.length() > 0.12 && packet.age < 4) return false;
+      const footprint = this.soilTerrainDepositFootprint(pos, packet.volume, this.terrain.spacing * 1.05, false, speed);
+      const deposited = this.raiseTerrainWithWake(footprint.center, footprint.radius, packet.volume, 0);
+      packet.volume = Math.max(0, packet.volume - deposited);
+      depositedAt = footprint.center;
+      return packet.volume < 1e-9;
+    });
+    if (depositedAt) this.settleTerrainWithWake(depositedAt, 1.8, 1);
+    this.truck.updateLoad(this.truckLoad);
   }
 
   private depositBucketSpillFast(

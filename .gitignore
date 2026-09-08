@@ -5,3 +5,4 @@ dist/
 *.log
 verification*.png
 smoke-after.png
+soil-flow-*.png
