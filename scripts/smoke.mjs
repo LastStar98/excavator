@@ -1,15 +1,31 @@
 import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { runInputRegressions } from "./input-regressions.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const chromePath = process.env.CHROME_PATH ?? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const chromePath = process.env.CHROME_PATH ?? [
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium",
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+].find(existsSync);
+if (!chromePath) throw new Error("Chrome not found. Set CHROME_PATH to a Chrome/Chromium executable.");
 const remotePort = 9348 + Math.floor(Math.random() * 500);
 const profileDir = join(root, `.chrome-smoke-profile-${Date.now()}`);
 const screenshotPath = join(root, "smoke-after.png");
-const appUrl = "http://127.0.0.1:5173";
+const portReservation = createServer();
+await new Promise((resolve, reject) => {
+  portReservation.once("error", reject);
+  portReservation.listen(0, "127.0.0.1", resolve);
+});
+const appPort = portReservation.address().port;
+await new Promise((resolve, reject) => portReservation.close(error => error ? reject(error) : resolve()));
+const appUrl = `http://127.0.0.1:${appPort}`;
 
 await mkdir(profileDir, { recursive: true });
 
@@ -53,14 +69,10 @@ async function readJson(url, attempts = 60) {
 }
 
 async function ensureAppServer() {
-  try {
-    await readText(appUrl, 2);
-    return;
-  } catch {
-    // Start a local Vite server when the smoke test is run directly.
-  }
-
-  devServer = spawn(process.execPath, [join(root, "node_modules", "vite", "bin", "vite.js"), "--host", "127.0.0.1"], {
+  // Always test this checkout; never attach to an unrelated server on port 5173.
+  devServer = spawn(process.execPath, [join(root, "node_modules", "vite", "bin", "vite.js"),
+    ...(process.env.SMOKE_PREVIEW === "1" ? ["preview"] : []),
+    "--host", "127.0.0.1", "--port", String(appPort), "--strictPort"], {
     cwd: root,
     stdio: "pipe",
   });
@@ -85,6 +97,9 @@ function startChrome() {
     [
       ...headlessArgs,
       "--disable-extensions",
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
       "--disable-default-apps",
       "--no-first-run",
       "--no-default-browser-check",
@@ -259,24 +274,41 @@ async function main() {
         await delay(250);
         latest = await readState();
       }
-      return latest;
+      throw new Error(`Simulation did not become ready: ${JSON.stringify(latest)}`);
     };
 
     const waitForNeutralFrame = async () => {
       let latest = await readState();
       for (let i = 0; i < 60; i += 1) {
         const travel = Number.parseFloat(latest?.travel ?? "0");
-        const neutralTravel = !Number.isFinite(travel) || Math.abs(travel) <= 0.02;
+        const neutralTravel = Number.isFinite(travel) && Math.abs(travel) <= 0.02;
         if (latest?.fps > 0 && neutralTravel && latest?.travelDirection === "중립") {
           return latest;
         }
         await delay(250);
         latest = await readState();
       }
-      return latest;
+      throw new Error(`Simulation did not reset to neutral: ${JSON.stringify(latest)}`);
     };
 
     const before = await waitForReady();
+
+    if (process.env.SMOKE_INPUT_ONLY === "1") {
+      const checks = await runInputRegressions(cdp);
+      cdp.close();
+      console.log(JSON.stringify({ checks }, null, 2));
+      const failed = checks.filter(([, ok]) => !ok);
+      if (failed.length) throw new Error(`Input checks failed: ${failed.map(([name]) => name).join(", ")}`);
+      return;
+    }
+
+    const advanceSimulation = async (seconds) => {
+      const result = await cdp.send("Runtime.evaluate", {
+        expression: `window.__excavatorSim.advance(${seconds})`,
+        returnByValue: true,
+      });
+      if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
+    };
 
     const holdKey = async (key, code, keyCode) => {
       await cdp.send("Input.dispatchKeyEvent", {
@@ -286,7 +318,7 @@ async function main() {
         windowsVirtualKeyCode: keyCode,
         nativeVirtualKeyCode: keyCode,
       });
-      await delay(650);
+      await advanceSimulation(0.65);
       const state = await readState();
       await cdp.send("Input.dispatchKeyEvent", {
         type: "keyUp",
@@ -309,7 +341,7 @@ async function main() {
           nativeVirtualKeyCode: keyCode,
         });
       }
-      await delay(1200);
+      await advanceSimulation(1.2);
       const state = await readState();
       for (const [key, code, keyCode] of keys.toReversed()) {
         await cdp.send("Input.dispatchKeyEvent", {
@@ -360,7 +392,7 @@ async function main() {
         })()`,
         returnByValue: true,
       });
-      await delay(holdMs);
+      await advanceSimulation(holdMs / 1000);
       const state = await readState();
       const snapshot = await readDebug();
       const startValue = start.result.value;
@@ -393,7 +425,7 @@ async function main() {
         })()`,
         returnByValue: true,
       });
-      await delay(holdMs);
+      await advanceSimulation(holdMs / 1000);
       const state = await readState();
       const snapshot = await readDebug();
       const startValue = start.result.value;
@@ -860,6 +892,7 @@ async function main() {
     const screenshot = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
     await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
 
+    const inputChecks = await runInputRegressions(cdp);
     const errors = cdp.events.filter((event) => {
       if (event.method === "Runtime.exceptionThrown") {
         return true;
@@ -952,6 +985,7 @@ async function main() {
     );
 
     const checks = [
+      ...inputChecks,
       ["title", before.title === "Excavator Web Simulator"],
       ["canvas", before.canvasWidth > 0 && before.canvasHeight > 0],
       [

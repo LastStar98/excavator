@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import "./style.css";
+import { horizontalReach, orbitTarget } from "./spatial";
 
 type Pattern = "ISO" | "SAE" | "Arcade";
 type ResponseMode = "slow" | "medium" | "fast";
@@ -350,7 +351,9 @@ interface TruckLoadTerrainSpillResult {
 }
 
 interface ExcavatorDebugApi {
+  advance: (seconds: number) => void;
   snapshot: () => {
+    elapsed: number;
     bucketLoad: number;
     bucketTransitLoad: number;
     bucketSoilSupportMass: number;
@@ -5314,6 +5317,9 @@ class Simulator {
     this.elapsed = 0;
     this.pressure = 0;
     this.stability = 1;
+    this.limitCooldown = 0;
+    this.safetyCooldown = 0;
+    this.lastWarning = "";
     this.collisionCooldown = 0;
     this.leftTrackVelocity = 0;
     this.rightTrackVelocity = 0;
@@ -5335,7 +5341,7 @@ class Simulator {
     this.orbit.panOffset.set(0, 0, 0);
     this.resetWorldColliders();
     this.clearFineGrains();
-    this.clearMobileInput();
+    this.clearInput();
     this.closeMobileMenu();
     this.setCameraMode("orbit");
     this.excavator.group.position.set(0, this.terrain.getHeightAt(0, 0), 0);
@@ -5350,6 +5356,7 @@ class Simulator {
     this.previousBucketTip.copy(this.excavator.bucketTipWorld());
     this.previousBucketPocket.copy(this.excavator.bucketPocketWorld());
     this.warmWorldColliderGrid();
+    this.updateUi(0);
   }
 
   private registerWorldCollider(
@@ -5944,7 +5951,25 @@ class Simulator {
     return woke;
   }
 
+  private clearInput(): void {
+    this.keys.clear();
+    Object.assign(this.targetActions, { swing: 0, boom: 0, stick: 0, bucket: 0 });
+    this.ui.keyCaps.forEach((cap) => cap.classList.remove("active"));
+    this.clearMobileInput();
+  }
+
   private clearMobileInput(): void {
+    for (const [id, joystick] of this.activeMobileJoysticks) {
+      if (joystick.element.hasPointerCapture(id)) joystick.element.releasePointerCapture(id);
+    }
+    for (const id of this.activeDrivePointers.keys()) {
+      for (const button of this.ui.mobileDriveButtons) {
+        if (button.hasPointerCapture(id)) button.releasePointerCapture(id);
+      }
+    }
+    for (const id of this.canvasPointers.keys()) {
+      if (this.canvas.hasPointerCapture(id)) this.canvas.releasePointerCapture(id);
+    }
     Object.assign(this.touchAxes, { leftX: 0, leftY: 0, rightX: 0, rightY: 0, leftTrack: 0, rightTrack: 0 });
     this.activeMobileJoysticks.clear();
     this.pressedDriveControls.clear();
@@ -6229,20 +6254,33 @@ class Simulator {
 
   private bindEvents(): void {
     window.addEventListener("resize", () => this.resize());
+    window.addEventListener("blur", () => this.clearInput());
+    document.addEventListener("visibilitychange", () => {
+      this.clearInput();
+      // Do not integrate time spent away from the simulation on return.
+      this.clock.getDelta();
+    });
     window.addEventListener("keydown", (event) => {
       if (event.code === "Escape" && this.activeMobileMenu !== null) {
         event.preventDefault();
         this.closeMobileMenu();
         return;
       }
+      const target = event.target;
+      if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing ||
+          (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, select, textarea")))) {
+        return;
+      }
       if (this.isSimKey(event.code)) {
         event.preventDefault();
+        // After reset/focus loss require a fresh press, not the OS key repeat.
+        if (event.repeat && !this.keys.has(event.code)) return;
         this.keys.add(event.code);
       }
     });
     window.addEventListener("keyup", (event) => {
       if (this.isSimKey(event.code)) {
-        event.preventDefault();
+        if (this.keys.has(event.code)) event.preventDefault();
         this.keys.delete(event.code);
       }
     });
@@ -6266,6 +6304,7 @@ class Simulator {
     this.canvas.addEventListener("pointermove", (event) => this.handleCanvasPointerMove(event));
     this.canvas.addEventListener("pointerup", (event) => this.handleCanvasPointerEnd(event));
     this.canvas.addEventListener("pointercancel", (event) => this.handleCanvasPointerEnd(event));
+    this.canvas.addEventListener("lostpointercapture", (event) => this.handleCanvasPointerEnd(event));
     this.canvas.addEventListener("auxclick", (event) => {
       if (event.button === 1) {
         event.preventDefault();
@@ -6293,6 +6332,7 @@ class Simulator {
         return;
       }
       element.addEventListener("pointerdown", (event) => this.handleMobileJoystickDown(event, side, element, knob));
+      element.addEventListener("lostpointercapture", (event) => this.handleMobilePointerEnd(event));
     });
 
     this.ui.mobileDriveButtons.forEach((button) => {
@@ -6301,6 +6341,7 @@ class Simulator {
         return;
       }
       button.addEventListener("pointerdown", (event) => this.handleDrivePointerDown(event, mode, button));
+      button.addEventListener("lostpointercapture", (event) => this.handleMobilePointerEnd(event));
     });
 
     this.ui.mobileMenuButtons.forEach((button) => {
@@ -6440,6 +6481,7 @@ class Simulator {
   }
 
   private handleCanvasPointerEnd(event: PointerEvent): void {
+    if (!this.canvasPointers.has(event.pointerId)) return;
     this.canvasPointers.delete(event.pointerId);
     this.orbit.panning = Array.from(this.canvasPointers.values()).some((point) => point.pan);
     this.orbit.dragging = this.canvasPointers.size > 0 && !this.orbit.panning;
@@ -6448,6 +6490,11 @@ class Simulator {
       this.pinchCenter.copy(this.currentPinchCenter());
     } else {
       this.pinchCenter.set(0, 0);
+      const remaining = this.canvasPointers.values().next().value;
+      if (remaining) {
+        this.orbit.lastX = remaining.x;
+        this.orbit.lastY = remaining.y;
+      }
     }
     try {
       this.canvas.releasePointerCapture(event.pointerId);
@@ -6500,6 +6547,7 @@ class Simulator {
     knob: HTMLElement,
   ): void {
     event.preventDefault();
+    if (Array.from(this.activeMobileJoysticks.values()).some((joystick) => joystick.side === side)) return;
     if (this.activeMobileMenu !== null) {
       this.closeMobileMenu();
     }
@@ -6548,10 +6596,12 @@ class Simulator {
     const driveMode = this.activeDrivePointers.get(event.pointerId);
     if (driveMode) {
       this.activeDrivePointers.delete(event.pointerId);
-      this.pressedDriveControls.delete(driveMode);
-      this.ui.mobileDriveButtons
-        .filter((button) => button.dataset.drive === driveMode)
-        .forEach((button) => button.classList.remove("active"));
+      const stillPressed = Array.from(this.activeDrivePointers.values()).includes(driveMode);
+      if (!stillPressed) this.pressedDriveControls.delete(driveMode);
+      for (const button of this.ui.mobileDriveButtons.filter((button) => button.dataset.drive === driveMode)) {
+        button.classList.toggle("active", stillPressed);
+        if (button.hasPointerCapture(event.pointerId)) button.releasePointerCapture(event.pointerId);
+      }
       this.updateMobileTrackAxes();
     }
   }
@@ -6608,9 +6658,20 @@ class Simulator {
 
   private installDebugApi(): void {
     window.__excavatorSim = {
+      advance: (seconds) => {
+        if (!Number.isFinite(seconds) || seconds < 0 || seconds > 5) {
+          throw new RangeError("Advance duration must be between 0 and 5 seconds");
+        }
+        const steps = Math.ceil(seconds * 60);
+        for (let i = 0; i < steps; i += 1) this.stepPhysics(seconds / steps);
+        this.updateUi(0);
+        // The next rendered frame must not count time spent in this diagnostic.
+        this.clock.getDelta();
+      },
       snapshot: () => {
         const truckPhysics = this.truck.physicsState();
         return {
+          elapsed: this.elapsed,
           bucketLoad: this.bucketLoad,
           bucketTransitLoad: this.bucketTransitLoad,
           bucketSoilSupportMass: this.bucketSoilSupportMass(),
@@ -10518,7 +10579,15 @@ class Simulator {
   }
 
   private tick(): void {
-    const dt = Math.min(this.clock.getDelta(), 0.033);
+    const frameDt = this.clock.getDelta();
+    if (document.hidden) return;
+    const dt = Math.min(frameDt, 0.033);
+    this.stepPhysics(dt);
+    this.updateUi(frameDt);
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private stepPhysics(dt: number): void {
     this.elapsed += dt;
     this.limitCooldown = Math.max(0, this.limitCooldown - dt);
     this.safetyCooldown = Math.max(0, this.safetyCooldown - dt);
@@ -10548,8 +10617,6 @@ class Simulator {
     this.bucketDumpPressureSilence = Math.max(0, this.bucketDumpPressureSilence - dt);
     this.updateSafety(dt);
     this.updateCamera(dt);
-    this.updateUi(dt);
-    this.renderer.render(this.scene, this.camera);
   }
 
   private updateTruckPhysics(dt: number): void {
@@ -15309,7 +15376,7 @@ class Simulator {
   private updateSafety(dt: number): void {
     const tip = this.excavator.bucketTipWorld();
     const pin = this.excavator.bucketPinWorld();
-    const reach = Math.hypot(tip.x, tip.z);
+    const reach = horizontalReach(tip, this.excavator.group.position);
     const loadMoment = reach * (0.4 + this.bucketPayloadMomentLoad());
     this.stability = smoothTo(this.stability, clamp(1.15 - loadMoment / 10.0, 0, 1), 2.5, dt);
 
@@ -15338,7 +15405,7 @@ class Simulator {
 
   private updateCamera(dt: number): void {
     const bucketTip = this.excavator.bucketTipWorld();
-    const target = new THREE.Vector3(0, 0.9, 0).lerp(bucketTip, 0.25);
+    const target = orbitTarget(this.excavator.group.position, bucketTip);
     const desiredPosition = new THREE.Vector3();
     const desiredLook = new THREE.Vector3();
 
@@ -15418,7 +15485,7 @@ class Simulator {
     });
 
     this.fpsAccumulator += dt;
-    this.fpsFrames += 1;
+    if (dt > 0) this.fpsFrames += 1;
     if (this.fpsAccumulator >= 0.35) {
       this.fps = Math.round(this.fpsFrames / this.fpsAccumulator);
       this.fpsAccumulator = 0;

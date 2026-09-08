@@ -1,5 +1,32 @@
 # Excavator Web Simulator
 
+## Development and verification
+
+Use Node.js 22.17 or newer and Chrome/Chromium.
+
+```sh
+npm ci
+npm test
+npm run build
+npm run smoke
+```
+
+The browser suite checks physics, keyboard controls, mobile controls, and input cancellation.
+It starts its own local server and uses a disposable Chrome profile. Set `CHROME_PATH`
+if Chrome is installed outside the standard Windows, macOS, or Linux locations.
+Set `SMOKE_PREVIEW=1` to test the built `dist` output or `SMOKE_INPUT_ONLY=1`
+to run only the input regressions. Input holds advance the same physics step used
+by normal animation at 60 Hz through the diagnostic API, so software rendering
+cannot skip the control being tested. Rendering and DOM events still run in Chrome.
+
+Pull requests run the build and tests. Pushes to `main` deploy to Pages only after
+both unit and browser checks pass. The browser screenshot is saved as a CI artifact.
+
+Switching away from the app clears controls and pauses simulation while the page
+is hidden. Reset also clears held inputs and warning cooldowns. Release and press
+a held key again to resume after reset or focus loss. Keyboard events in settings
+and browser shortcuts are reserved for those controls.
+
 ## Controls
 
 - `W/A/S/D`: left joystick
