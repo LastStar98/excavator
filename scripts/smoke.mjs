@@ -653,6 +653,8 @@ async function main() {
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
     await cdp.send("Page.reload", { ignoreCache: true });
     await delay(1800);
+    // A newly navigated DOM can exist before its stylesheet and simulator load.
+    await waitForReady();
     const mobileUi = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const controls = document.getElementById("mobile-controls");
