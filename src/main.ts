@@ -351,6 +351,7 @@ interface TruckLoadTerrainSpillResult {
 }
 
 interface ExcavatorDebugApi {
+  frameCount: () => number;
   advance: (seconds: number) => void;
   snapshot: () => {
     elapsed: number;
@@ -5241,6 +5242,7 @@ class Simulator {
   private fpsAccumulator = 0;
   private fpsFrames = 0;
   private fps = 0;
+  private renderedFrames = 0;
   private lastWarning = "";
 
   private isMobilePerformanceProfile(): boolean {
@@ -6658,6 +6660,7 @@ class Simulator {
 
   private installDebugApi(): void {
     window.__excavatorSim = {
+      frameCount: () => this.renderedFrames,
       advance: (seconds) => {
         if (!Number.isFinite(seconds) || seconds < 0 || seconds > 5) {
           throw new RangeError("Advance duration must be between 0 and 5 seconds");
@@ -10585,6 +10588,7 @@ class Simulator {
     this.stepPhysics(dt);
     this.updateUi(frameDt);
     this.renderer.render(this.scene, this.camera);
+    this.renderedFrames += 1;
   }
 
   private stepPhysics(dt: number): void {

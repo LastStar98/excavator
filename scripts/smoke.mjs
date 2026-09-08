@@ -252,7 +252,8 @@ async function main() {
             soilText: text("soil-text"),
             pressure: value("pressure-meter"),
             mission: text("mission-state"),
-            fps: Number(text("fps-text") || 0)
+            fps: Number(text("fps-text") || 0),
+            renderedFrames: window.__excavatorSim?.frameCount() ?? 0
           };
         })()`,
         returnByValue: true,
@@ -267,7 +268,7 @@ async function main() {
           expression: `Boolean(window.__excavatorSim)`,
           returnByValue: true,
         });
-        if (debug.result.value && latest.canvasWidth > 600 && latest.canvasHeight > 300 && latest.fps > 0) {
+        if (debug.result.value && latest.canvasWidth > 600 && latest.canvasHeight > 300 && latest.renderedFrames > 0) {
           return latest;
         }
         await delay(250);
@@ -281,7 +282,7 @@ async function main() {
       for (let i = 0; i < 60; i += 1) {
         const travel = Number.parseFloat(latest?.travel ?? "0");
         const neutralTravel = Number.isFinite(travel) && Math.abs(travel) <= 0.02;
-        if (latest?.fps > 0 && neutralTravel && latest?.travelDirection === "중립") {
+        if (neutralTravel && latest?.travelDirection === "중립") {
           return latest;
         }
         await delay(250);
@@ -990,18 +991,8 @@ async function main() {
       ["title", before.title === "Excavator Web Simulator"],
       ["canvas", before.canvasWidth > 0 && before.canvasHeight > 0],
       [
-        "fps",
-        afterSwing.fps > 0 ||
-          afterBoom.fps > 0 ||
-          afterStick.fps > 0 ||
-          afterBucket.fps > 0 ||
-          afterLeftForward.fps > 0 ||
-          afterRightForward.fps > 0 ||
-          afterBothForward.fps > 0 ||
-          afterLeftReverse.fps > 0 ||
-          afterRightReverse.fps > 0 ||
-          afterBothReverse.fps > 0 ||
-          after.fps > 0,
+        "desktop and mobile scenes render frames",
+        before.renderedFrames > 0 && after.renderedFrames > 0,
       ],
       ["pressure", Number.isFinite(peakPressure) && peakPressure > 0.15],
       ["left stick D reverses swing", Number.isFinite(beforeSwing) && Number.isFinite(afterSwingValue) && afterSwingValue < beforeSwing],
