@@ -33,6 +33,10 @@
   of assuming enough frames will render within a short wall-clock delay.
 - Smoke tests launch a private local server, support Windows/macOS/Linux Chrome,
   and can test the production build. Readiness/reset timeouts fail explicitly.
+- Mobile reloads wait for simulator readiness before inspecting layout. Original
+  millisecond performance budgets remain available with `SMOKE_PERFORMANCE=1`;
+  shared CI runners report timings without using CPU scheduling noise as a
+  functional failure. All physics, mass, input, and layout checks remain required.
 - Pull requests run build, unit, and browser checks; Pages deployment depends on
   successful checks. Write permissions are limited to the deployment job.
 - Updated vulnerable Vite/build dependencies within existing version ranges.

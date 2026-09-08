@@ -18,6 +18,9 @@ Set `SMOKE_PREVIEW=1` to test the built `dist` output or `SMOKE_INPUT_ONLY=1`
 to run only the input regressions. Input holds advance the same physics step used
 by normal animation at 60 Hz through the diagnostic API, so software rendering
 cannot skip the control being tested. Rendering and DOM events still run in Chrome.
+Timing measurements are always included in the report. Set `SMOKE_PERFORMANCE=1`
+on a controlled benchmark machine to enforce the original 4 ms/16 ms timing
+budgets; shared CI runners gate deployment on functional checks instead.
 
 Pull requests run the build and tests. Pushes to `main` deploy to Pages only after
 both unit and browser checks pass. The browser screenshot is saved as a CI artifact.
