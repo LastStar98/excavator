@@ -85,9 +85,6 @@ function startChrome() {
       ? []
       : [
           "--headless",
-          "--disable-gpu",
-          "--disable-gpu-sandbox",
-          "--in-process-gpu",
           "--use-angle=swiftshader",
           "--enable-unsafe-swiftshader",
           "--ignore-gpu-blocklist",
@@ -96,6 +93,8 @@ function startChrome() {
     chromePath,
     [
       ...headlessArgs,
+      // Dedicated CI runners have no usable Chrome sandbox/shared-memory setup.
+      ...(process.env.CI ? ["--no-sandbox", "--disable-dev-shm-usage"] : []),
       "--disable-extensions",
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
@@ -1978,5 +1977,6 @@ await main().catch((error) => {
   chrome?.kill();
   devServer?.kill();
   console.error(error);
+  if (chromeStderr) console.error(chromeStderr);
   process.exit(1);
 });
